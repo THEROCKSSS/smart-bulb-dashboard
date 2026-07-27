@@ -9,6 +9,9 @@ how the device credentials were obtained.
 Everything talks to the bulb directly over your LAN via [tinytuya](https://github.com/jasonacox/tinytuya).
 No cloud round-trip for day-to-day control.
 
+> **Repo:** GitHub → [`THEROCKSSS/smart-bulb-dashboard`](https://github.com/THEROCKSSS/smart-bulb-dashboard) (public).
+> Licensed **noncommercial** — see [License](#license).
+
 ![Control panel](docs/screenshots/control.png)
 
 ## What's here
