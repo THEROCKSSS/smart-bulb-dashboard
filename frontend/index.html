@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Smart Bulb Dashboard</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<div class="app-shell">
+  <div class="topbar">
+    <div class="brand">Smart<span class="accent">Bulb</span></div>
+    <span id="status-badge" class="status-badge">
+      <span class="dot"></span><span id="status-text">connecting…</span>
+    </span>
+    <div class="device-picker">
+      <select id="device-select"></select>
+    </div>
+  </div>
+
+  <div class="sidebar" id="sidebar">
+    <div class="nav-item" data-route="control">Control</div>
+    <div class="nav-item" data-route="scenes">Scenes</div>
+    <div class="nav-item" data-route="effects">Effects</div>
+    <div class="nav-item" data-route="presets">Presets &amp; Favorites</div>
+    <div class="nav-item" data-route="timers">Timers</div>
+    <div class="nav-item" data-route="schedule">Schedule</div>
+    <div class="nav-item" data-route="groups">Groups</div>
+    <div class="nav-item" data-route="history">History</div>
+    <div class="nav-item" data-route="diagnostics">Diagnostics</div>
+    <div class="nav-item" data-route="settings">Settings</div>
+  </div>
+
+  <div class="main" id="main"></div>
+</div>
+
+<div class="toast-stack" id="toast-stack"></div>
+
+<script src="/static/app.js"></script>
+</body>
+</html>

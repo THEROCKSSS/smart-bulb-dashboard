@@ -1,0 +1,16 @@
+services:
+  smart-bulb-dashboard:
+    build: .
+    container_name: smart-bulb-dashboard
+    ports:
+      - "8500:8500"
+    volumes:
+      - ./backend/config.json:/app/backend/config.json
+      - ./backend/data:/app/backend/data
+    restart: unless-stopped
+    network_mode: "host"
+    # network_mode: host is used because Tuya's local protocol needs the
+    # container on the same broadcast domain as the bulb for /rescan (UDP
+    # discovery) to work. Direct control (color/power/etc.) works fine
+    # with normal bridge networking + the ports mapping above too, since
+    # that's a plain outbound TCP connection to the bulb's IP.
