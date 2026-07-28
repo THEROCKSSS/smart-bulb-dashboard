@@ -1,0 +1,145 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Smart Bulb Dashboard — Documentation</title>
+<meta name="description" content="Local, cloud-independent dashboard for Tuya-based Wi-Fi smart bulbs. 137 features, 12 audio-reactive modes, PIN-gated remote access.">
+<link rel="stylesheet" href="assets/site.css">
+</head>
+<body>
+<button class="rail__toggle" aria-expanded="false" aria-controls="rail">☰ Menu</button>
+<div class="shell">
+  <nav class="rail" id="rail">
+    <div>
+      <a href="index.html" class="rail__brand">Smart<span>Bulb</span></a>
+      <p class="rail__tagline">Local, cloud-independent Tuya bulb dashboard</p>
+    </div>
+    <div>
+      <p class="rail__group-label">Get started</p>
+      <ul>
+        <li><a href="index.html" class="nav-link" aria-current="page">Home</a></li>
+        <li><a href="setup.html" class="nav-link">Setup Guide</a></li>
+        <li><a href="features.html" class="nav-link">Features</a></li>
+      </ul>
+      <p class="rail__group-label">Reference</p>
+      <ul>
+        <li><a href="api.html" class="nav-link">API Reference</a></li>
+        <li><a href="audio.html" class="nav-link">Audio-Reactive Lighting</a></li>
+        <li><a href="security.html" class="nav-link">Remote Access &amp; Security</a></li>
+      </ul>
+      <p class="rail__group-label">Project</p>
+      <ul>
+        <li><a href="roadmap.html" class="nav-link">Roadmap</a></li>
+        <li><a href="changelog.html" class="nav-link">Changelog</a></li>
+        <li><a href="handoff.html" class="nav-link">Build History</a></li>
+      </ul>
+    </div>
+    <div class="rail__external">
+      <a href="https://github.com/THEROCKSSS/smart-bulb-dashboard">GitHub repo →</a>
+    </div>
+  </nav>
+
+  <main class="main">
+    <p class="eyebrow">Smart Bulb Dashboard</p>
+    <h1 style="font-family: var(--font-display); font-weight: 600; font-size: var(--text-xl); margin-bottom: var(--space-md);">Documentation &amp; project index.</h1>
+    <p class="lede">A local, cloud-independent dashboard for Tuya-based Wi-Fi smart bulbs — no cloud round-trip for day-to-day control, a REST API underneath, and a vanilla-JS frontend with no build step. Nine pages, indexed below.</p>
+
+    <div class="stat-row reveal" style="--i:0">
+      <div class="stat-row__item"><span class="stat-row__num">137</span><span class="stat-row__label">working features</span></div>
+      <div class="stat-row__item"><span class="stat-row__num">12</span><span class="stat-row__label">audio-reactive modes</span></div>
+      <div class="stat-row__item"><span class="stat-row__num">1,000</span><span class="stat-row__label">roadmap items, 4 phases</span></div>
+      <div class="stat-row__item"><span class="stat-row__num">5</span><span class="stat-row__label">real bugs found &amp; fixed</span></div>
+    </div>
+
+    <ul class="index-list">
+      <li class="reveal" style="--i:1">
+        <a class="index-entry" href="setup.html">
+          <span class="index-entry__title">Setup Guide</span>
+          <span class="index-entry__meta">guide</span>
+          <span class="index-entry__desc">Get a bulb's Tuya credentials (the hard part), install the backend, and run the dashboard — three ways to acquire the local key, in order of how much we recommend them.</span>
+        </a>
+      </li>
+      <li class="reveal" style="--i:2">
+        <a class="index-entry" href="features.html">
+          <span class="index-entry__title">Features</span>
+          <span class="index-entry__meta">reference</span>
+          <span class="index-entry__desc">All 137 working features, itemized — core control, presets, scenes, effects, timers, scheduling, audio-reactive lighting, discovery, and remote access.</span>
+        </a>
+      </li>
+      <li class="reveal" style="--i:3">
+        <a class="index-entry" href="api.html">
+          <span class="index-entry__title">API Reference</span>
+          <span class="index-entry__meta">reference</span>
+          <span class="index-entry__desc">Full curl reference for the REST API — devices, color/brightness, scenes, effects, audio-reactive sessions, discovery, and the PIN-gate auth endpoints.</span>
+        </a>
+      </li>
+      <li class="reveal" style="--i:4">
+        <a class="index-entry" href="audio.html">
+          <span class="index-entry__title">Audio-Reactive Lighting</span>
+          <span class="index-entry__meta">reference</span>
+          <span class="index-entry__desc">All 12 interpretation modes, the latency/dwell design that separates decision speed from visible color change, and multi-bulb orchestration.</span>
+        </a>
+      </li>
+      <li class="reveal" style="--i:5">
+        <a class="index-entry" href="security.html">
+          <span class="index-entry__title">Remote Access &amp; Security</span>
+          <span class="index-entry__meta">guide</span>
+          <span class="index-entry__desc">Tailscale vs. DuckDNS+PIN gate, what the PIN gate actually protects against (and doesn't), and the planned adversarial security-test phase.</span>
+        </a>
+      </li>
+      <li class="reveal" style="--i:6">
+        <a class="index-entry" href="roadmap.html">
+          <span class="index-entry__title">Roadmap</span>
+          <span class="index-entry__meta">planning</span>
+          <span class="index-entry__desc">A ~1,000-item, four-week phased backlog with a dependency graph — what's planned, not what's promised for any specific date.</span>
+        </a>
+      </li>
+      <li class="reveal" style="--i:7">
+        <a class="index-entry" href="changelog.html">
+          <span class="index-entry__title">Changelog</span>
+          <span class="index-entry__meta">history</span>
+          <span class="index-entry__desc">Every notable change, by version, drawn from the real git history — not backfilled from memory.</span>
+        </a>
+      </li>
+      <li class="reveal" style="--i:8">
+        <a class="index-entry" href="handoff.html">
+          <span class="index-entry__title">Build History</span>
+          <span class="index-entry__meta">history</span>
+          <span class="index-entry__desc">The condensed narrative of how this was built — what failed, what got fixed, and what's known-fragile. The expanded version lives in the repo's <code>iterations/</code> directory.</span>
+        </a>
+      </li>
+    </ul>
+
+    <footer class="site-footer">
+      <div>
+        <h4>Get Started</h4>
+        <ul>
+          <li><a href="setup.html">Setup guide</a></li>
+          <li><a href="https://github.com/THEROCKSSS/smart-bulb-dashboard/blob/master/AGENTS.md">For AI agents</a></li>
+          <li><a href="https://github.com/THEROCKSSS/smart-bulb-dashboard">Clone the repo</a></li>
+        </ul>
+      </div>
+      <div>
+        <h4>Reference</h4>
+        <ul>
+          <li><a href="api.html">API reference</a></li>
+          <li><a href="audio.html">Audio-reactive lighting</a></li>
+          <li><a href="security.html">Remote access &amp; security</a></li>
+        </ul>
+      </div>
+      <div>
+        <h4>Project</h4>
+        <ul>
+          <li><a href="roadmap.html">Roadmap</a></li>
+          <li><a href="changelog.html">Changelog</a></li>
+          <li><a href="https://github.com/THEROCKSSS/smart-bulb-dashboard/tree/master/iterations">Build iterations</a></li>
+        </ul>
+      </div>
+      <p class="footer-meta">Smart Bulb Dashboard · Polyform Noncommercial License 1.0.0 · <a href="handoff.html">Build history</a></p>
+    </footer>
+  </main>
+</div>
+<script src="assets/main.js"></script>
+</body>
+</html>

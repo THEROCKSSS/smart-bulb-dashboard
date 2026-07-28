@@ -1,0 +1,84 @@
+/* Hallmark · pre-emit critique: P4 H4 E4 S4 R4 V4
+ * genre: modern-minimal · macrostructure: Index-First (home) + Long Document (content pages)
+ * theme: Cobalt (dark) · nav: N3 side-rail (adapted, functional docs nav) · footer: Ft3 index columns
+ * enrichment: none (typography only) · mode: dark
+ * anchor hue: 250 (cobalt blue) · audience: self-hosters + AI agents · use: reference reading, not conversion
+ */
+
+:root {
+  /* ---- color: paper / surfaces (dark, cobalt-tinted) ---- */
+  --color-paper:    oklch(14% 0.020 250);
+  --color-paper-2:  oklch(18% 0.020 250);
+  --color-paper-3:  oklch(22% 0.025 250);
+  --color-rule:     oklch(28% 0.020 250);
+  --color-rule-2:   oklch(34% 0.022 250);
+
+  /* ---- color: ink / text ---- */
+  --color-ink:      oklch(94% 0.006 250);
+  --color-muted:    oklch(72% 0.010 250);
+  --color-neutral:  oklch(56% 0.010 250);
+
+  /* ---- color: accent (electric cobalt signal) ---- */
+  --color-accent:      oklch(70% 0.160 253);
+  --color-accent-dim:  oklch(50% 0.120 253);
+  --color-focus:       oklch(75% 0.180 253);
+
+  /* ---- color: secondary signals, used sparingly ---- */
+  --color-warn:    oklch(75% 0.150 75);
+  --color-danger:  oklch(68% 0.170 25);
+  --color-success: oklch(76% 0.140 145);
+
+  /* ---- fonts (Cobalt fixture: Space Grotesk + Inter + JetBrains Mono) ---- */
+  --font-display: "Space Grotesk", ui-sans-serif, system-ui, sans-serif;
+  --font-body:    "Inter", ui-sans-serif, system-ui, sans-serif;
+  --font-mono:    "JetBrains Mono", ui-monospace, "Cascadia Code", monospace;
+
+  /* ---- type scale: 1.25 (major third), base 16px ---- */
+  --text-xs:   0.64rem;
+  --text-sm:   0.8rem;
+  --text-base: 1rem;
+  --text-md:   1.25rem;
+  --text-lg:   1.5625rem;
+  --text-xl:   1.9531rem;
+  --text-2xl:  2.4414rem;
+  --text-3xl:  3.0518rem;
+  --text-display: clamp(2.2rem, 4vw + 1rem, 3.6rem);
+  --text-display-s: clamp(1.75rem, 3vw + 1rem, 2.6rem);
+
+  /* ---- spacing: 4pt scale ---- */
+  --space-3xs: 0.125rem;
+  --space-2xs: 0.25rem;
+  --space-xs:  0.5rem;
+  --space-sm:  0.75rem;
+  --space-md:  1rem;
+  --space-lg:  1.5rem;
+  --space-xl:  2.5rem;
+  --space-2xl: 4rem;
+  --space-3xl: 6rem;
+  --space-4xl: 9rem;
+
+  /* ---- radii: tight, per Cobalt fixture ---- */
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-lg: 10px;
+
+  /* ---- motion ---- */
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-in:  cubic-bezier(0.7, 0, 0.84, 0);
+  --ease-in-out: cubic-bezier(0.65, 0, 0.35, 1);
+  --dur-micro: 120ms;
+  --dur-short: 220ms;
+  --dur-long:  420ms;
+
+  /* ---- z-index scale ---- */
+  --z-base:     1;
+  --z-raised:   10;
+  --z-dropdown: 100;
+  --z-sticky:   200;
+  --z-modal:    400;
+  --z-toast:    500;
+
+  /* ---- layout ---- */
+  --rail-width: 15.5rem;
+  --measure: 68ch;
+}

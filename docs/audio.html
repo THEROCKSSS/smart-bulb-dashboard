@@ -1,0 +1,124 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Audio-Reactive Lighting — Smart Bulb Dashboard</title>
+<meta name="description" content="12 audio-reactive modes, latency/dwell design, and multi-bulb orchestration.">
+<link rel="stylesheet" href="assets/site.css">
+</head>
+<body>
+<button class="rail__toggle" aria-expanded="false" aria-controls="rail">☰ Menu</button>
+<div class="shell">
+  <nav class="rail" id="rail">
+    <div>
+      <a href="index.html" class="rail__brand">Smart<span>Bulb</span></a>
+      <p class="rail__tagline">Local, cloud-independent Tuya bulb dashboard</p>
+    </div>
+    <div>
+      <p class="rail__group-label">Get started</p>
+      <ul>
+        <li><a href="index.html" class="nav-link">Home</a></li>
+        <li><a href="setup.html" class="nav-link">Setup Guide</a></li>
+        <li><a href="features.html" class="nav-link">Features</a></li>
+      </ul>
+      <p class="rail__group-label">Reference</p>
+      <ul>
+        <li><a href="api.html" class="nav-link">API Reference</a></li>
+        <li><a href="audio.html" class="nav-link" aria-current="page">Audio-Reactive Lighting</a></li>
+        <li><a href="security.html" class="nav-link">Remote Access &amp; Security</a></li>
+      </ul>
+      <p class="rail__group-label">Project</p>
+      <ul>
+        <li><a href="roadmap.html" class="nav-link">Roadmap</a></li>
+        <li><a href="changelog.html" class="nav-link">Changelog</a></li>
+        <li><a href="handoff.html" class="nav-link">Build History</a></li>
+      </ul>
+    </div>
+    <div class="rail__external">
+      <a href="https://github.com/THEROCKSSS/smart-bulb-dashboard">GitHub repo →</a>
+    </div>
+  </nav>
+
+  <main class="main">
+    <p class="eyebrow">Audio-Reactive Lighting</p>
+    <h1>The bulb reacts to sound. Twelve ways.</h1>
+    <p class="lede">Capture from a VoiceMeeter/virtual-cable device (whatever's playing on your PC) or a real microphone (whatever's audible in the room). Pick a mode, hit start.</p>
+
+    <h2>The 12 modes</h2>
+    <table>
+      <thead><tr><th>Mode</th><th>What it does</th></tr></thead>
+      <tbody>
+        <tr><td><code>band_fixed</code></td><td>Bass/mid/treble blended into hue by whichever is loudest — bass→red/orange, mid→green, treble→blue.</td></tr>
+        <tr><td><code>dominant_band</code></td><td>Hue smoothly follows whichever band currently dominates.</td></tr>
+        <tr><td><code>weighted_blend</code></td><td>Continuous hue from the spectral centroid, not fixed anchors.</td></tr>
+        <tr><td><code>vu_meter</code></td><td>Fixed hue, brightness only — a direct volume meter.</td></tr>
+        <tr><td><code>auto_rotate_hue</code></td><td>Hue cycles on its own; brightness/beats still track the audio.</td></tr>
+        <tr><td><code>monochrome_pulse</code></td><td>One color, pulses brighter on the beat.</td></tr>
+        <tr><td><code>strobe_on_drop</code></td><td>Dim warm baseline; a hard bass hit triggers a full white flash.</td></tr>
+        <tr><td><code>palette_cycle</code></td><td>Steps through the 25 built-in presets, one step per beat.</td></tr>
+        <tr><td><code>spectrum_gradient</code></td><td>Continuous hue gradient across a configurable 3–16 band split.</td></tr>
+        <tr><td><code>band_flash_overlay</code></td><td>Ambient gradient base, with accent flashes when any band spikes.</td></tr>
+        <tr><td><code>stereo_split</code></td><td>Hue leans toward a left/right anchor based on channel balance.</td></tr>
+        <tr><td><code>breathing_silence</code></td><td>Slow ambient breathing during quiet passages instead of going flat.</td></tr>
+      </tbody>
+    </table>
+
+    <h2>Latency vs. visibility</h2>
+    <p>"Down to the millisecond" isn't physically achievable on this hardware — the bulb itself has a ~50–100ms round-trip floor. What's actually tunable are two separate numbers:</p>
+    <ul>
+      <li><strong>Decision latency</strong> — how fast the pipeline notices a change and computes a new target. Sub-15ms internally (512-sample capture blocks, zero-padded to a 4096-point FFT for band accuracy).</li>
+      <li><strong>Display dwell (<code>min_dwell_ms</code>)</strong> — how long a color has to stay on the bulb before the next one can replace it. Default 90ms, floor 40ms. Turn it down for a snappier reaction, up for something calmer and easier to actually watch change.</li>
+    </ul>
+    <p>The sender always transmits the <em>freshest</em> computed value when its dwell window opens — never a backlog — so raising the analysis rate never causes lag.</p>
+
+    <h2>Multi-bulb orchestration</h2>
+    <p>One shared audio analysis drives every bulb in a group via one of three role modes:</p>
+    <table>
+      <thead><tr><th>Role</th><th>Effect</th></tr></thead>
+      <tbody>
+        <tr><td><code>unison</code></td><td>Every bulb shows the identical color.</td></tr>
+        <tr><td><code>phase_offset</code></td><td>Same effect, hue shifted per bulb — a chase.</td></tr>
+        <tr><td><code>band_split</code></td><td>Bulb <em>i</em> primarily reacts to band <em>i</em> — a literal "bass bulb" / "treble bulb" setup.</td></tr>
+      </tbody>
+    </table>
+    <p>Each bulb keeps its own independent send thread, so one slow or offline bulb in a group never stalls the others.</p>
+
+    <div class="callout">
+      <p><strong>Known limitation:</strong> the hue anchors and beat thresholds are verified correct <em>in direction</em> (synthetic tones land near the right anchor, louder audio raises brightness) but not yet tuned by taste against real music with the bulb online — see the <a href="handoff.html">Build History</a> for why.</p>
+    </div>
+
+    <p>Full design rationale, the two real bugs found while building this (a blocking-I/O freeze and a circular hue-smoothing bug), and setup details: <a href="https://github.com/THEROCKSSS/smart-bulb-dashboard/blob/master/docs/music-reactive-lighting.md">the complete design doc</a>, or <a href="https://github.com/THEROCKSSS/smart-bulb-dashboard/tree/master/.claude/skills/bulb-dashboard-audio">the step-by-step skill</a>.</p>
+
+    <footer class="site-footer">
+      <div>
+        <h4>Get Started</h4>
+        <ul>
+          <li><a href="setup.html">Setup guide</a></li>
+          <li><a href="https://github.com/THEROCKSSS/smart-bulb-dashboard/blob/master/AGENTS.md">For AI agents</a></li>
+          <li><a href="https://github.com/THEROCKSSS/smart-bulb-dashboard">Clone the repo</a></li>
+        </ul>
+      </div>
+      <div>
+        <h4>Reference</h4>
+        <ul>
+          <li><a href="api.html">API reference</a></li>
+          <li><a href="audio.html">Audio-reactive lighting</a></li>
+          <li><a href="security.html">Remote access &amp; security</a></li>
+        </ul>
+      </div>
+      <div>
+        <h4>Project</h4>
+        <ul>
+          <li><a href="roadmap.html">Roadmap</a></li>
+          <li><a href="changelog.html">Changelog</a></li>
+          <li><a href="https://github.com/THEROCKSSS/smart-bulb-dashboard/tree/master/iterations">Build iterations</a></li>
+        </ul>
+      </div>
+      <p class="footer-meta">Smart Bulb Dashboard · Polyform Noncommercial License 1.0.0 · <a href="handoff.html">Build history</a></p>
+    </footer>
+  </main>
+</div>
+<script src="assets/main.js"></script>
+</body>
+</html>

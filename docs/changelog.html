@@ -1,0 +1,111 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Changelog — Smart Bulb Dashboard</title>
+<meta name="description" content="Every notable change, by version, from the real git history.">
+<link rel="stylesheet" href="assets/site.css">
+</head>
+<body>
+<button class="rail__toggle" aria-expanded="false" aria-controls="rail">☰ Menu</button>
+<div class="shell">
+  <nav class="rail" id="rail">
+    <div>
+      <a href="index.html" class="rail__brand">Smart<span>Bulb</span></a>
+      <p class="rail__tagline">Local, cloud-independent Tuya bulb dashboard</p>
+    </div>
+    <div>
+      <p class="rail__group-label">Get started</p>
+      <ul>
+        <li><a href="index.html" class="nav-link">Home</a></li>
+        <li><a href="setup.html" class="nav-link">Setup Guide</a></li>
+        <li><a href="features.html" class="nav-link">Features</a></li>
+      </ul>
+      <p class="rail__group-label">Reference</p>
+      <ul>
+        <li><a href="api.html" class="nav-link">API Reference</a></li>
+        <li><a href="audio.html" class="nav-link">Audio-Reactive Lighting</a></li>
+        <li><a href="security.html" class="nav-link">Remote Access &amp; Security</a></li>
+      </ul>
+      <p class="rail__group-label">Project</p>
+      <ul>
+        <li><a href="roadmap.html" class="nav-link">Roadmap</a></li>
+        <li><a href="changelog.html" class="nav-link" aria-current="page">Changelog</a></li>
+        <li><a href="handoff.html" class="nav-link">Build History</a></li>
+      </ul>
+    </div>
+    <div class="rail__external">
+      <a href="https://github.com/THEROCKSSS/smart-bulb-dashboard">GitHub repo →</a>
+    </div>
+  </nav>
+
+  <main class="main">
+    <p class="eyebrow">Changelog</p>
+    <h1>What changed, by version.</h1>
+    <p class="lede">Written from the real git history and the build logs in <code>iterations/</code> — nothing here is backfilled from memory. Format follows <a href="https://keepachangelog.com/en/1.1.0/">Keep a Changelog</a>.</p>
+
+    <h2><span class="tag accent">v0.2.0</span> — 2026-07-28</h2>
+    <p>Two build rounds shipped together: audio-reactive lighting (and its v2 rework) and secure remote access. Feature count: 97 → <strong>137</strong>.</p>
+    <h3>Added</h3>
+    <ul>
+      <li>Audio-reactive lighting: 12 modes, capturing from VoiceMeeter/virtual-cable sources or real microphones.</li>
+      <li>Multi-bulb audio orchestration — unison, phase-offset, and band-split roles.</li>
+      <li>Sub-15ms internal decision latency, decoupled from a configurable per-bulb dwell time.</li>
+      <li>Network auto-discovery — weekly background scanning plus on-demand scan.</li>
+      <li>PIN-gated remote access — PBKDF2-hashed PIN, signed sessions, brute-force lockout.</li>
+      <li><code>AGENTS.md</code>, a ~1,000-item phased roadmap, three new project skills, this documentation site.</li>
+    </ul>
+    <h3>Fixed</h3>
+    <ul>
+      <li>An IP-change log entry reported the wrong "old IP" (mutated the value before reading it).</li>
+      <li>The audio brightness floor never actually reached its floor during silence.</li>
+      <li>Bulb network calls inside the audio callback froze the entire analysis pipeline when the bulb was slow/offline — moved to a dedicated sender thread.</li>
+      <li>Hue smoothing used a linear blend that breaks at the 0°/360° wrap boundary.</li>
+      <li>The PIN gate blocked the root page itself once enabled — a real lock-yourself-out bug.</li>
+    </ul>
+
+    <h2><span class="tag">v0.1.1</span> — 2026-07-27</h2>
+    <h3>Added</h3>
+    <ul><li>Polyform Noncommercial License 1.0.0; GitHub mirror links in <code>README.md</code>.</li></ul>
+    <h3>Fixed</h3>
+    <ul><li>Scrubbed a briefly-leaked device ID and LAN IP before the GitHub mirror went public.</li></ul>
+
+    <h2><span class="tag">v0.1.0</span> — 2026-07-27</h2>
+    <p>Initial prototype. 97 working features, built after reverse-engineering local control of a Bytech A19 Wi-Fi RGB+CCT bulb. See <a href="handoff.html">Build History</a> for how the local credentials were obtained.</p>
+
+    <hr>
+    <p style="font-size: var(--text-sm); color: var(--color-muted);">Full file with the release-automation process note: <a href="https://github.com/THEROCKSSS/smart-bulb-dashboard/blob/master/CHANGELOG.md">the complete <code>CHANGELOG.md</code></a>.</p>
+
+    <footer class="site-footer">
+      <div>
+        <h4>Get Started</h4>
+        <ul>
+          <li><a href="setup.html">Setup guide</a></li>
+          <li><a href="https://github.com/THEROCKSSS/smart-bulb-dashboard/blob/master/AGENTS.md">For AI agents</a></li>
+          <li><a href="https://github.com/THEROCKSSS/smart-bulb-dashboard">Clone the repo</a></li>
+        </ul>
+      </div>
+      <div>
+        <h4>Reference</h4>
+        <ul>
+          <li><a href="api.html">API reference</a></li>
+          <li><a href="audio.html">Audio-reactive lighting</a></li>
+          <li><a href="security.html">Remote access &amp; security</a></li>
+        </ul>
+      </div>
+      <div>
+        <h4>Project</h4>
+        <ul>
+          <li><a href="roadmap.html">Roadmap</a></li>
+          <li><a href="changelog.html">Changelog</a></li>
+          <li><a href="https://github.com/THEROCKSSS/smart-bulb-dashboard/tree/master/iterations">Build iterations</a></li>
+        </ul>
+      </div>
+      <p class="footer-meta">Smart Bulb Dashboard · Polyform Noncommercial License 1.0.0 · <a href="handoff.html">Build history</a></p>
+    </footer>
+  </main>
+</div>
+<script src="assets/main.js"></script>
+</body>
+</html>

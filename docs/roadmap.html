@@ -1,0 +1,98 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Roadmap — Smart Bulb Dashboard</title>
+<meta name="description" content="A ~1,000-item, four-week phased backlog with a dependency graph.">
+<link rel="stylesheet" href="assets/site.css">
+</head>
+<body>
+<button class="rail__toggle" aria-expanded="false" aria-controls="rail">☰ Menu</button>
+<div class="shell">
+  <nav class="rail" id="rail">
+    <div>
+      <a href="index.html" class="rail__brand">Smart<span>Bulb</span></a>
+      <p class="rail__tagline">Local, cloud-independent Tuya bulb dashboard</p>
+    </div>
+    <div>
+      <p class="rail__group-label">Get started</p>
+      <ul>
+        <li><a href="index.html" class="nav-link">Home</a></li>
+        <li><a href="setup.html" class="nav-link">Setup Guide</a></li>
+        <li><a href="features.html" class="nav-link">Features</a></li>
+      </ul>
+      <p class="rail__group-label">Reference</p>
+      <ul>
+        <li><a href="api.html" class="nav-link">API Reference</a></li>
+        <li><a href="audio.html" class="nav-link">Audio-Reactive Lighting</a></li>
+        <li><a href="security.html" class="nav-link">Remote Access &amp; Security</a></li>
+      </ul>
+      <p class="rail__group-label">Project</p>
+      <ul>
+        <li><a href="roadmap.html" class="nav-link" aria-current="page">Roadmap</a></li>
+        <li><a href="changelog.html" class="nav-link">Changelog</a></li>
+        <li><a href="handoff.html" class="nav-link">Build History</a></li>
+      </ul>
+    </div>
+    <div class="rail__external">
+      <a href="https://github.com/THEROCKSSS/smart-bulb-dashboard">GitHub repo →</a>
+    </div>
+  </nav>
+
+  <main class="main">
+    <p class="eyebrow">Roadmap</p>
+    <h1>A month of planned work, in four phases.</h1>
+    <p class="lede">~1,000 issue-ready items, organized into four weekly phases. This is a backlog to draw from and convert into real issues at whatever pace makes sense — not a queue of 1,000 open issues, and not a promise that all 1,000 ship this month.</p>
+
+    <table>
+      <thead><tr><th>Phase</th><th class="num">Items</th><th>Focus</th></tr></thead>
+      <tbody>
+        <tr><td>Week 1</td><td class="num">250</td><td>Deepen the audio engine (more modes, tempo/genre presets, auto-gain) and multi-bulb orchestration</td></tr>
+        <tr><td>Week 2</td><td class="num">250</td><td>TLS/reverse proxy, PIN-gate hardening, the adversarial security-test phase, multi-user auth exploration</td></tr>
+        <tr><td>Week 3</td><td class="num">250</td><td>Home Assistant/HomeKit/voice/Discord integrations, scenes &amp; scheduling depth, mobile PWA</td></tr>
+        <tr><td>Week 4</td><td class="num">250</td><td>Analytics, Bluetooth-readiness prep, GitHub Pages, agent onboarding, CI, release process, a real retro</td></tr>
+      </tbody>
+    </table>
+
+    <h2>How phases depend on each other</h2>
+    <p>The security-test phase (Week 2) can't meaningfully start until TLS and PIN-gate hardening are in place — attacking a half-built defense wastes the exercise. Integrations (Week 3) lean on Week 2's auth story being settled. Real multi-bulb testing (Week 4) is gated on Week 1's orchestration work existing to test. Everything converges on Week 4's release + retro, deliberately last — the checkpoint that confirms the month's work is real, not just written down.</p>
+
+    <div class="callout">
+      <p>Two phases explicitly require infrastructure that doesn't exist yet at time of writing — the adversarial security test needs a real deployed, exposed instance; real multi-bulb testing needs a second physical bulb. Both are sequenced late in the month for exactly that reason.</p>
+    </div>
+
+    <p>Full itemized list for all four weeks, plus the dependency graph as a diagram: <a href="https://github.com/THEROCKSSS/smart-bulb-dashboard/tree/master/roadmap">the complete <code>roadmap/</code> directory</a>.</p>
+
+    <footer class="site-footer">
+      <div>
+        <h4>Get Started</h4>
+        <ul>
+          <li><a href="setup.html">Setup guide</a></li>
+          <li><a href="https://github.com/THEROCKSSS/smart-bulb-dashboard/blob/master/AGENTS.md">For AI agents</a></li>
+          <li><a href="https://github.com/THEROCKSSS/smart-bulb-dashboard">Clone the repo</a></li>
+        </ul>
+      </div>
+      <div>
+        <h4>Reference</h4>
+        <ul>
+          <li><a href="api.html">API reference</a></li>
+          <li><a href="audio.html">Audio-reactive lighting</a></li>
+          <li><a href="security.html">Remote access &amp; security</a></li>
+        </ul>
+      </div>
+      <div>
+        <h4>Project</h4>
+        <ul>
+          <li><a href="roadmap.html">Roadmap</a></li>
+          <li><a href="changelog.html">Changelog</a></li>
+          <li><a href="https://github.com/THEROCKSSS/smart-bulb-dashboard/tree/master/iterations">Build iterations</a></li>
+        </ul>
+      </div>
+      <p class="footer-meta">Smart Bulb Dashboard · Polyform Noncommercial License 1.0.0 · <a href="handoff.html">Build history</a></p>
+    </footer>
+  </main>
+</div>
+<script src="assets/main.js"></script>
+</body>
+</html>

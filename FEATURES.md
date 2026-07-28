@@ -19,7 +19,7 @@ are listed separately in `ROADMAP.md`.
 7. Switch to white mode
 8. Color temperature control (warm ↔ cool, 0–100%)
 
-## Quick actions (2)
+## Quick actions (3)
 9. Random color jump
 10. Identify (blinks the physical bulb 3x so you can find it)
 11. Flash alert (rapid flash in a chosen color, e.g. for notifications)
@@ -51,7 +51,7 @@ Gaming
 63. Adjustable effect speed
 64. Stop current effect
 
-## Timers (7)
+## Timers (9)
 65–68. Sleep timer quick presets (5 / 15 / 30 / 60 minutes)
 69. Custom sleep timer duration
 70. Sleep timer gradual fade-out in the final 20% of its duration (doesn't just snap off)

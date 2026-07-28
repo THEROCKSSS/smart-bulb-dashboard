@@ -1,0 +1,109 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Build History — Smart Bulb Dashboard</title>
+<meta name="description" content="How this was built — what failed, what got fixed, what's known-fragile.">
+<link rel="stylesheet" href="assets/site.css">
+</head>
+<body>
+<button class="rail__toggle" aria-expanded="false" aria-controls="rail">☰ Menu</button>
+<div class="shell">
+  <nav class="rail" id="rail">
+    <div>
+      <a href="index.html" class="rail__brand">Smart<span>Bulb</span></a>
+      <p class="rail__tagline">Local, cloud-independent Tuya bulb dashboard</p>
+    </div>
+    <div>
+      <p class="rail__group-label">Get started</p>
+      <ul>
+        <li><a href="index.html" class="nav-link">Home</a></li>
+        <li><a href="setup.html" class="nav-link">Setup Guide</a></li>
+        <li><a href="features.html" class="nav-link">Features</a></li>
+      </ul>
+      <p class="rail__group-label">Reference</p>
+      <ul>
+        <li><a href="api.html" class="nav-link">API Reference</a></li>
+        <li><a href="audio.html" class="nav-link">Audio-Reactive Lighting</a></li>
+        <li><a href="security.html" class="nav-link">Remote Access &amp; Security</a></li>
+      </ul>
+      <p class="rail__group-label">Project</p>
+      <ul>
+        <li><a href="roadmap.html" class="nav-link">Roadmap</a></li>
+        <li><a href="changelog.html" class="nav-link">Changelog</a></li>
+        <li><a href="handoff.html" class="nav-link" aria-current="page">Build History</a></li>
+      </ul>
+    </div>
+    <div class="rail__external">
+      <a href="https://github.com/THEROCKSSS/smart-bulb-dashboard">GitHub repo →</a>
+    </div>
+  </nav>
+
+  <main class="main">
+    <p class="eyebrow">Build History</p>
+    <h1>How this actually got built.</h1>
+    <p class="lede">Three rounds so far. This is the condensed version — the expanded, blow-by-blow write-up of each real bug (what broke, how it was found, how it was fixed, and how the fix was verified) lives in the repo's <code>iterations/</code> directory.</p>
+
+    <h2>Round 1 — local control from zero</h2>
+    <p>Started with no credentials at all for a Bytech A19 Wi-Fi RGB+CCT bulb. A mitmproxy interception attempt failed (the Tuya app's real API traffic runs over HTTP/3/QUIC, which slips past a standard proxy). The Tuya IoT Platform's QR-link step scanned but never confirmed — a known data-center-mismatch bug. What actually worked: <code>tuya-device-sharing-sdk</code>, the same cloud-assisted QR-login flow Home Assistant's own Tuya integration uses, needing only the app's User Code — no developer platform project at all. Verified with real color changes: red, then blue, then yellow, watched on the physical bulb.</p>
+
+    <h2>Round 2 &amp; 3 — audio-reactive lighting, discovery, orchestration, security</h2>
+    <p>Built the 12-mode audio engine, network auto-discovery, multi-bulb orchestration, and the PIN gate. Five real bugs found via actual testing, not code review alone:</p>
+    <ul>
+      <li>An IP-change log entry reported the wrong "old IP."</li>
+      <li>The brightness floor during silence never actually reached its floor.</li>
+      <li>Bulb network calls inside the audio callback froze the whole analysis pipeline when the bulb was slow or offline.</li>
+      <li>Hue smoothing broke at the 0°/360° wrap boundary.</li>
+      <li>The PIN gate blocked its own login page once enabled.</li>
+    </ul>
+    <p>All five are documented with the actual failure evidence and the fix verification in <code>iterations/001</code> through <code>004</code>.</p>
+
+    <h2>Known-fragile / watch for</h2>
+    <ul>
+      <li>The physical bulb genuinely drops off Wi-Fi periodically — observed multiple times across every build session, unprompted. This is bulb/router behavior, not a dashboard bug.</li>
+      <li>Audio-reactive mode tuning (hue anchors, beat thresholds) is verified correct in direction via synthetic tones, not yet tuned by ear against real music with the bulb online.</li>
+      <li><code>docker-compose.yml</code>'s <code>network_mode: host</code> only works on Linux Docker hosts.</li>
+    </ul>
+
+    <h2>What's not built (intentionally)</h2>
+    <ul>
+      <li>Bluetooth bulb support — no BLE hardware to test against yet.</li>
+      <li>A second physical bulb — architecture already supports it; just needs the hardware.</li>
+      <li>A dedicated adversarial security pentest against a real deployed instance — scoped as its own roadmap phase.</li>
+    </ul>
+
+    <p>Full narrative with every command run and its actual output: <a href="https://github.com/THEROCKSSS/smart-bulb-dashboard/blob/master/HANDOFF.md">the complete <code>HANDOFF.md</code></a>.</p>
+
+    <footer class="site-footer">
+      <div>
+        <h4>Get Started</h4>
+        <ul>
+          <li><a href="setup.html">Setup guide</a></li>
+          <li><a href="https://github.com/THEROCKSSS/smart-bulb-dashboard/blob/master/AGENTS.md">For AI agents</a></li>
+          <li><a href="https://github.com/THEROCKSSS/smart-bulb-dashboard">Clone the repo</a></li>
+        </ul>
+      </div>
+      <div>
+        <h4>Reference</h4>
+        <ul>
+          <li><a href="api.html">API reference</a></li>
+          <li><a href="audio.html">Audio-reactive lighting</a></li>
+          <li><a href="security.html">Remote access &amp; security</a></li>
+        </ul>
+      </div>
+      <div>
+        <h4>Project</h4>
+        <ul>
+          <li><a href="roadmap.html">Roadmap</a></li>
+          <li><a href="changelog.html">Changelog</a></li>
+          <li><a href="https://github.com/THEROCKSSS/smart-bulb-dashboard/tree/master/iterations">Build iterations</a></li>
+        </ul>
+      </div>
+      <p class="footer-meta">Smart Bulb Dashboard · Polyform Noncommercial License 1.0.0 · <a href="handoff.html">Build history</a></p>
+    </footer>
+  </main>
+</div>
+<script src="assets/main.js"></script>
+</body>
+</html>

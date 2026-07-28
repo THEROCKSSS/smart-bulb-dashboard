@@ -1,0 +1,126 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Setup Guide — Smart Bulb Dashboard</title>
+<meta name="description" content="Get a Tuya bulb's local key, install the backend, and run the dashboard.">
+<link rel="stylesheet" href="assets/site.css">
+</head>
+<body>
+<button class="rail__toggle" aria-expanded="false" aria-controls="rail">☰ Menu</button>
+<div class="shell">
+  <nav class="rail" id="rail">
+    <div>
+      <a href="index.html" class="rail__brand">Smart<span>Bulb</span></a>
+      <p class="rail__tagline">Local, cloud-independent Tuya bulb dashboard</p>
+    </div>
+    <div>
+      <p class="rail__group-label">Get started</p>
+      <ul>
+        <li><a href="index.html" class="nav-link">Home</a></li>
+        <li><a href="setup.html" class="nav-link" aria-current="page">Setup Guide</a></li>
+        <li><a href="features.html" class="nav-link">Features</a></li>
+      </ul>
+      <p class="rail__group-label">Reference</p>
+      <ul>
+        <li><a href="api.html" class="nav-link">API Reference</a></li>
+        <li><a href="audio.html" class="nav-link">Audio-Reactive Lighting</a></li>
+        <li><a href="security.html" class="nav-link">Remote Access &amp; Security</a></li>
+      </ul>
+      <p class="rail__group-label">Project</p>
+      <ul>
+        <li><a href="roadmap.html" class="nav-link">Roadmap</a></li>
+        <li><a href="changelog.html" class="nav-link">Changelog</a></li>
+        <li><a href="handoff.html" class="nav-link">Build History</a></li>
+      </ul>
+    </div>
+    <div class="rail__external">
+      <a href="https://github.com/THEROCKSSS/smart-bulb-dashboard">GitHub repo →</a>
+    </div>
+  </nav>
+
+  <main class="main">
+    <p class="eyebrow">Setup</p>
+    <h1>Get it running, end to end.</h1>
+    <p class="lede">Most cheap Wi-Fi RGB bulbs — Bytech, Merkury, Teckin, Feit, many Govee — run Tuya firmware even under a different brand's app. This walks through confirming that, getting the one hard-to-get credential, and running the dashboard.</p>
+
+    <h2>1. Find the bulb and its protocol version</h2>
+    <p>Install <code>tinytuya</code> and scan the LAN:</p>
+    <pre><button class="copy-btn">Copy</button><code>pip install tinytuya
+python -m tinytuya scan</code></pre>
+    <p>A Tuya device shows up with a <code>Device ID</code> and a protocol <code>Version</code> (3.1–3.5). Note both. Nothing shown usually means the bulb is on 5GHz — Tuya bulbs are almost always 2.4GHz-only, so the scanning machine needs to share that band.</p>
+
+    <h2>2. Get the local key</h2>
+    <p>This is the one genuinely hard step — a per-device secret Tuya's servers generate at pairing time, required for any local command.</p>
+
+    <h3>Recommended: cloud-assisted login</h3>
+    <p>The same official QR-login flow Home Assistant's built-in Tuya integration uses. No Tuya IoT Platform project needed — just the app's own User Code (Me → Settings → Account and Security) and its in-app scanner.</p>
+    <pre><button class="copy-btn">Copy</button><code>pip install tuya-device-sharing-sdk qrcode[pil]</code></pre>
+    <p>Full working script and the two fallback options (Tuya IoT Platform, and a rooted-emulator approach) are in <a href="https://github.com/THEROCKSSS/smart-bulb-dashboard/blob/master/SETUP.md">the repo's <code>SETUP.md</code></a> — this page keeps the short version; that one has every line of code.</p>
+
+    <div class="callout">
+      <p><strong>Known bug to route around:</strong> the Tuya IoT Platform's QR-link step sometimes scans successfully but never shows a confirmation popup. That's almost always a data-center mismatch between the Cloud Project's region and the app account's region — the cloud-assisted path above sidesteps this entirely.</p>
+    </div>
+
+    <h2>3. Install the backend</h2>
+    <pre><button class="copy-btn">Copy</button><code>cd backend
+python -m venv venv
+./venv/Scripts/activate      # or: source venv/bin/activate
+pip install -r requirements.txt</code></pre>
+
+    <h2>4. Configure your device</h2>
+    <pre><button class="copy-btn">Copy</button><code>cp config.example.json config.json</code></pre>
+    <p>Edit <code>config.json</code> with the <code>device_id</code>, <code>local_key</code>, and <code>ip</code> from steps 1–2. <code>version</code> must match what <code>tinytuya scan</code> reported — try <code>3.3</code> first if unsure. <strong>Never commit your real <code>config.json</code></strong> — it's git-ignored, and holds your bulb's plaintext local key.</p>
+
+    <h2>5. Run it</h2>
+    <pre><button class="copy-btn">Copy</button><code>python -m uvicorn main:app --host 0.0.0.0 --port 8500</code></pre>
+    <p>Open <code>http://localhost:8500</code>. Go to <strong>Diagnostics → Run Connection Test</strong> first — it should report <code>tcp_6668_reachable: true</code> and <code>status_ok: true</code>.</p>
+
+    <h2>Optional next steps</h2>
+    <ul>
+      <li><a href="audio.html">Audio-reactive lighting</a> — no extra install, just pick an input device and a mode.</li>
+      <li><a href="security.html">Remote access</a> — Tailscale or DuckDNS+PIN gate if you want to reach the dashboard from outside your LAN.</li>
+      <li>Docker — <code>docker compose up -d --build</code>. See the full <code>SETUP.md</code> for the <code>network_mode: host</code> caveat on Mac/Windows.</li>
+    </ul>
+
+    <h2>Troubleshooting</h2>
+    <ul>
+      <li><strong>Device Unreachable</strong> — the bulb lost power or dropped off Wi-Fi. Cheap Wi-Fi bulbs do this occasionally; it's normal, not a dashboard bug.</li>
+      <li><strong>Commands succeed but nothing happens</strong> — wrong <code>version</code> in config; try 3.1 through 3.5.</li>
+      <li><strong>Brightness slider flips the bulb to white</strong> — this was a real bug, already found and fixed (see the <a href="changelog.html">changelog</a>). Pull latest if you're on old code.</li>
+    </ul>
+    <p>Full troubleshooting table, all three local-key options in full code, and the Docker deployment notes: <a href="https://github.com/THEROCKSSS/smart-bulb-dashboard/blob/master/SETUP.md">the complete <code>SETUP.md</code></a>.</p>
+
+    <footer class="site-footer">
+      <div>
+        <h4>Get Started</h4>
+        <ul>
+          <li><a href="setup.html">Setup guide</a></li>
+          <li><a href="https://github.com/THEROCKSSS/smart-bulb-dashboard/blob/master/AGENTS.md">For AI agents</a></li>
+          <li><a href="https://github.com/THEROCKSSS/smart-bulb-dashboard">Clone the repo</a></li>
+        </ul>
+      </div>
+      <div>
+        <h4>Reference</h4>
+        <ul>
+          <li><a href="api.html">API reference</a></li>
+          <li><a href="audio.html">Audio-reactive lighting</a></li>
+          <li><a href="security.html">Remote access &amp; security</a></li>
+        </ul>
+      </div>
+      <div>
+        <h4>Project</h4>
+        <ul>
+          <li><a href="roadmap.html">Roadmap</a></li>
+          <li><a href="changelog.html">Changelog</a></li>
+          <li><a href="https://github.com/THEROCKSSS/smart-bulb-dashboard/tree/master/iterations">Build iterations</a></li>
+        </ul>
+      </div>
+      <p class="footer-meta">Smart Bulb Dashboard · Polyform Noncommercial License 1.0.0 · <a href="handoff.html">Build history</a></p>
+    </footer>
+  </main>
+</div>
+<script src="assets/main.js"></script>
+</body>
+</html>

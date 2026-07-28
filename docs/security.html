@@ -1,0 +1,111 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Remote Access &amp; Security — Smart Bulb Dashboard</title>
+<meta name="description" content="Tailscale vs. DuckDNS+PIN gate, threat model, and the planned security-test phase.">
+<link rel="stylesheet" href="assets/site.css">
+</head>
+<body>
+<button class="rail__toggle" aria-expanded="false" aria-controls="rail">☰ Menu</button>
+<div class="shell">
+  <nav class="rail" id="rail">
+    <div>
+      <a href="index.html" class="rail__brand">Smart<span>Bulb</span></a>
+      <p class="rail__tagline">Local, cloud-independent Tuya bulb dashboard</p>
+    </div>
+    <div>
+      <p class="rail__group-label">Get started</p>
+      <ul>
+        <li><a href="index.html" class="nav-link">Home</a></li>
+        <li><a href="setup.html" class="nav-link">Setup Guide</a></li>
+        <li><a href="features.html" class="nav-link">Features</a></li>
+      </ul>
+      <p class="rail__group-label">Reference</p>
+      <ul>
+        <li><a href="api.html" class="nav-link">API Reference</a></li>
+        <li><a href="audio.html" class="nav-link">Audio-Reactive Lighting</a></li>
+        <li><a href="security.html" class="nav-link" aria-current="page">Remote Access &amp; Security</a></li>
+      </ul>
+      <p class="rail__group-label">Project</p>
+      <ul>
+        <li><a href="roadmap.html" class="nav-link">Roadmap</a></li>
+        <li><a href="changelog.html" class="nav-link">Changelog</a></li>
+        <li><a href="handoff.html" class="nav-link">Build History</a></li>
+      </ul>
+    </div>
+    <div class="rail__external">
+      <a href="https://github.com/THEROCKSSS/smart-bulb-dashboard">GitHub repo →</a>
+    </div>
+  </nav>
+
+  <main class="main">
+    <p class="eyebrow">Remote Access &amp; Security</p>
+    <h1>Reaching it from outside your LAN, safely.</h1>
+    <p class="lede">The dashboard defaults to LAN-only, no auth — correct for a trusted home network with a REST API that otherwise has zero authentication. This covers what to do if you want more than that.</p>
+
+    <h2>Recommended: Tailscale</h2>
+    <p><a href="https://tailscale.com">Tailscale</a> creates a private mesh VPN between your devices. Your phone can reach the dashboard as if it were on your home LAN, from anywhere, <strong>without opening any port on your router or exposing anything to the public internet</strong>. Install it on the dashboard machine and your phone, sign into the same account on both, and you're done — Tailscale's own device auth is the access control.</p>
+
+    <h2>If you want actual public access: DuckDNS + port forward</h2>
+    <p>A materially different risk profile — your router forwards a port straight to this dashboard. <strong>Anyone on the internet who finds that hostname:port can reach the API.</strong></p>
+
+    <div class="callout danger">
+      <p><strong>Do not do this without the PIN gate enabled.</strong> Enable it first (Settings → Remote Access, or the API below), use a real PIN — not a placeholder like the ones used during this project's own testing — and pick a non-default external port.</p>
+    </div>
+
+    <pre><button class="copy-btn">Copy</button><code>curl -X POST http://localhost:8500/api/system/remote-auth/enable \
+  -H "Content-Type: application/json" -d '{"pin": "your-real-pin-here"}'</code></pre>
+
+    <h2>What the PIN gate actually protects against</h2>
+    <ul>
+      <li><span class="tag success">tested</span> Blocks casual/automated discovery from controlling bulbs.</li>
+      <li><span class="tag success">tested</span> Locks out an IP for 5 minutes after 5 wrong attempts — including a subsequently-correct PIN.</li>
+      <li><span class="tag success">tested</span> Session expiry is enforced server-side, not just relying on the client's cookie expiry.</li>
+    </ul>
+    <h3>What it doesn't</h3>
+    <ul>
+      <li>Encrypt traffic — this is plain HTTP once forwarded publicly. Put a reverse proxy (Caddy gets free automatic TLS for a DuckDNS domain) in front if this matters to you.</li>
+      <li>Defend against an attacker who can read the PIN off the wire directly.</li>
+      <li>Rate-limit distributed attempts across many source IPs — lockout is per-IP.</li>
+      <li>Replace a real multi-user login system — one shared PIN, no per-user audit trail.</li>
+    </ul>
+
+    <h2>Planned: a dedicated security-test phase</h2>
+    <p>Before treating a DuckDNS+PIN setup as done, the <a href="roadmap.html">roadmap</a> includes a phase where a separate agent actively attempts to break the exposed setup from the outside — brute-force timing analysis, session-token forgery, replay attacks, port-scan discovery timing, lockout-bypass attempts. Scoped as its own phase since it needs a real deployed instance to attack meaningfully, not a same-machine simulation.</p>
+
+    <p>Full threat-model writeup and setup walkthrough: <a href="https://github.com/THEROCKSSS/smart-bulb-dashboard/blob/master/docs/remote-access-security.md">the complete doc</a>. What was actually tested when this was built: <a href="https://github.com/THEROCKSSS/smart-bulb-dashboard/tree/master/iterations/004-pin-gate-remote-auth">iteration 004</a>.</p>
+
+    <footer class="site-footer">
+      <div>
+        <h4>Get Started</h4>
+        <ul>
+          <li><a href="setup.html">Setup guide</a></li>
+          <li><a href="https://github.com/THEROCKSSS/smart-bulb-dashboard/blob/master/AGENTS.md">For AI agents</a></li>
+          <li><a href="https://github.com/THEROCKSSS/smart-bulb-dashboard">Clone the repo</a></li>
+        </ul>
+      </div>
+      <div>
+        <h4>Reference</h4>
+        <ul>
+          <li><a href="api.html">API reference</a></li>
+          <li><a href="audio.html">Audio-reactive lighting</a></li>
+          <li><a href="security.html">Remote access &amp; security</a></li>
+        </ul>
+      </div>
+      <div>
+        <h4>Project</h4>
+        <ul>
+          <li><a href="roadmap.html">Roadmap</a></li>
+          <li><a href="changelog.html">Changelog</a></li>
+          <li><a href="https://github.com/THEROCKSSS/smart-bulb-dashboard/tree/master/iterations">Build iterations</a></li>
+        </ul>
+      </div>
+      <p class="footer-meta">Smart Bulb Dashboard · Polyform Noncommercial License 1.0.0 · <a href="handoff.html">Build history</a></p>
+    </footer>
+  </main>
+</div>
+<script src="assets/main.js"></script>
+</body>
+</html>

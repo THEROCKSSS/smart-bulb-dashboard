@@ -15,7 +15,7 @@ import audio_reactive
 import remote_auth
 from scenes_presets import PRESET_COLORS, SCENES, EFFECTS
 
-APP_VERSION = "0.1.0-prototype"
+APP_VERSION = "0.2.0"
 START_TIME = time.time()
 
 app = FastAPI(title="Smart Bulb Dashboard", version=APP_VERSION)

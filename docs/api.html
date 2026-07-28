@@ -1,0 +1,142 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>API Reference — Smart Bulb Dashboard</title>
+<meta name="description" content="REST API reference with curl examples: devices, color, scenes, effects, audio-reactive, discovery, auth.">
+<link rel="stylesheet" href="assets/site.css">
+</head>
+<body>
+<button class="rail__toggle" aria-expanded="false" aria-controls="rail">☰ Menu</button>
+<div class="shell">
+  <nav class="rail" id="rail">
+    <div>
+      <a href="index.html" class="rail__brand">Smart<span>Bulb</span></a>
+      <p class="rail__tagline">Local, cloud-independent Tuya bulb dashboard</p>
+    </div>
+    <div>
+      <p class="rail__group-label">Get started</p>
+      <ul>
+        <li><a href="index.html" class="nav-link">Home</a></li>
+        <li><a href="setup.html" class="nav-link">Setup Guide</a></li>
+        <li><a href="features.html" class="nav-link">Features</a></li>
+      </ul>
+      <p class="rail__group-label">Reference</p>
+      <ul>
+        <li><a href="api.html" class="nav-link" aria-current="page">API Reference</a></li>
+        <li><a href="audio.html" class="nav-link">Audio-Reactive Lighting</a></li>
+        <li><a href="security.html" class="nav-link">Remote Access &amp; Security</a></li>
+      </ul>
+      <p class="rail__group-label">Project</p>
+      <ul>
+        <li><a href="roadmap.html" class="nav-link">Roadmap</a></li>
+        <li><a href="changelog.html" class="nav-link">Changelog</a></li>
+        <li><a href="handoff.html" class="nav-link">Build History</a></li>
+      </ul>
+    </div>
+    <div class="rail__external">
+      <a href="https://github.com/THEROCKSSS/smart-bulb-dashboard">GitHub repo →</a>
+    </div>
+  </nav>
+
+  <main class="main">
+    <p class="eyebrow">API Reference</p>
+    <h1>Every route, with curl.</h1>
+    <p class="lede">Base URL <code>http://localhost:8500</code>. All bodies are JSON. Replace <code>bulb-1</code> with your device's <code>id</code> from <code>config.json</code>. Interactive Swagger docs are auto-generated at <code>/docs</code> on your running instance.</p>
+
+    <h2>Color — the main thing you're here for</h2>
+    <pre><button class="copy-btn">Copy</button><code># RGB
+curl -X POST http://localhost:8500/api/devices/bulb-1/color \
+  -H "Content-Type: application/json" \
+  -d '{"r": 255, "g": 0, "b": 0}'
+
+# HSV (h: 0-359, s/v: 0-100)
+curl -X POST http://localhost:8500/api/devices/bulb-1/color/hsv \
+  -H "Content-Type: application/json" \
+  -d '{"h": 120, "s": 100, "v": 100}'</code></pre>
+
+    <h2>Power &amp; brightness</h2>
+    <pre><button class="copy-btn">Copy</button><code>curl -X POST http://localhost:8500/api/devices/bulb-1/power -d '{"on": true}' -H "Content-Type: application/json"
+curl -X POST http://localhost:8500/api/devices/bulb-1/brightness -d '{"value": 60}' -H "Content-Type: application/json"</code></pre>
+
+    <h2>Scenes, presets, effects</h2>
+    <pre><button class="copy-btn">Copy</button><code>curl -X POST http://localhost:8500/api/devices/bulb-1/scenes/apply -d '{"scene_id":"movie_night"}' -H "Content-Type: application/json"
+curl -X POST http://localhost:8500/api/devices/bulb-1/presets/apply -d '{"preset_id":"ocean"}' -H "Content-Type: application/json"
+curl -X POST http://localhost:8500/api/devices/bulb-1/effects/start -d '{"effect":"rainbow","speed":1.5}' -H "Content-Type: application/json"</code></pre>
+
+    <h2>Audio-reactive lighting</h2>
+    <p>Full mode list and design notes on the <a href="audio.html">Audio-Reactive Lighting</a> page.</p>
+    <pre><button class="copy-btn">Copy</button><code>curl http://localhost:8500/api/audio/devices
+
+curl -X POST http://localhost:8500/api/devices/bulb-1/audio-reactive/start \
+  -H "Content-Type: application/json" \
+  -d '{"device_index": 1, "mode": "band_fixed", "sensitivity": 1.0, "min_dwell_ms": 90}'
+
+curl http://localhost:8500/api/devices/bulb-1/audio-reactive/status
+curl -X POST http://localhost:8500/api/devices/bulb-1/audio-reactive/stop</code></pre>
+
+    <h3>Group orchestration</h3>
+    <pre><button class="copy-btn">Copy</button><code>curl -X POST http://localhost:8500/api/groups/all/audio-reactive/start \
+  -H "Content-Type: application/json" \
+  -d '{"device_index": 1, "mode": "band_fixed", "role_mode": "phase_offset"}'</code></pre>
+
+    <h2>Network discovery</h2>
+    <pre><button class="copy-btn">Copy</button><code>curl http://localhost:8500/api/system/discovery
+curl -X POST http://localhost:8500/api/system/scan</code></pre>
+
+    <h2>Remote-access auth</h2>
+    <p>See <a href="security.html">Remote Access &amp; Security</a> before enabling this beyond your LAN.</p>
+    <pre><button class="copy-btn">Copy</button><code>curl -X POST http://localhost:8500/api/system/remote-auth/enable \
+  -H "Content-Type: application/json" -d '{"pin": "your-real-pin-here"}'
+
+curl -X POST http://localhost:8500/api/auth/login \
+  -H "Content-Type: application/json" -d '{"pin":"your-real-pin-here"}'</code></pre>
+
+    <h2>Timers, schedule, groups, history, diagnostics</h2>
+    <table>
+      <thead><tr><th>Endpoint</th><th>Purpose</th></tr></thead>
+      <tbody>
+        <tr><td><code>/api/devices/{id}/timers/sleep</code></td><td>Sleep timer with gradual fade-out</td></tr>
+        <tr><td><code>/api/devices/{id}/timers/wake</code></td><td>Wake/sunrise timer</td></tr>
+        <tr><td><code>/api/devices/{id}/schedule</code></td><td>Recurring time-of-day rules</td></tr>
+        <tr><td><code>/api/groups/{id}/power</code>, <code>/color</code></td><td>Broadcast to every device in a group</td></tr>
+        <tr><td><code>/api/devices/{id}/history</code></td><td>Last 200 actions, timestamped</td></tr>
+        <tr><td><code>/api/devices/{id}/test-connection</code></td><td>TCP reachability + latency + status round-trip</td></tr>
+      </tbody>
+    </table>
+
+    <p>Full reference for every one of the 55+ routes — favorites, sleep/wake timer status, schedule rule management, group color broadcast, discovery ignore/unignore — is in <a href="https://github.com/THEROCKSSS/smart-bulb-dashboard/blob/master/API.md">the complete <code>API.md</code></a>, or explore it live at <code>/docs</code> on your running instance.</p>
+
+    <footer class="site-footer">
+      <div>
+        <h4>Get Started</h4>
+        <ul>
+          <li><a href="setup.html">Setup guide</a></li>
+          <li><a href="https://github.com/THEROCKSSS/smart-bulb-dashboard/blob/master/AGENTS.md">For AI agents</a></li>
+          <li><a href="https://github.com/THEROCKSSS/smart-bulb-dashboard">Clone the repo</a></li>
+        </ul>
+      </div>
+      <div>
+        <h4>Reference</h4>
+        <ul>
+          <li><a href="api.html">API reference</a></li>
+          <li><a href="audio.html">Audio-reactive lighting</a></li>
+          <li><a href="security.html">Remote access &amp; security</a></li>
+        </ul>
+      </div>
+      <div>
+        <h4>Project</h4>
+        <ul>
+          <li><a href="roadmap.html">Roadmap</a></li>
+          <li><a href="changelog.html">Changelog</a></li>
+          <li><a href="https://github.com/THEROCKSSS/smart-bulb-dashboard/tree/master/iterations">Build iterations</a></li>
+        </ul>
+      </div>
+      <p class="footer-meta">Smart Bulb Dashboard · Polyform Noncommercial License 1.0.0 · <a href="handoff.html">Build history</a></p>
+    </footer>
+  </main>
+</div>
+<script src="assets/main.js"></script>
+</body>
+</html>
