@@ -171,7 +171,45 @@ Open **http://localhost:8500**. Go to the **Diagnostics** tab and click
 **Run Connection Test** first — it should report `tcp_6668_reachable: true`
 and `status_ok: true`. If not, see the Troubleshooting section below.
 
-## Step 6 (optional) — Run via Docker
+## Step 6 (optional) — Audio-reactive lighting
+
+`sounddevice`/`numpy` are already in `requirements.txt`, so no extra install
+is needed beyond Step 3. To use it:
+
+1. Go to the **Audio Reactive** tab.
+2. Pick an input device. If you use **VoiceMeeter** (Banana/Potato/basic all
+   work), set Windows' playback device to `Voicemeeter Input`, then pick
+   whichever `Voicemeeter Out ...` device mirrors what you hear — this
+   dashboard was tested against `Voicemeeter Out B1` on a real VoiceMeeter
+   setup. No VoiceMeeter? Pick your physical microphone instead — also
+   tested, works, just picks up room noise instead of PC audio directly.
+3. Pick a mode (12 available — see `docs/music-reactive-lighting.md` for
+   what each one does) and click Start. The "Min. dwell" slider controls
+   how long each color stays visible before the next one can replace it —
+   lower feels snappier, higher feels calmer/easier to actually see.
+4. Have more than one bulb? Use the **Multi-Bulb Orchestration** section
+   on the same tab to run one shared analysis across a whole group, with
+   unison/phase-offset/band-split roles.
+
+See `.claude/skills/bulb-dashboard-audio/` for the full walkthrough and
+troubleshooting.
+
+## Step 7 (optional) — Network auto-discovery
+
+Nothing to install — it's built on the same `tinytuya` scan already used in
+Step 1. Go to **Settings → Network Discovery** to run a scan on demand or
+set the auto-scan interval. Details in `docs/network-discovery.md` and
+`.claude/skills/bulb-dashboard-discovery/`.
+
+## Step 8 (optional) — Remote access beyond your LAN
+
+Nothing to install. Read `docs/remote-access-security.md` first — Tailscale
+is the recommended path (private VPN, no public exposure); DuckDNS + a
+router port-forward works but **requires enabling the PIN gate first**
+(Settings → Remote Access, or `POST /api/system/remote-auth/enable`).
+5 wrong PIN attempts from one client locks it out for 5 minutes.
+
+## Step 9 (optional) — Run via Docker
 
 ```bash
 docker compose up -d --build
@@ -180,8 +218,15 @@ docker compose up -d --build
 Note: `docker-compose.yml` uses `network_mode: host`, which only works on
 Linux Docker hosts (not Docker Desktop on Mac/Windows). On Mac/Windows,
 remove that line and rely on the `ports: 8500:8500` mapping instead — direct
-bulb control still works fine over bridge networking; only the `/rescan`
-UDP-broadcast discovery feature needs host networking.
+bulb control still works fine over bridge networking; only network
+discovery's UDP broadcast scan needs host networking.
+
+**Audio-reactive lighting inside Docker is not expected to work** —
+containers don't have access to the host's audio devices (PortAudio has
+nothing to enumerate inside the container) without extra device-passthrough
+setup this project doesn't currently configure. Run the backend directly
+with `uvicorn` (Step 5) if you want to use the Audio Reactive tab; Docker is
+fine for the rest of the dashboard.
 
 ## Troubleshooting
 
@@ -191,6 +236,17 @@ UDP-broadcast discovery feature needs host networking.
   normal, not a bug in this project.
 - **Commands succeed but nothing happens on the bulb** — wrong `version` in
   config; try the other common values (3.1, 3.2, 3.3, 3.4, 3.5).
+- **Audio Reactive tab shows no input devices, or starting a session
+  errors** — PortAudio couldn't enumerate/open an audio device. Confirm
+  `sounddevice`/`numpy` installed correctly (`pip show sounddevice`), and
+  that you're running natively rather than in Docker (see the Docker note
+  above).
+- **Audio session shows "active: true" but bands never change** — this was
+  a real bug found during development (bulb I/O blocking the audio capture
+  thread when the bulb was offline/slow — see
+  `iterations/002-audio-reactive-lighting/`), already fixed. If you still
+  see frozen values on current code, that points to a new, different issue
+  worth investigating rather than assuming it's this same one.
 - **IP changed** — routers often reassign DHCP leases. Use the
   **Diagnostics → Rescan Network** button, or set a DHCP reservation for the
   bulb's MAC address in your router so its IP never changes.

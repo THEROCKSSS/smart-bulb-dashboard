@@ -1,8 +1,12 @@
 # Secrets / local device credentials — NEVER commit real device_id/local_key
 backend/config.json
 
-# Runtime data (favorites, schedules, history)
+# Runtime data (favorites, schedules, history, discovery state)
 backend/data/
+
+# tinytuya writes this as a side effect of every deviceScan() call
+# (used by both /rescan and the network auto-discovery feature)
+backend/snapshot.json
 
 # Python
 backend/venv/

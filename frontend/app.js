@@ -9,6 +9,7 @@ const state = {
   lastStatus: null,
   statusPollHandle: null,
   consecutiveOfflinePolls: 0,
+  audioPollHandle: null,
 };
 
 // ---------------------------------------------------------------- utils --
@@ -26,6 +27,10 @@ async function api(path, opts) {
   opts.headers = Object.assign({ "Content-Type": "application/json" }, opts.headers || {});
   try {
     const res = await fetch(API + path, opts);
+    if (res.status === 401 && path !== "/api/auth/login") {
+      showPinGate();
+      throw new Error("authentication required");
+    }
     if (!res.ok) {
       const body = await res.json().catch(() => ({}));
       throw new Error(body.detail || `HTTP ${res.status}`);
@@ -33,7 +38,7 @@ async function api(path, opts) {
     const ct = res.headers.get("content-type") || "";
     return ct.includes("application/json") ? res.json() : res.text();
   } catch (e) {
-    toast(`Error: ${e.message}`, "error");
+    if (e.message !== "authentication required") toast(`Error: ${e.message}`, "error");
     throw e;
   }
 }
@@ -73,6 +78,7 @@ const ROUTES = {
   control: renderControl,
   scenes: renderScenes,
   effects: renderEffects,
+  audio: renderAudio,
   presets: renderPresets,
   timers: renderTimers,
   schedule: renderSchedule,
@@ -89,6 +95,10 @@ function currentRoute() {
 
 async function router() {
   const route = currentRoute();
+  if (state.audioPollHandle) {
+    clearInterval(state.audioPollHandle);
+    state.audioPollHandle = null;
+  }
   document.querySelectorAll(".nav-item").forEach(n => {
     n.classList.toggle("active", n.dataset.route === route);
   });
@@ -351,6 +361,237 @@ async function renderEffects(main) {
     };
     grid.appendChild(card);
   });
+}
+
+// ---------------------------------------------------------- audio tab --
+const AUDIO_MODE_INFO = {
+  band_fixed: { name: "Band → Color", desc: "Bass=warm red/orange, mids=green, treble=blue, blended by which is loudest.", bands: false },
+  dominant_band: { name: "Dominant Band", desc: "Hue smoothly follows whichever of bass/mid/treble currently dominates.", bands: false },
+  weighted_blend: { name: "Spectral Blend", desc: "Continuous hue sweep driven by the overall tonal balance, not fixed anchors.", bands: false },
+  vu_meter: { name: "VU Meter", desc: "Fixed hue, brightness only — a direct volume meter.", bands: false, mono: true },
+  auto_rotate_hue: { name: "Auto-Rotate", desc: "Hue slowly cycles on its own; brightness/beats still track the audio.", bands: false },
+  monochrome_pulse: { name: "Monochrome Pulse", desc: "One color of your choice that pulses brighter with the beat.", bands: false, mono: true },
+  strobe_on_drop: { name: "Strobe on Drop", desc: "Dim warm baseline, full white flash only on hard bass hits.", bands: false },
+  palette_cycle: { name: "Palette Cycle", desc: "Steps through the built-in color presets, advancing on each detected beat.", bands: false },
+  spectrum_gradient: { name: "Spectrum Gradient", desc: "Continuous hue gradient across N bands (set below) — much finer-grained than the 3-anchor Band → Color mode.", bands: true },
+  band_flash_overlay: { name: "Band Flash Overlay", desc: "Ambient N-band gradient base color, with brief accent flashes whenever any individual band spikes.", bands: true },
+  stereo_split: { name: "Stereo Split", desc: "Hue leans left/right-anchor based on which stereo channel is louder (needs a 2-channel input device).", bands: false },
+  breathing_silence: { name: "Breathing Silence", desc: "Slow ambient breathing brightness during quiet passages instead of going flat/dark; wakes up smoothly when audio returns.", bands: false },
+};
+
+function stopAudioPolling() {
+  if (state.audioPollHandle) {
+    clearInterval(state.audioPollHandle);
+    state.audioPollHandle = null;
+  }
+}
+
+const BAND_COLORS = ["#ff6b4a", "#ffa84a", "#e8d24a", "#7ee787", "#4ad9ff", "#7c9cff", "#b47cff", "#ff7cd1"];
+
+function renderBandMeter(bands) {
+  bands = bands || { fractions: [], rms: 0, is_beat: false };
+  const fractions = bands.fractions && bands.fractions.length ? bands.fractions : [0, 0, 0];
+  const pct = (v) => Math.max(2, Math.min(100, Math.round(v * 100)));
+  const labels = fractions.length === 3 ? ["BASS", "MID", "TREBLE"] : fractions.map((_, i) => `B${i + 1}`);
+  return `
+    <div class="band-meter">
+      ${fractions.map((f, i) => `
+        <div class="band-col">
+          <div class="band-fill" style="height:${pct(f)}%;background:${BAND_COLORS[i % BAND_COLORS.length]}"></div>
+          <div class="band-label">${labels[i]}</div>
+        </div>`).join("")}
+    </div>
+    <p class="panel-subtitle" style="margin-top:8px;">RMS ${(bands.rms || 0).toFixed(4)} <span class="beat-dot ${bands.is_beat ? "hit" : ""}"></span> beat</p>
+  `;
+}
+
+function renderSenderInfo(sender) {
+  if (!sender) return "";
+  const parts = [`dwell ${sender.min_dwell_ms}ms`];
+  if (sender.last_latency_ms != null) parts.push(`last send ${sender.last_latency_ms}ms`);
+  if (sender.error) parts.push(`error: ${sender.error}`);
+  return `<p class="panel-subtitle" style="margin-top:4px;">${parts.join(" · ")}</p>`;
+}
+
+async function renderAudio(main) {
+  stopAudioPolling();
+  let devicesResp;
+  try {
+    devicesResp = await get("/api/audio/devices");
+  } catch (e) {
+    main.innerHTML = `
+      <h1 class="panel-title">Audio Reactive</h1>
+      <div class="empty-state">Could not list audio input devices: ${e.message}</div>`;
+    return;
+  }
+  const audioDevices = devicesResp.devices || [];
+  const defaultDwell = devicesResp.default_min_dwell_ms || 90;
+  const dwellFloor = devicesResp.min_dwell_floor_ms || 40;
+  let sessionStatus = { active: false };
+  try { sessionStatus = await get(`/api/devices/${state.deviceId}/audio-reactive/status`); } catch (e) {}
+  let groupStatus = { active: false };
+  try { groupStatus = await get(`/api/groups/all/audio-reactive/status`); } catch (e) {}
+  const groups = await get("/api/groups").catch(() => []);
+
+  const preferredIdx = audioDevices.findIndex(d => /voicemeeter|cable/i.test(d.name));
+  const defaultDeviceIndex = sessionStatus.device_index ?? (preferredIdx >= 0 ? audioDevices[preferredIdx].index : (audioDevices[0] ? audioDevices[0].index : null));
+
+  const deviceOptions = audioDevices.map(d => `<option value="${d.index}" ${d.index === defaultDeviceIndex ? "selected" : ""}>${d.name}</option>`).join("");
+  const modeOptions = Object.entries(AUDIO_MODE_INFO).map(([id, info]) => `<option value="${id}" ${sessionStatus.mode === id ? "selected" : ""}>${info.name}</option>`).join("");
+
+  main.innerHTML = `
+    <h1 class="panel-title">Audio Reactive <span class="tag on">LIVE DATA</span></h1>
+    <p class="panel-subtitle">
+      Bulb reacts to whatever this input device hears. Route your PC's audio through
+      VoiceMeeter (or pick a real microphone) — see the Audio skill/docs for setup.
+      Decision latency is now sub-15ms internally; the "Min. dwell" slider controls how
+      long each color actually stays on the bulb so you can still see it change.
+    </p>
+
+    <div class="card">
+      <h3>Single-Bulb Session</h3>
+      <div class="form-grid">
+        <label>Input device<select id="audio-device">${deviceOptions}</select></label>
+        <label>Mode<select id="audio-mode">${modeOptions}</select></label>
+      </div>
+      <div class="slider-row">
+        <label><span>Sensitivity</span><span id="sens-val">${(sessionStatus.sensitivity ?? 1.0).toFixed(1)}x</span></label>
+        <input type="range" id="audio-sensitivity" min="0.2" max="3" step="0.1" value="${sessionStatus.sensitivity ?? 1.0}">
+      </div>
+      <div class="slider-row">
+        <label><span>Min. dwell (how long each color stays visible)</span><span id="dwell-val">${sessionStatus.sender ? sessionStatus.sender.min_dwell_ms : defaultDwell}ms</span></label>
+        <input type="range" id="audio-dwell" min="${dwellFloor}" max="400" step="5" value="${sessionStatus.sender ? sessionStatus.sender.min_dwell_ms : defaultDwell}">
+      </div>
+      <div class="slider-row" id="nbands-row">
+        <label><span>Band count (Spectrum Gradient / Band Flash Overlay)</span><span id="nbands-val">${sessionStatus.n_bands || 6}</span></label>
+        <input type="range" id="audio-nbands" min="3" max="16" step="1" value="${sessionStatus.n_bands || 6}">
+      </div>
+      <div class="slider-row hue-slider" id="mono-hue-row">
+        <label><span>Monochrome / VU hue</span><span id="mono-hue-val">280°</span></label>
+        <input type="range" id="mono-hue" min="0" max="359" value="280">
+      </div>
+      <p class="panel-subtitle" id="mode-desc"></p>
+      <div class="row">
+        <button id="audio-start" class="primary" ${sessionStatus.active ? "disabled" : ""}>Start</button>
+        <button id="audio-stop" class="danger" ${sessionStatus.active ? "" : "disabled"}>Stop</button>
+      </div>
+      ${renderSenderInfo(sessionStatus.sender)}
+    </div>
+
+    <div class="card">
+      <h3>Live Input <span class="tag ${sessionStatus.active ? "on" : "off"}">${sessionStatus.active ? "LISTENING" : "IDLE"}</span></h3>
+      <div id="band-meter-wrap">${renderBandMeter(sessionStatus.bands)}</div>
+    </div>
+
+    <div class="card">
+      <h3>Multi-Bulb Orchestration</h3>
+      <p class="panel-subtitle">
+        Runs one shared audio analysis across every bulb in a group, so each bulb reacts
+        together instead of opening its own capture. Useful now with one bulb (exercises
+        the same plumbing), scales automatically once more bulbs are added — see ROADMAP.md.
+      </p>
+      <div class="form-grid">
+        <label>Group
+          <select id="group-select">${groups.map(g => `<option value="${g.id}">${g.name} (${g.device_ids.length} bulb${g.device_ids.length === 1 ? "" : "s"})</option>`).join("")}</select>
+        </label>
+        <label>Role mode
+          <select id="role-mode">
+            <option value="unison">Unison — all identical</option>
+            <option value="phase_offset">Phase Offset — chase effect</option>
+            <option value="band_split">Band Split — one bulb per band</option>
+          </select>
+        </label>
+      </div>
+      <div class="row">
+        <button id="group-audio-start" class="primary" ${groupStatus.active ? "disabled" : ""}>Start Group Session</button>
+        <button id="group-audio-stop" class="danger" ${groupStatus.active ? "" : "disabled"}>Stop</button>
+      </div>
+      <div id="group-status">${groupStatus.active ? `<p class="panel-subtitle">Active — ${groupStatus.bulb_count} bulb(s), role: ${groupStatus.role_mode}</p>` : ""}</div>
+    </div>
+  `;
+
+  const modeSelect = main.querySelector("#audio-mode");
+  const monoRow = main.querySelector("#mono-hue-row");
+  const nbandsRow = main.querySelector("#nbands-row");
+  const modeDesc = main.querySelector("#mode-desc");
+  function syncModeUI() {
+    const info = AUDIO_MODE_INFO[modeSelect.value];
+    modeDesc.textContent = info ? info.desc : "";
+    monoRow.style.display = info && info.mono ? "" : "none";
+    nbandsRow.style.display = info && info.bands ? "" : "none";
+  }
+  modeSelect.onchange = syncModeUI;
+  syncModeUI();
+
+  main.querySelector("#audio-sensitivity").oninput = (e) => {
+    main.querySelector("#sens-val").textContent = parseFloat(e.target.value).toFixed(1) + "x";
+  };
+  main.querySelector("#audio-dwell").oninput = (e) => {
+    main.querySelector("#dwell-val").textContent = e.target.value + "ms";
+  };
+  main.querySelector("#audio-nbands").oninput = (e) => {
+    main.querySelector("#nbands-val").textContent = e.target.value;
+  };
+  main.querySelector("#mono-hue").oninput = (e) => {
+    main.querySelector("#mono-hue-val").textContent = e.target.value + "°";
+  };
+
+  main.querySelector("#audio-start").onclick = async () => {
+    if (audioDevices.length === 0) {
+      toast("No audio input devices available", "error");
+      return;
+    }
+    await post(`/api/devices/${state.deviceId}/audio-reactive/start`, {
+      device_index: parseInt(main.querySelector("#audio-device").value, 10),
+      mode: main.querySelector("#audio-mode").value,
+      sensitivity: parseFloat(main.querySelector("#audio-sensitivity").value),
+      monochrome_hue: parseFloat(main.querySelector("#mono-hue").value),
+      n_bands: parseInt(main.querySelector("#audio-nbands").value, 10),
+      min_dwell_ms: parseInt(main.querySelector("#audio-dwell").value, 10),
+    });
+    toast("Audio-reactive session started", "success");
+    renderAudio(main);
+  };
+
+  main.querySelector("#audio-stop").onclick = async () => {
+    await post(`/api/devices/${state.deviceId}/audio-reactive/stop`);
+    toast("Audio-reactive session stopped");
+    renderAudio(main);
+  };
+
+  main.querySelector("#group-audio-start").onclick = async () => {
+    const groupId = main.querySelector("#group-select").value;
+    if (!groupId) { toast("No groups configured", "error"); return; }
+    await post(`/api/groups/${groupId}/audio-reactive/start`, {
+      device_index: parseInt(main.querySelector("#audio-device").value, 10),
+      mode: main.querySelector("#audio-mode").value,
+      role_mode: main.querySelector("#role-mode").value,
+      sensitivity: parseFloat(main.querySelector("#audio-sensitivity").value),
+      monochrome_hue: parseFloat(main.querySelector("#mono-hue").value),
+      min_dwell_ms: parseInt(main.querySelector("#audio-dwell").value, 10),
+    });
+    toast("Group audio-reactive session started", "success");
+    renderAudio(main);
+  };
+
+  main.querySelector("#group-audio-stop").onclick = async () => {
+    const groupId = main.querySelector("#group-select").value;
+    await post(`/api/groups/${groupId}/audio-reactive/stop`);
+    toast("Group session stopped");
+    renderAudio(main);
+  };
+
+  if (sessionStatus.active) {
+    state.audioPollHandle = setInterval(async () => {
+      try {
+        const st = await get(`/api/devices/${state.deviceId}/audio-reactive/status`);
+        const wrap = document.getElementById("band-meter-wrap");
+        if (!wrap) { stopAudioPolling(); return; }
+        wrap.innerHTML = renderBandMeter(st.bands);
+        if (!st.active) renderAudio(main);
+      } catch (e) { /* transient poll miss, ignore */ }
+    }, 300);
+  }
 }
 
 async function renderPresets(main) {
@@ -688,6 +929,9 @@ async function renderDiagnostics(main) {
 }
 
 async function renderSettings(main) {
+  const disco = await get("/api/system/discovery");
+  const remoteAuth = await get("/api/system/remote-auth/status");
+
   main.innerHTML = `
     <h1 class="panel-title">Settings</h1>
     <p class="panel-subtitle">Manage configured devices. Local keys are never shown once saved.</p>
@@ -721,6 +965,69 @@ async function renderSettings(main) {
         </tbody>
       </table>
     </div>
+
+    <div class="card">
+      <h3>Network Discovery <span class="tag on">LIVE DATA</span></h3>
+      <p class="panel-subtitle">
+        Scans this LAN (local UDP broadcast only — nothing leaves the network) for Tuya
+        devices not yet added to this dashboard.
+        Last scan: ${disco.last_scan ? new Date(disco.last_scan).toLocaleString() : "never"}
+      </p>
+      <div class="form-grid">
+        <label>Auto-scan interval
+          <select id="disco-interval">
+            <option value="24" ${disco.interval_hours === 24 ? "selected" : ""}>Daily</option>
+            <option value="168" ${disco.interval_hours === 168 ? "selected" : ""}>Weekly</option>
+            <option value="720" ${disco.interval_hours === 720 ? "selected" : ""}>Monthly</option>
+          </select>
+        </label>
+      </div>
+      <button id="scan-now" class="primary" style="margin-top:10px;">Scan Now</button>
+
+      ${disco.discovered.length === 0 ? `
+        <p class="panel-subtitle" style="margin-top:14px;">No undiscovered devices found on last scan.</p>
+      ` : `
+        <table style="margin-top:14px;">
+          <thead><tr><th>Device ID</th><th>IP</th><th>Version</th><th>First Seen</th><th></th></tr></thead>
+          <tbody>${disco.discovered.map(d => `
+            <tr>
+              <td><code class="inline">${d.device_id}</code></td>
+              <td>${d.ip || "unknown"}</td>
+              <td>${d.version || "?"}</td>
+              <td>${new Date(d.first_seen).toLocaleDateString()}</td>
+              <td>
+                <button data-id="${d.device_id}" data-ip="${d.ip || ""}" data-version="${d.version || ""}" class="use-discovered">Add</button>
+                <button data-id="${d.device_id}" class="danger ignore-discovered">Ignore</button>
+              </td>
+            </tr>`).join("")}
+          </tbody>
+        </table>
+      `}
+
+      ${disco.ignored.length > 0 ? `
+        <p class="panel-subtitle" style="margin-top:14px;">Ignored: ${disco.ignored.map(id => `
+          <code class="inline">${id}</code> <button data-id="${id}" class="unignore-discovered" style="margin-right:8px;">Unignore</button>
+        `).join("")}</p>
+      ` : ""}
+    </div>
+
+    <div class="card">
+      <h3>Remote Access — PIN Gate <span class="tag ${remoteAuth.enabled ? "on" : "off"}">${remoteAuth.enabled ? "ENABLED" : "DISABLED"}</span></h3>
+      <p class="panel-subtitle">
+        Required if you expose this dashboard beyond your LAN (DuckDNS, port
+        forwarding, etc.) — see <code class="inline">docs/remote-access-security.md</code>.
+        Local-only setups can safely leave this disabled. Locks out an IP for
+        5 minutes after 5 wrong PIN attempts.
+      </p>
+      ${remoteAuth.enabled ? `
+        <button id="remote-auth-disable" class="danger">Disable PIN Gate</button>
+      ` : `
+        <div class="form-grid">
+          <label>New PIN (min. 4 characters)<input type="password" id="remote-auth-pin" autocomplete="off"></label>
+        </div>
+        <button id="remote-auth-enable" class="primary" style="margin-top:10px;">Enable PIN Gate</button>
+      `}
+    </div>
   `;
 
   main.querySelector("#add-device").onclick = async () => {
@@ -745,12 +1052,128 @@ async function renderSettings(main) {
       renderSettings(main);
     };
   });
+
+  main.querySelector("#disco-interval").onchange = async (e) => {
+    await post("/api/system/discovery/interval", { hours: parseInt(e.target.value, 10) });
+    toast("Scan interval updated", "success");
+  };
+
+  main.querySelector("#scan-now").onclick = async (e) => {
+    e.target.disabled = true;
+    e.target.textContent = "Scanning…";
+    const result = await post("/api/system/scan");
+    e.target.disabled = false;
+    e.target.textContent = "Scan Now";
+    if (result.already_scanning) {
+      toast("A scan is already in progress", "error");
+    } else if (result.ok === false) {
+      toast(`Scan failed: ${result.error}`, "error");
+    } else {
+      toast(`Scan complete — ${result.new_count} new device(s) found`, "success");
+    }
+    renderSettings(main);
+  };
+
+  main.querySelectorAll(".use-discovered").forEach(b => {
+    b.onclick = () => {
+      main.querySelector("#new-devid").value = b.dataset.id;
+      main.querySelector("#new-ip").value = b.dataset.ip;
+      if (b.dataset.version) main.querySelector("#new-version").value = b.dataset.version;
+      main.querySelector("#new-id").focus();
+      toast("Device ID/IP filled in above — local_key still needs to be obtained via SETUP.md, then click Add Device", "success");
+      window.scrollTo({ top: 0, behavior: "smooth" });
+    };
+  });
+
+  main.querySelectorAll(".ignore-discovered").forEach(b => {
+    b.onclick = async () => {
+      await post(`/api/system/discovery/${b.dataset.id}/ignore`);
+      toast("Device ignored");
+      renderSettings(main);
+    };
+  });
+
+  main.querySelectorAll(".unignore-discovered").forEach(b => {
+    b.onclick = async () => {
+      await post(`/api/system/discovery/${b.dataset.id}/unignore`);
+      toast("Device un-ignored — it will reappear on the next scan");
+      renderSettings(main);
+    };
+  });
+
+  const enableBtn = main.querySelector("#remote-auth-enable");
+  if (enableBtn) {
+    enableBtn.onclick = async () => {
+      const pin = main.querySelector("#remote-auth-pin").value;
+      if (pin.length < 4) { toast("PIN must be at least 4 characters", "error"); return; }
+      await post("/api/system/remote-auth/enable", { pin });
+      toast("PIN gate enabled — you'll need it on your next visit", "success");
+      renderSettings(main);
+    };
+  }
+  const disableBtn = main.querySelector("#remote-auth-disable");
+  if (disableBtn) {
+    disableBtn.onclick = async () => {
+      await post("/api/system/remote-auth/disable");
+      toast("PIN gate disabled");
+      renderSettings(main);
+    };
+  }
 }
 
-// ---------------------------------------------------------------- init --
-(async function init() {
+// ------------------------------------------------------------ pin gate --
+function showPinGate() {
+  document.getElementById("pin-gate-overlay").style.display = "flex";
+  document.getElementById("pin-input").focus();
+}
+function hidePinGate() {
+  document.getElementById("pin-gate-overlay").style.display = "none";
+}
+
+async function submitPin() {
+  const input = document.getElementById("pin-input");
+  const errEl = document.getElementById("pin-error");
+  errEl.textContent = "";
+  try {
+    const res = await fetch("/api/auth/login", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ pin: input.value }),
+    });
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      errEl.textContent = body.detail || "incorrect PIN";
+      input.value = "";
+      return;
+    }
+    hidePinGate();
+    input.value = "";
+    await bootDashboard();
+  } catch (e) {
+    errEl.textContent = "could not reach the server";
+  }
+}
+
+document.getElementById("pin-submit").addEventListener("click", submitPin);
+document.getElementById("pin-input").addEventListener("keydown", (e) => {
+  if (e.key === "Enter") submitPin();
+});
+
+async function bootDashboard() {
   await loadDevices();
   startPolling();
   if (!location.hash) location.hash = "#/control";
   router();
+}
+
+// ---------------------------------------------------------------- init --
+(async function init() {
+  try {
+    const authStatus = await fetch("/api/auth/status").then(r => r.json());
+    if (authStatus.enabled && !authStatus.authenticated) {
+      showPinGate();
+      return;
+    }
+  } catch (e) { /* auth-status check failed open — same as PIN gate disabled */ }
+  await bootDashboard();
 })();

@@ -22,6 +22,7 @@
     <div class="nav-item" data-route="control">Control</div>
     <div class="nav-item" data-route="scenes">Scenes</div>
     <div class="nav-item" data-route="effects">Effects</div>
+    <div class="nav-item" data-route="audio">Audio Reactive</div>
     <div class="nav-item" data-route="presets">Presets &amp; Favorites</div>
     <div class="nav-item" data-route="timers">Timers</div>
     <div class="nav-item" data-route="schedule">Schedule</div>
@@ -35,6 +36,16 @@
 </div>
 
 <div class="toast-stack" id="toast-stack"></div>
+
+<div class="pin-gate-overlay" id="pin-gate-overlay" style="display:none;">
+  <div class="pin-gate-box">
+    <h2>Enter PIN</h2>
+    <p class="panel-subtitle">This dashboard is configured to require a PIN before use (remote-access mode).</p>
+    <input type="password" id="pin-input" inputmode="numeric" autocomplete="off" placeholder="PIN">
+    <button id="pin-submit" class="primary">Unlock</button>
+    <p class="panel-subtitle" id="pin-error" style="color:var(--danger);"></p>
+  </div>
+</div>
 
 <script src="/static/app.js"></script>
 </body>

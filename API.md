@@ -145,6 +145,92 @@ curl -X POST http://localhost:8500/api/devices/bulb-1/test-connection
 curl -X POST http://localhost:8500/api/devices/bulb-1/rescan
 ```
 
+## Audio-reactive lighting
+
+See `docs/music-reactive-lighting.md` for the modes and how the pipeline
+works; `.claude/skills/bulb-dashboard-audio/` for a step-by-step guide.
+v2 (see `iterations/003-audio-engine-v2/`) cut decision latency to
+sub-15ms internally and separated it from `min_dwell_ms`, the minimum time
+a color actually stays on the bulb so you can see it change.
+
+```bash
+# List capturable audio input devices, all 12 modes, role modes, and dwell defaults
+curl http://localhost:8500/api/audio/devices
+
+# Start a session — device_index comes from the list above
+curl -X POST http://localhost:8500/api/devices/bulb-1/audio-reactive/start \
+  -H "Content-Type: application/json" \
+  -d '{"device_index": 1, "mode": "band_fixed", "sensitivity": 1.0, "min_dwell_ms": 90, "n_bands": 3}'
+
+curl -X POST http://localhost:8500/api/devices/bulb-1/audio-reactive/stop
+
+# Live band fractions/rms/beat + per-bulb sender status (latency, errors, dwell)
+curl http://localhost:8500/api/devices/bulb-1/audio-reactive/status
+```
+
+Modes: `band_fixed`, `dominant_band`, `weighted_blend`, `vu_meter`,
+`auto_rotate_hue`, `monochrome_pulse`, `strobe_on_drop`, `palette_cycle`,
+`spectrum_gradient`, `band_flash_overlay`, `stereo_split`,
+`breathing_silence`. `monochrome_hue` (0-359, `vu_meter`/`monochrome_pulse`
+only), `n_bands` (3-16, `spectrum_gradient`/`band_flash_overlay` only), and
+`min_dwell_ms` (floor 40ms, default 90ms) are optional on `start`.
+
+### Multi-bulb orchestration
+
+One shared audio analysis drives every bulb in a group, each with its own
+independent send pacing (one slow bulb never blocks the others):
+
+```bash
+curl -X POST http://localhost:8500/api/groups/all/audio-reactive/start \
+  -H "Content-Type: application/json" \
+  -d '{"device_index": 1, "mode": "band_fixed", "role_mode": "phase_offset"}'
+
+curl -X POST http://localhost:8500/api/groups/all/audio-reactive/stop
+curl http://localhost:8500/api/groups/all/audio-reactive/status
+```
+
+`role_mode`: `unison` (identical across every bulb), `phase_offset` (same
+effect, hue shifted per bulb for a chase look), `band_split` (bulb *i*
+primarily driven by band *i* of an N-band split, N = bulb count).
+
+## Remote access / PIN auth
+
+See `docs/remote-access-security.md` before exposing this beyond your LAN
+— Tailscale is the recommended path; DuckDNS+port-forward requires this
+PIN gate at minimum.
+
+```bash
+# Enable (Settings UI does this too)
+curl -X POST http://localhost:8500/api/system/remote-auth/enable \
+  -H "Content-Type: application/json" -d '{"pin": "your-real-pin-here"}'
+
+curl -X POST http://localhost:8500/api/auth/login -H "Content-Type: application/json" -d '{"pin":"your-real-pin-here"}'
+# -> sets a signed session cookie; subsequent requests need it once enabled
+
+curl -X POST http://localhost:8500/api/auth/logout
+curl http://localhost:8500/api/system/remote-auth/disable -X POST
+curl http://localhost:8500/api/auth/status   # {"enabled": bool, "authenticated": bool}
+```
+
+5 wrong PIN attempts from the same client locks that IP out for 5 minutes,
+even for a subsequently-correct PIN — see `iterations/004-pin-gate-remote-auth/`
+for what was tested.
+
+## Network auto-discovery
+
+See `docs/network-discovery.md` for the full picture;
+`.claude/skills/bulb-dashboard-discovery/` for a step-by-step guide.
+
+```bash
+curl http://localhost:8500/api/system/discovery
+curl -X POST http://localhost:8500/api/system/scan
+curl -X POST http://localhost:8500/api/system/discovery/interval \
+  -H "Content-Type: application/json" -d '{"hours": 24}'
+curl -X POST http://localhost:8500/api/system/discovery/<device_id>/ignore
+curl -X POST http://localhost:8500/api/system/discovery/<device_id>/unignore
+curl -X DELETE http://localhost:8500/api/system/discovery/<device_id>
+```
+
 ## Interactive docs
 
 FastAPI auto-generates Swagger UI at `http://localhost:8500/docs` — useful

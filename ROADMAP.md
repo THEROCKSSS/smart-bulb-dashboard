@@ -39,13 +39,57 @@ via a hub). Rough shape of what it'd need when the time comes:
   method surface could plug in alongside the existing Wi-Fi one without
   changing `main.py`'s routes.
 
-## Music-reactive lighting (design doc exists, not implemented)
+## Music-reactive lighting — implemented (v2), tuning is what's left
 
-See `docs/music-reactive-lighting.md` for the full design — deliberately
-written as an insight/design doc rather than shipped code, since it needs
-real-world tuning against actual audio hardware (VoiceMeeter routing,
-microphone gain, latency) that's better done as its own follow-up project
-once the core dashboard is in daily use.
+No longer roadmap-only: this is now the **Audio Reactive** tab, with 12
+working interpretation modes and multi-bulb orchestration (unison /
+phase-offset / band-split) — see `docs/music-reactive-lighting.md`,
+`FEATURES.md`, and `iterations/002` + `iterations/003` for the two build
+rounds. v2 also cut internal decision latency to sub-15ms and separated it
+from a configurable minimum dwell time. What's still ahead:
+
+- **Ears-on tuning** against real music with the bulb online — the hue
+  anchors and beat thresholds are verified *correct in direction* (via
+  synthetic tones) but not yet tuned by taste, since the physical bulb was
+  offline for both build/test sessions so far.
+- **Auto-gain** — sensitivity is currently a manual multiplier; an
+  automatic level normalizer for consistently quiet/loud sources isn't
+  built.
+- **Real multi-bulb testing** — orchestration (unison/phase-offset/
+  band-split) is built and tested with fake controllers plus the real API
+  against a 1-bulb group; needs a second physical bulb to confirm it looks
+  right, not just structurally correct.
+- See `roadmap/` for the much larger backlog of audio-specific ideas
+  (visualizer styles, per-genre presets, tap-tempo, etc.) slated across the
+  month-long plan.
+
+## Network auto-discovery — implemented
+
+Weekly (configurable) background scanning plus an on-demand "Scan Now" in
+Settings, covered in `docs/network-discovery.md`. The classification logic
+(known/ignored/new device, IP-change detection) was verified via a mocked
+scan since this LAN only has one bulb; a live "genuinely new device found"
+scenario is still worth re-confirming the next time a second Tuya device
+actually joins the network.
+
+## Remote access & security — PIN gate implemented, pentest phase pending
+
+The PIN gate (`docs/remote-access-security.md`, `iterations/004`) is real
+and tested: brute-force lockout, server-verified session expiry, PBKDF2
+PIN hashing. Explicitly **not yet done**:
+
+- **A dedicated adversarial security test** — a separate agent actually
+  attacking a real, exposed (DuckDNS + port forward) instance from the
+  outside: brute-force timing analysis, session token forgery attempts,
+  replay attacks, discovery-timing via port scan, lockout-bypass attempts.
+  This needs an actual deployed instance to attack meaningfully rather than
+  a same-machine simulation — see `roadmap/` for this as its own phase.
+- **TLS / reverse proxy** (e.g. Caddy with automatic certs for a DuckDNS
+  domain) — the PIN currently travels over plaintext HTTP once forwarded
+  publicly; flagged clearly in the security doc, not yet built.
+- **Tailscale is the currently-recommended path** for anyone who doesn't
+  need public access at all — no code changes needed, just documented
+  setup steps.
 
 ## Other plausible future features (not started)
 

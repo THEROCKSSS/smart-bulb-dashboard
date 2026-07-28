@@ -1,0 +1,11 @@
+title: Smart Bulb Dashboard
+description: Local, cloud-independent dashboard for Tuya-based Wi-Fi smart bulbs — 137 working features, audio-reactive lighting, multi-bulb orchestration.
+theme: jekyll-theme-slate
+show_downloads: false
+exclude:
+  - backend/
+  - frontend/
+  - .claude/
+  - Dockerfile
+  - docker-compose.yml
+  - requirements.txt

@@ -97,12 +97,101 @@ This took several real attempts — recorded here so nobody re-derives it:
 
 ## What's NOT built (intentionally)
 
-- Music-reactive lighting — design doc only, see `docs/music-reactive-lighting.md`
-  and `ROADMAP.md`. Needs real audio hardware iteration to tune well.
 - Bluetooth bulb support — roadmap only, no BLE hardware to test against yet.
 - A second physical bulb — architecture (config list + groups) already
   supports it; just needs another bulb purchased and its credentials
   pulled via the same cloud-assisted login flow.
+- Ears-on tuning of the audio-reactive modes against real music with the
+  bulb online (it was offline for this entire build) — see
+  `docs/music-reactive-lighting.md`'s "Known limitations" section.
+
+## Round 2 — audio-reactive lighting + network auto-discovery
+
+Added per user request, after the initial 97-feature prototype above:
+**8 audio-reactive lighting modes** (`backend/audio_reactive.py`, the
+**Audio Reactive** tab) and **network auto-discovery** with a weekly
+scheduler + manual "Scan Now" (`backend/discovery.py`, Settings tab).
+Brings the total to 121 working features — see `FEATURES.md`.
+
+Full process detail — what was tried, what broke, what fixed it — now lives
+in `iterations/` (see `iterations/README.md` for the convention). Short
+version of the two real bugs found this round, both only findable by
+actually running the code against real conditions:
+
+1. **Audio callback froze when the bulb was offline.** Bulb commands were
+   originally called directly from the sounddevice audio callback; tinytuya's
+   blocking socket calls stalled the entire capture pipeline for as long as
+   the bulb took to time out. Confirmed via 4 consecutive identical
+   `/audio-reactive/status` polls a second apart (frozen) with the bulb
+   independently confirmed offline. Fixed by moving all bulb I/O onto a
+   separate sender thread that always acts on the latest queued value —
+   the audio callback never blocks now. Full writeup:
+   `iterations/002-audio-reactive-lighting/`.
+2. **IP-change detection logged the wrong "old IP".** In
+   `discovery.py`'s dedup logic, the config was mutated before the old
+   value was read for the log entry, so a device whose IP changed would
+   report `old_ip` equal to the *new* IP. Found via a mocked-scan test (the
+   real LAN's one bulb happened to be offline during testing, so this path
+   couldn't be exercised against real hardware — see the same iteration
+   note for why). Fixed by capturing `old_ip` before mutating.
+   Full writeup: `iterations/001-network-auto-discovery/`.
+
+Both bulb offline observations above (Round 1 and Round 2) are the same
+recurring, documented hardware behavior — this bulb genuinely drops off
+Wi-Fi periodically. It happened to be offline for this entire second
+session, which is *why* two of this round's verifications used synthetic
+tones / mocked scans instead of the physical device, and why "does the
+audio-reactive mode look good" is explicitly left as a follow-up rather
+than claimed done.
+
+## Round 3 — audio engine v2 + PIN-gated remote access
+
+Reworked the audio pipeline for lower latency and more modes, added
+multi-bulb orchestration, and added a PIN gate for exposing the dashboard
+beyond the LAN. Now 137 working features total (`FEATURES.md`). Bulb was
+still offline this entire round too — same recurring Wi-Fi behavior as
+Rounds 1 and 2, not a new issue.
+
+**Audio v2** (`backend/audio_reactive.py`, rewritten; full detail in
+`iterations/003-audio-engine-v2/`):
+- Capture block size 1024→512 samples (~23ms→~11.6ms), zero-padded to a
+  4096-point FFT. Removed the old artificial analysis-rate gate entirely —
+  every callback now computes and queues a fresh target.
+- New `BulbSender` class per bulb: enforces a configurable `min_dwell_ms`
+  (how long a color stays visible) completely independent of decision
+  latency, always sending the freshest queued value.
+- 4 new modes (12 total): `spectrum_gradient`, `band_flash_overlay`,
+  `stereo_split`, `breathing_silence`.
+- `GroupAudioSession`: one shared capture analysis driving multiple bulbs
+  via `unison`/`phase_offset`/`band_split` roles, each bulb still getting
+  its own independent sender.
+- **Real bug caught in review, not testing**: every mode's hue smoothing
+  used a plain linear blend, which breaks at the 0°/360° wrap boundary
+  (harmless for the original 3 modes' anchors, but `stereo_split`'s target
+  genuinely crosses it). Fixed with a proper circular-mean blend
+  (`_smooth_hue()`), applied everywhere for consistency.
+
+**PIN-gate remote auth** (`backend/remote_auth.py`, new; full detail in
+`iterations/004-pin-gate-remote-auth/`):
+- PBKDF2-SHA256-hashed PIN (never plaintext), stateless HMAC-signed
+  session tokens, per-IP brute-force lockout (5 attempts / 5 minutes).
+- **Real bug found via a live Playwright test**: the root page `/` itself
+  was gated, so enabling the PIN feature meant the browser got a raw 401
+  instead of the HTML page containing the PIN form — a real
+  lock-yourself-out bug, not hypothetical. Fixed by adding `/` to the
+  always-open path list; only the API underneath stays gated.
+- Verified end-to-end for real: enable → blocked without a session →
+  wrong PIN rejected → 5 failures triggers a lockout that blocks even the
+  correct PIN → correct PIN (once unlocked) issues a working session →
+  session token expiry enforced server-side (tested with a 10s TTL) →
+  disable restores open access. Full real-browser login flow also
+  confirmed via Playwright, zero console errors.
+- `docs/remote-access-security.md` covers Tailscale (recommended) vs.
+  DuckDNS+port-forward (requires this PIN gate, still plaintext HTTP —
+  documented, not yet solved with TLS). A dedicated adversarial pentest
+  phase (a separate agent actually attacking a live exposed instance) is
+  intentionally scoped as future roadmap work, not squeezed into this
+  build — see `roadmap/`.
 
 ## Repo
 

@@ -1,12 +1,80 @@
-# Design Insight: Music-Reactive Lighting
+# Audio-Reactive Lighting
 
-**Status: design doc only — nothing in this file is implemented.** This is
-written to give a concrete, buildable plan for a follow-up project, per the
-request to sketch out "how you'd make the light react to music, including
-listening through a mic/VoiceMeeter." It intentionally is not wired into the
-dashboard yet, because getting this to feel *good* needs iteration against
-real audio hardware and a real ear, which is a separate work session from
-building the core control dashboard.
+**Status: implemented.** This started as a design-only doc; the pipeline
+described below is now real code in `backend/audio_reactive.py`, wired into
+the dashboard as the **Audio Reactive** tab. What's still outstanding is
+purely *tuning by ear* against real music with the physical bulb online —
+the mode-selection architecture, FFT analysis, beat detection, and
+rate-limited bulb updates are all built and tested (see
+`iterations/002-audio-reactive-lighting/` for exactly what was tested and
+two real bugs that testing caught).
+
+## Quick start
+1. Go to the **Audio Reactive** tab.
+2. Pick an input device — a VoiceMeeter output (e.g. "Voicemeeter Out B1")
+   captures whatever's playing on the PC; a real microphone picks up
+   whatever's audible in the room. Both are real, tested capture paths on
+   this machine.
+3. Pick a mode (see the table below) and hit Start. Sensitivity adjusts how
+   strongly volume maps to brightness.
+4. The live bar meter shows bass/mid/treble energy and beat detection in
+   real time, whether or not the bulb itself is reachable — useful for
+   confirming the right input device is selected even before the bulb
+   responds.
+
+## The 12 implemented modes (v2 added 4 — see `iterations/003-audio-engine-v2/`)
+
+| Mode | What it does |
+|---|---|
+| `band_fixed` | Bass/mid/treble are blended into hue by whichever is loudest (bass→red/orange, mid→green, treble→blue). This is the literal "bass is a different color" mode. |
+| `dominant_band` | Hue snaps toward whichever single band currently dominates, smoothed rather than jump-cut. |
+| `weighted_blend` | Continuous hue driven by the spectral centroid (overall tonal brightness of the sound) instead of 3 fixed anchors — less "3 buckets," more a smooth sweep. |
+| `vu_meter` | Fixed hue (your choice), brightness is a direct volume meter. Simplest, cheapest mode — good baseline/diagnostic. |
+| `auto_rotate_hue` | Hue slowly cycles on its own regardless of content; brightness/beat pulses still track the audio. |
+| `monochrome_pulse` | One color of your choice, pulses brighter on the beat, desaturates slightly when quiet. |
+| `strobe_on_drop` | Dim warm baseline; a hard bass hit (well above the rolling average, not just any beat) triggers a full white flash. |
+| `palette_cycle` | Steps through the dashboard's 25 built-in color presets, advancing one step per detected beat. |
+| `spectrum_gradient` | Continuous hue gradient across a configurable 3-16 band split (`n_bands`) — a much finer-grained sibling of `band_fixed`. |
+| `band_flash_overlay` | Same N-band gradient as a low-brightness ambient base, with brief full-brightness accent flashes whenever any individual band spikes above its own rolling average. |
+| `stereo_split` | Hue leans toward a left or right anchor based on which stereo channel is louder — needs a 2-channel-capable input device (falls back to mono behavior otherwise). |
+| `breathing_silence` | During quiet passages, brightness does a slow ~4s breathing oscillation instead of going flat/dark, so the bulb still looks "alive"; smoothly hands over to normal reactive brightness once real audio returns. |
+
+## Latency vs. visibility (v2)
+
+The original v1 pipeline rate-limited the *analysis* step itself to ~9Hz,
+which meant both "how fast we notice a change" and "how fast the bulb
+changes" were the same number, fighting each other. v2 splits these:
+
+- **Decision latency** — how fast the pipeline notices something and
+  computes a new target color — is now sub-15ms (512-sample capture
+  blocks at 44.1kHz ≈ 11.6ms, zero-padded to a 4096-point FFT for
+  reasonable band accuracy despite the smaller window). Every audio
+  callback computes and queues a fresh target; nothing artificially
+  throttles this anymore.
+- **Display dwell** — how long a color actually has to stay on the bulb
+  before the next one can replace it — is a separate, tunable
+  `min_dwell_ms` (default 90ms, floor 40ms) enforced by a per-bulb
+  `BulbSender`. This is what actually answers "I want it fast but I still
+  want to be able to see it" — turn dwell down for snappier reaction, up
+  for a calmer, more legible feel.
+- The sender always sends the *freshest* computed value when its dwell
+  window opens, never a backlog — so raising the analysis rate never
+  causes lag, it just means the eventual send reflects more up-to-date
+  audio.
+
+## Multi-bulb orchestration (v2)
+
+`GroupAudioSession` runs one shared audio analysis across every bulb in a
+group (no redundant capture streams), then derives a per-bulb target via
+one of three role modes: `unison` (identical), `phase_offset` (same
+effect, hue shifted per bulb — a simple chase), `band_split` (bulb *i*
+primarily driven by band *i*, e.g. a literal "bass bulb"/"treble bulb"
+setup). Each bulb keeps its own independent `BulbSender`, so one slow or
+offline bulb in a group never stalls the others. Tested with fake
+controllers (unison produces identical output, phase_offset spaces hues
+evenly, band_split genuinely differentiates bulbs) and against the real
+API with a 1-bulb group — see `iterations/003-audio-engine-v2/`. Real
+multi-bulb visual testing needs a second physical bulb (see `ROADMAP.md`).
 
 ## The two input modes
 
@@ -43,7 +111,11 @@ whatever else is happening in the room) but needs zero routing setup — good
 for a "just works" fallback, worse for precision.
 
 Both modes feed the exact same analysis pipeline below — the only
-difference is which `sounddevice` input index gets opened.
+difference is which `sounddevice` input index gets opened. **Both were
+tested for real on this machine**: capturing from `Voicemeeter Out B1`
+(index 1) and from the physical Fifine microphone (index 2) both open
+cleanly and produce live, changing band data — see
+`iterations/002-audio-reactive-lighting/` for the actual test output.
 
 ## Processing pipeline
 
@@ -93,67 +165,47 @@ Practical approach:
   is a fundamentally different (and much faster) architecture than
   Tuya's cloud-oriented Wi-Fi bulb protocol.
 
-## How this would plug into the existing codebase
+## Where this actually lives in the codebase
 
-The clean integration point is as a new **effect**, following the exact
-pattern `bulb_manager.py` already uses for `rainbow`/`pulse`/etc.:
+- `backend/audio_reactive.py` — `AudioSession` class. `_process()` is the
+  real version of the pipeline sketched above (FFT → band split → beat
+  detection → mode dispatch). One important difference from the original
+  sketch: bulb I/O is **not** called directly from the audio callback.
+  Testing found that tinytuya's blocking socket calls, if run inline in the
+  PortAudio callback thread, freeze the entire capture pipeline whenever the
+  bulb is slow or offline. The real implementation queues the desired
+  action and a separate `_sender_loop` thread does the actual
+  `set_hsv()`/`set_rgb()` call, so the audio analysis never blocks on the
+  network. See `iterations/002-audio-reactive-lighting/` for the exact
+  failure this fixed.
+- `backend/main.py` — `GET /api/audio/devices`,
+  `POST/GET /api/devices/{id}/audio-reactive/start|stop|status`.
+- `frontend/app.js` — `renderAudio()`, the **Audio Reactive** tab, including
+  the live bass/mid/treble bar meter.
+- Session lifecycle deliberately does **not** reuse `bulb_manager.py`'s
+  `_effect_thread`/`_effect_stop` (the mechanism `rainbow`/`pulse`/etc. use)
+  — it's a separate `AudioSession` object per device instead, since it has
+  its own sender thread and its own always-latest-value semantics that
+  don't map cleanly onto the simpler effect-loop pattern.
 
-```python
-# sketch — not implemented
-def _run_music_reactive(self, input_device_index):
-    import sounddevice as sd
-    import numpy as np
+## Known limitations / good next steps
 
-    rolling_bass_energy = collections.deque(maxlen=32)  # ~1s of history
-    last_sent = 0
-
-    def audio_callback(indata, frames, time_info, status):
-        nonlocal last_sent
-        now = time.time()
-        if now - last_sent < 0.1:  # rate-limit to 10Hz
-            return
-        samples = indata[:, 0]
-        windowed = samples * np.hanning(len(samples))
-        spectrum = np.abs(np.fft.rfft(windowed))
-        freqs = np.fft.rfftfreq(len(windowed), 1 / 44100)
-
-        bass = spectrum[(freqs >= 20) & (freqs < 250)].sum()
-        mid = spectrum[(freqs >= 250) & (freqs < 4000)].sum()
-        treble = spectrum[(freqs >= 4000) & (freqs < 20000)].sum()
-
-        rolling_bass_energy.append(bass)
-        avg_bass = sum(rolling_bass_energy) / len(rolling_bass_energy)
-        is_beat = bass > avg_bass * 1.5
-
-        total = bass + mid + treble + 1e-9
-        if bass / total > 0.5:
-            hue = 10       # warm red/orange
-        elif treble / total > 0.4:
-            hue = 200      # cool blue
-        else:
-            hue = 280      # mid → violet
-
-        brightness = min(100, 40 + (bass / total) * 60 + (25 if is_beat else 0))
-        self.set_hsv(hue, 100, brightness)  # reuses the existing method — no new Tuya protocol code needed
-        last_sent = now
-
-    with sd.InputStream(device=input_device_index, channels=1, samplerate=44100, callback=audio_callback):
-        while not self._effect_stop.is_set():
-            self._effect_stop.wait(0.05)
-```
-
-Wiring it in for real would mean:
-- Adding `sounddevice` + `numpy` to `requirements.txt`.
-- A new `/api/devices/{id}/music-reactive/start` endpoint that takes an
-  `input_device_index` (or name) and starts this as another background
-  thread, reusing `stop_effect()`/`_effect_stop` the same way every other
-  effect does.
-- A Settings-panel dropdown listing available input devices
-  (`sounddevice.query_devices()`) so you can pick the VoiceMeeter output (or
-  your real mic) from the UI instead of hardcoding a device index.
-- Tuning the hue-mapping and beat threshold by ear against your actual
-  music library — this is the part that most benefits from being its own
-  follow-up session rather than guessed upfront.
+- **Tuning by ear is still outstanding.** The hue anchors (`BASS_HUE=10`,
+  `MID_HUE=130`, `TREBLE_HUE=230`), beat threshold (`1.5x` rolling average),
+  and hard-hit threshold (`2.2x`) are reasonable starting values, verified
+  correct in *direction* (bass tones land near the bass anchor, louder
+  audio raises brightness, silence dims) via synthetic tones — not yet
+  verified to *feel* good against real music with the bulb online, since
+  the physical bulb was offline for this entire testing session. Adjust the
+  constants at the top of `audio_reactive.py` once you can listen and watch
+  at the same time.
+- **Auto-gain isn't implemented** — the sensitivity slider is a manual
+  multiplier, not an automatic level normalizer. If a source is
+  consistently too quiet/loud, adjust sensitivity rather than expecting the
+  engine to compensate on its own.
+- **Multi-bulb / per-band-per-bulb assignment** (one bulb reacts to bass,
+  another to treble) is still roadmap-only — needs a second physical bulb
+  to build and test against (see `ROADMAP.md`).
 
 ## Why this wasn't built into the v1 prototype
 

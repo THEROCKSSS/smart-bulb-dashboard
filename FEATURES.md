@@ -97,10 +97,49 @@ Gaming
 96. CORS enabled so the API can be driven from other tools/scripts
 97. Dockerized (`Dockerfile` + `docker-compose.yml`)
 
+## Audio-reactive lighting (16)
+98. Audio input device listing — auto-enumerates VoiceMeeter/CABLE virtual devices and real microphones
+99. Live band-level meter in the UI (bass/mid/treble/RMS, updating ~3x/sec)
+100. Real-time beat detection (rolling bass-average threshold)
+101–108. Eight selectable interpretation modes: Band → Color, Dominant Band, Spectral Blend, VU Meter, Auto-Rotate Hue, Monochrome Pulse, Strobe on Drop, Palette Cycle (see `docs/music-reactive-lighting.md`)
+109. Adjustable sensitivity (0.2x–3.0x multiplier)
+110. Adjustable monochrome/VU hue picker
+111. Start/stop session controls, independent per bulb
+112. Auto-timeout after 5 minutes of near-silence (won't run all night against nothing)
+113. Non-blocking bulb dispatch — a dedicated sender thread means a slow or offline bulb can never freeze the audio analysis loop (a real bug found and fixed during testing; see `iterations/002-audio-reactive-lighting/`)
+
+## Network auto-discovery (8)
+114. Manual "Scan Now" trigger in Settings
+115. Scheduled automatic scanning, configurable Daily/Weekly/Monthly
+116. Discovered-device list showing device ID, IP, protocol version, first seen
+117. One-click pre-fill of the Add Device form from a discovered device
+118. Ignore a discovered non-bulb device so it stops reappearing
+119. Unignore a previously-ignored device
+120. Automatic IP-change detection and `config.json` update for already-configured devices (e.g. after a DHCP lease renewal)
+121. Scan-trigger API endpoint usable independently of the UI
+
+## Audio engine v2 — lower latency, more modes, orchestration (12)
+122. Sub-15ms internal decision latency (512-sample capture blocks, zero-padded FFT), decoupled from the actual bulb send rate
+123. Configurable minimum "dwell" time — how long each color stays visible before the next one can replace it, independent of how fast the analysis reacts
+124–127. Four new modes: Spectrum Gradient (continuous N-band hue), Band Flash Overlay (ambient gradient + per-band accent flashes), Stereo Split (hue driven by L/R channel balance), Breathing Silence (ambient breathing brightness during quiet passages)
+128. Configurable band count (3-16) for gradient-based modes
+129. Per-bulb send latency + last-error reporting in live session status
+130–132. Three multi-bulb orchestration role modes: Unison, Phase Offset (chase effect), Band Split (one bulb per frequency band)
+133. Group audio-reactive session API + UI, sharing one audio analysis across every bulb in a group
+
+## Remote-access security (4)
+134. PIN-gate toggle for exposing the dashboard beyond the LAN (Settings → Remote Access)
+135. Brute-force lockout — 5 wrong attempts from one client locks it out for 5 minutes, including subsequently-correct PINs
+136. Session expiry enforced server-side via a signed token, not just relying on cookie expiration
+137. PIN stored as a salted PBKDF2-SHA256 hash — never in plaintext
+
 ---
 
-**Total: 97 working features**, verified end-to-end against a real Bytech
-A19 Wi-Fi RGB+CCT bulb (Tuya protocol v3.5) — see the verification log in
-`HANDOFF.md` for the actual commands run and their results, including two
-real bugs found and fixed during testing (brightness mode-flip, partial
-status merging).
+**Total: 137 working features**, verified end-to-end against a real Bytech
+A19 Wi-Fi RGB+CCT bulb (Tuya protocol v3.5) and this machine's real audio
+devices (VoiceMeeter + physical microphone) — see the verification log in
+`HANDOFF.md`, and `iterations/001` through `iterations/004` for each new
+feature area's actual test results, including five real bugs found and
+fixed across these rounds of testing (an IP-change log field bug, a
+brightness-floor bug, the audio/bulb-I/O blocking bug, a circular hue
+smoothing bug, and a root-page auth lockout bug).

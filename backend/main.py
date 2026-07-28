@@ -1,15 +1,18 @@
 import os
 import time
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel
 
 import config as cfgmod
 import bulb_manager as bm
 import schedule_engine
+import discovery
+import audio_reactive
+import remote_auth
 from scenes_presets import PRESET_COLORS, SCENES, EFFECTS
 
 APP_VERSION = "0.1.0-prototype"
@@ -22,6 +25,19 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.middleware("http")
+async def pin_gate(request: Request, call_next):
+    """No-op unless remote_auth has been explicitly enabled (Settings ->
+    Remote Access) -- the default LAN-only setup is never gated. When
+    enabled (meant for DuckDNS/Tailscale exposure), every route except the
+    login endpoint itself requires a valid signed session cookie."""
+    if remote_auth.path_requires_auth(request.url.path):
+        token = request.cookies.get(remote_auth.SESSION_COOKIE)
+        if not remote_auth.verify_session_token(token):
+            return JSONResponse({"detail": "authentication required"}, status_code=401)
+    return await call_next(request)
 
 
 def get_controller_or_404(device_id):
@@ -118,6 +134,37 @@ class GroupActionBody(BaseModel):
     device_ids: list[str]
 
 
+class DiscoveryIntervalBody(BaseModel):
+    hours: int
+
+
+class AudioReactiveStartBody(BaseModel):
+    device_index: int
+    mode: str = "band_fixed"
+    sensitivity: float = 1.0
+    monochrome_hue: float = 280.0
+    n_bands: int = 3
+    min_dwell_ms: int = audio_reactive.DEFAULT_MIN_DWELL_MS
+
+
+class GroupAudioReactiveStartBody(BaseModel):
+    device_index: int
+    mode: str = "band_fixed"
+    role_mode: str = "unison"
+    sensitivity: float = 1.0
+    monochrome_hue: float = 280.0
+    min_dwell_ms: int = audio_reactive.DEFAULT_MIN_DWELL_MS
+
+
+class PinLoginBody(BaseModel):
+    pin: str
+
+
+class RemoteAuthEnableBody(BaseModel):
+    pin: str
+    session_ttl_s: int | None = None
+
+
 # --------------------------------------------------------------- system ---
 @app.get("/api/system/health")
 def health():
@@ -133,6 +180,55 @@ def info():
         "scenes_count": len(SCENES),
         "effects_count": len(EFFECTS),
     }
+
+
+# ----------------------------------------------------------- pin auth ---
+@app.post("/api/auth/login")
+def auth_login(body: PinLoginBody, request: Request):
+    ip = request.client.host if request.client else "unknown"
+    ok, detail = remote_auth.verify_pin(body.pin, ip)
+    if not ok:
+        raise HTTPException(401, detail)
+    token = remote_auth.create_session_token()
+    resp = JSONResponse({"ok": True})
+    resp.set_cookie(remote_auth.SESSION_COOKIE, token, httponly=True, samesite="lax",
+                     max_age=remote_auth.get_session_ttl())
+    return resp
+
+
+@app.post("/api/auth/logout")
+def auth_logout():
+    resp = JSONResponse({"ok": True})
+    resp.delete_cookie(remote_auth.SESSION_COOKIE)
+    return resp
+
+
+@app.get("/api/auth/status")
+def auth_status(request: Request):
+    state = remote_auth.status()
+    token = request.cookies.get(remote_auth.SESSION_COOKIE)
+    authenticated = (not state["enabled"]) or remote_auth.verify_session_token(token)
+    return {"enabled": state["enabled"], "authenticated": authenticated}
+
+
+@app.post("/api/system/remote-auth/enable")
+def remote_auth_enable(body: RemoteAuthEnableBody):
+    try:
+        remote_auth.enable(body.pin, body.session_ttl_s)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    return {"ok": True}
+
+
+@app.post("/api/system/remote-auth/disable")
+def remote_auth_disable():
+    remote_auth.disable()
+    return {"ok": True}
+
+
+@app.get("/api/system/remote-auth/status")
+def remote_auth_status():
+    return remote_auth.status()
 
 
 # -------------------------------------------------------------- devices ---
@@ -330,6 +426,75 @@ def current_effect(device_id: str):
     return {"effect": c.current_effect()}
 
 
+# --------------------------------------------------------- audio-reactive -
+@app.get("/api/audio/devices")
+def audio_devices():
+    try:
+        return {
+            "devices": audio_reactive.list_input_devices(),
+            "modes": audio_reactive.MODES,
+            "role_modes": audio_reactive.ROLE_MODES,
+            "default_min_dwell_ms": audio_reactive.DEFAULT_MIN_DWELL_MS,
+            "min_dwell_floor_ms": audio_reactive.MIN_DWELL_FLOOR_MS,
+        }
+    except Exception as e:
+        raise HTTPException(500, f"could not list audio devices: {e}")
+
+
+@app.post("/api/devices/{device_id}/audio-reactive/start")
+def audio_reactive_start(device_id: str, body: AudioReactiveStartBody):
+    c = get_controller_or_404(device_id)
+    if body.mode not in audio_reactive.MODES:
+        raise HTTPException(400, f"unknown mode '{body.mode}', expected one of {audio_reactive.MODES}")
+    if body.min_dwell_ms < audio_reactive.MIN_DWELL_FLOOR_MS:
+        raise HTTPException(400, f"min_dwell_ms below the safety floor of {audio_reactive.MIN_DWELL_FLOOR_MS}ms")
+    audio_reactive.start_session(c, body.device_index, body.mode, body.sensitivity,
+                                  body.monochrome_hue, body.n_bands, body.min_dwell_ms)
+    return {"ok": True, "mode": body.mode, "device_index": body.device_index}
+
+
+@app.post("/api/devices/{device_id}/audio-reactive/stop")
+def audio_reactive_stop(device_id: str):
+    audio_reactive.stop_session(device_id)
+    return {"ok": True}
+
+
+# --------------------------------------------------- audio-reactive groups -
+@app.post("/api/groups/{group_id}/audio-reactive/start")
+def group_audio_reactive_start(group_id: str, body: GroupAudioReactiveStartBody):
+    cfg = cfgmod.load_config()
+    group = next((g for g in cfg.get("groups", []) if g["id"] == group_id), None)
+    if not group:
+        raise HTTPException(404, "group not found")
+    if body.mode not in audio_reactive.MODES:
+        raise HTTPException(400, f"unknown mode '{body.mode}', expected one of {audio_reactive.MODES}")
+    if body.role_mode not in audio_reactive.ROLE_MODES:
+        raise HTTPException(400, f"unknown role_mode '{body.role_mode}', expected one of {audio_reactive.ROLE_MODES}")
+    controllers = [bm.get_controller(d) for d in group["device_ids"]]
+    controllers = [c for c in controllers if c is not None]
+    if not controllers:
+        raise HTTPException(400, "group has no resolvable devices")
+    audio_reactive.start_group_session(group_id, controllers, body.device_index, body.mode,
+                                        body.role_mode, body.sensitivity, body.monochrome_hue, body.min_dwell_ms)
+    return {"ok": True, "mode": body.mode, "role_mode": body.role_mode, "bulb_count": len(controllers)}
+
+
+@app.post("/api/groups/{group_id}/audio-reactive/stop")
+def group_audio_reactive_stop(group_id: str):
+    audio_reactive.stop_group_session(group_id)
+    return {"ok": True}
+
+
+@app.get("/api/groups/{group_id}/audio-reactive/status")
+def group_audio_reactive_status(group_id: str):
+    return {"data_source": "LIVE DATA", **audio_reactive.get_group_session_status(group_id)}
+
+
+@app.get("/api/devices/{device_id}/audio-reactive/status")
+def audio_reactive_status(device_id: str):
+    return {"data_source": "LIVE DATA", **audio_reactive.get_session_status(device_id)}
+
+
 # --------------------------------------------------------------- timers ---
 @app.post("/api/devices/{device_id}/timers/sleep")
 def sleep_timer_start(device_id: str, body: SleepTimerBody):
@@ -430,6 +595,41 @@ def group_color(group_id: str, body: RGBBody):
 @app.on_event("startup")
 def on_startup():
     schedule_engine.start_scheduler(bm.get_controller)
+    discovery.start_scheduler()
+
+
+# ------------------------------------------------------------ discovery ---
+@app.get("/api/system/discovery")
+def discovery_state():
+    return discovery.get_state()
+
+
+@app.post("/api/system/scan")
+def discovery_scan_now():
+    return discovery.scan_now()
+
+
+@app.post("/api/system/discovery/interval")
+def discovery_set_interval(body: DiscoveryIntervalBody):
+    return discovery.set_interval_hours(body.hours)
+
+
+@app.post("/api/system/discovery/{device_id}/ignore")
+def discovery_ignore(device_id: str):
+    discovery.ignore_device(device_id)
+    return {"ok": True}
+
+
+@app.post("/api/system/discovery/{device_id}/unignore")
+def discovery_unignore(device_id: str):
+    discovery.unignore_device(device_id)
+    return {"ok": True}
+
+
+@app.delete("/api/system/discovery/{device_id}")
+def discovery_forget(device_id: str):
+    discovery.forget_discovered(device_id)
+    return {"ok": True}
 
 
 # --------------------------------------------------------- static files ---
