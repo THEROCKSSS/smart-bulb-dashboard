@@ -64,7 +64,7 @@ the pitfalls already found the hard way during development.
 - [Audio-Reactive Lighting](docs/music-reactive-lighting.html) — all 12 modes, latency/dwell design, orchestration
 - [Network Discovery](docs/network-discovery.html) — auto-scan and manual discovery
 - [Remote Access & Security](docs/remote-access-security.html) — Tailscale (recommended) vs. DuckDNS+PIN gate, threat model
-- [Month-Long Roadmap](roadmap/README.html) — 1000 planned items across 4 weekly phases, with a dependency graph
+- [Month-Long Roadmap](roadmap/) — 1000 planned items across 4 weekly phases, with a dependency graph
 - [Handoff / Build History](HANDOFF.html) — the real story of how this was built, round by round
 
 ## Build process, warts and all
