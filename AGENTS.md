@@ -95,6 +95,12 @@ Before considering a change complete:
   under `.claude/skills/`.
 - `HANDOFF.md` gets a short update if the change is significant enough
   that someone resuming cold would need to know about it.
+- Cutting a new version updates `CHANGELOG.md` **and** `docs/changelog.html`
+  together — the live Pages changelog isn't generated from the markdown
+  file, it's hand-kept in sync. Each version needs both the rendered HTML
+  section and a matching `<template>` with Discord-flavored plain text
+  (see `CHANGELOG.md`'s own process note for the exact pattern) — that
+  template is what the page's "Copy for Discord" button actually copies.
 
 ## Explicit scope boundaries
 

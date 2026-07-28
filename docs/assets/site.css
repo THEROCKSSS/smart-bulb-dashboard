@@ -110,6 +110,22 @@ blockquote {
 
 hr { border: none; border-top: 1px solid var(--color-rule); margin: var(--space-2xl) 0; }
 
+/* ---------------------------------------------------------- changelog */
+.changelog-entry { margin-bottom: var(--space-2xl); }
+.changelog-entry__head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-md);
+  flex-wrap: wrap;
+}
+.changelog-entry__head h2 { margin-top: 0; }
+.copy-changelog {
+  position: static;
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+
 /* ---------------------------------------------------------------- tags */
 .tag {
   display: inline-block;

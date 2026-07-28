@@ -16,20 +16,34 @@
     });
   }
 
+  function flashCopied(btn) {
+    var original = btn.textContent;
+    btn.textContent = "Copied";
+    btn.setAttribute("data-copied", "true");
+    setTimeout(function () {
+      btn.textContent = original;
+      btn.removeAttribute("data-copied");
+    }, 1600);
+  }
+
   document.addEventListener("click", function (e) {
+    var changelogBtn = e.target.closest(".copy-changelog");
+    if (changelogBtn) {
+      var tmpl = document.getElementById(changelogBtn.dataset.target);
+      if (!tmpl) return;
+      navigator.clipboard.writeText(tmpl.content.textContent.trim()).then(function () {
+        flashCopied(changelogBtn);
+      });
+      return;
+    }
+
     var btn = e.target.closest(".copy-btn");
     if (!btn) return;
     var pre = btn.closest("pre");
     var codeEl = pre && pre.querySelector("code");
     if (!codeEl) return;
     navigator.clipboard.writeText(codeEl.textContent).then(function () {
-      var original = btn.textContent;
-      btn.textContent = "Copied";
-      btn.setAttribute("data-copied", "true");
-      setTimeout(function () {
-        btn.textContent = original;
-        btn.removeAttribute("data-copied");
-      }, 1600);
+      flashCopied(btn);
     });
   });
 })();

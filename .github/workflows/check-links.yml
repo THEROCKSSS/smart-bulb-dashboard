@@ -1,0 +1,27 @@
+name: Check docs site links
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - "docs/**"
+  pull_request:
+    paths:
+      - "docs/**"
+  workflow_dispatch: {}
+
+jobs:
+  lychee:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Link check (docs/ site)
+        uses: lycheeverse/lychee-action@v2
+        with:
+          args: >-
+            --no-progress
+            --exclude-mail
+            --accept 200,204,206,301,302,308,429
+            docs/**/*.html
+          fail: true

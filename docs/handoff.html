@@ -5,6 +5,10 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Build History — Smart Bulb Dashboard</title>
 <meta name="description" content="How this was built — what failed, what got fixed, what's known-fragile.">
+<meta property="og:title" content="Build History — Smart Bulb Dashboard">
+<meta property="og:description" content="How this was built — what failed, what got fixed, what's known-fragile.">
+<meta property="og:type" content="website">
+<meta name="twitter:card" content="summary">
 <link rel="stylesheet" href="assets/site.css">
 </head>
 <body>
@@ -20,6 +24,7 @@
       <ul>
         <li><a href="index.html" class="nav-link">Home</a></li>
         <li><a href="setup.html" class="nav-link">Setup Guide</a></li>
+        <li><a href="faq.html" class="nav-link">FAQ</a></li>
         <li><a href="features.html" class="nav-link">Features</a></li>
       </ul>
       <p class="rail__group-label">Reference</p>
@@ -51,7 +56,7 @@
     <h2>Round 2 &amp; 3 — audio-reactive lighting, discovery, orchestration, security</h2>
     <p>Built the 12-mode audio engine, network auto-discovery, multi-bulb orchestration, and the PIN gate. Five real bugs found via actual testing, not code review alone:</p>
     <ul>
-      <li>An IP-change log entry reported the wrong "old IP."</li>
+      <li>An IP-change log entry reported the wrong “old IP.”</li>
       <li>The brightness floor during silence never actually reached its floor.</li>
       <li>Bulb network calls inside the audio callback froze the whole analysis pipeline when the bulb was slow or offline.</li>
       <li>Hue smoothing broke at the 0°/360° wrap boundary.</li>
@@ -80,6 +85,7 @@
         <h4>Get Started</h4>
         <ul>
           <li><a href="setup.html">Setup guide</a></li>
+          <li><a href="faq.html">FAQ</a></li>
           <li><a href="https://github.com/THEROCKSSS/smart-bulb-dashboard/blob/master/AGENTS.md">For AI agents</a></li>
           <li><a href="https://github.com/THEROCKSSS/smart-bulb-dashboard">Clone the repo</a></li>
         </ul>
@@ -98,9 +104,11 @@
           <li><a href="roadmap.html">Roadmap</a></li>
           <li><a href="changelog.html">Changelog</a></li>
           <li><a href="https://github.com/THEROCKSSS/smart-bulb-dashboard/tree/master/iterations">Build iterations</a></li>
+          <li><a href="https://github.com/THEROCKSSS/smart-bulb-dashboard/blob/master/LICENSE">License</a></li>
+          <li><a href="https://github.com/THEROCKSSS/smart-bulb-dashboard/issues/new">Report an issue</a></li>
         </ul>
       </div>
-      <p class="footer-meta">Smart Bulb Dashboard · Polyform Noncommercial License 1.0.0 · <a href="handoff.html">Build history</a></p>
+      <p class="footer-meta">Smart Bulb Dashboard · Polyform Noncommercial License 1.0.0 · No analytics, no tracking — this site doesn’t phone home · <a href="handoff.html">Build history</a></p>
     </footer>
   </main>
 </div>

@@ -5,6 +5,10 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Audio-Reactive Lighting — Smart Bulb Dashboard</title>
 <meta name="description" content="12 audio-reactive modes, latency/dwell design, and multi-bulb orchestration.">
+<meta property="og:title" content="Audio-Reactive Lighting — Smart Bulb Dashboard">
+<meta property="og:description" content="12 audio-reactive modes, latency/dwell design, and multi-bulb orchestration.">
+<meta property="og:type" content="website">
+<meta name="twitter:card" content="summary">
 <link rel="stylesheet" href="assets/site.css">
 </head>
 <body>
@@ -20,6 +24,7 @@
       <ul>
         <li><a href="index.html" class="nav-link">Home</a></li>
         <li><a href="setup.html" class="nav-link">Setup Guide</a></li>
+        <li><a href="faq.html" class="nav-link">FAQ</a></li>
         <li><a href="features.html" class="nav-link">Features</a></li>
       </ul>
       <p class="rail__group-label">Reference</p>
@@ -65,7 +70,7 @@
     </table>
 
     <h2>Latency vs. visibility</h2>
-    <p>"Down to the millisecond" isn't physically achievable on this hardware — the bulb itself has a ~50–100ms round-trip floor. What's actually tunable are two separate numbers:</p>
+    <p>“Down to the millisecond” isn't physically achievable on this hardware — the bulb itself has a ~50–100ms round-trip floor. What's actually tunable are two separate numbers:</p>
     <ul>
       <li><strong>Decision latency</strong> — how fast the pipeline notices a change and computes a new target. Sub-15ms internally (512-sample capture blocks, zero-padded to a 4096-point FFT for band accuracy).</li>
       <li><strong>Display dwell (<code>min_dwell_ms</code>)</strong> — how long a color has to stay on the bulb before the next one can replace it. Default 90ms, floor 40ms. Turn it down for a snappier reaction, up for something calmer and easier to actually watch change.</li>
@@ -79,7 +84,7 @@
       <tbody>
         <tr><td><code>unison</code></td><td>Every bulb shows the identical color.</td></tr>
         <tr><td><code>phase_offset</code></td><td>Same effect, hue shifted per bulb — a chase.</td></tr>
-        <tr><td><code>band_split</code></td><td>Bulb <em>i</em> primarily reacts to band <em>i</em> — a literal "bass bulb" / "treble bulb" setup.</td></tr>
+        <tr><td><code>band_split</code></td><td>Bulb <em>i</em> primarily reacts to band <em>i</em> — a literal “bass bulb”/“treble bulb” setup.</td></tr>
       </tbody>
     </table>
     <p>Each bulb keeps its own independent send thread, so one slow or offline bulb in a group never stalls the others.</p>
@@ -95,6 +100,7 @@
         <h4>Get Started</h4>
         <ul>
           <li><a href="setup.html">Setup guide</a></li>
+          <li><a href="faq.html">FAQ</a></li>
           <li><a href="https://github.com/THEROCKSSS/smart-bulb-dashboard/blob/master/AGENTS.md">For AI agents</a></li>
           <li><a href="https://github.com/THEROCKSSS/smart-bulb-dashboard">Clone the repo</a></li>
         </ul>
@@ -113,9 +119,11 @@
           <li><a href="roadmap.html">Roadmap</a></li>
           <li><a href="changelog.html">Changelog</a></li>
           <li><a href="https://github.com/THEROCKSSS/smart-bulb-dashboard/tree/master/iterations">Build iterations</a></li>
+          <li><a href="https://github.com/THEROCKSSS/smart-bulb-dashboard/blob/master/LICENSE">License</a></li>
+          <li><a href="https://github.com/THEROCKSSS/smart-bulb-dashboard/issues/new">Report an issue</a></li>
         </ul>
       </div>
-      <p class="footer-meta">Smart Bulb Dashboard · Polyform Noncommercial License 1.0.0 · <a href="handoff.html">Build history</a></p>
+      <p class="footer-meta">Smart Bulb Dashboard · Polyform Noncommercial License 1.0.0 · No analytics, no tracking — this site doesn’t phone home · <a href="handoff.html">Build history</a></p>
     </footer>
   </main>
 </div>

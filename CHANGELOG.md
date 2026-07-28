@@ -103,3 +103,4 @@ other approaches failed).
 2. Run `gh release create vX.Y.Z --generate-notes` to draft categorized notes from everything merged since the last tag.
 3. Fold the drafted notes into a new entry here, in this file's voice (not a raw PR-title dump) — the automation drafts, it doesn't replace editorial judgment.
 4. Bump `APP_VERSION` in `backend/main.py` to match.
+5. Add the matching entry to `docs/changelog.html`: a `<section class="changelog-entry">` with the rendered HTML (heading + Added/Fixed lists) **and** a `<template id="cl-XYZ">` holding a plain-text, Discord-flavored (`**bold**`, `- ` bullets) version of the same entry — that's what the page's "Copy for Discord" button actually copies. Give the button a `data-target` matching the template's `id`. Keep the two in sync; the template isn't auto-generated from the HTML.

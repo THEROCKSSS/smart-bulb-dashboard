@@ -1,0 +1,115 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FAQ — Smart Bulb Dashboard</title>
+<meta name="description" content="Answers to the questions that came up repeatedly while building and running this dashboard.">
+<meta property="og:title" content="FAQ — Smart Bulb Dashboard">
+<meta property="og:description" content="Answers to the questions that came up repeatedly while building and running this dashboard.">
+<meta property="og:type" content="website">
+<meta name="twitter:card" content="summary">
+<link rel="stylesheet" href="assets/site.css">
+</head>
+<body>
+<button class="rail__toggle" aria-expanded="false" aria-controls="rail">☰ Menu</button>
+<div class="shell">
+  <nav class="rail" id="rail">
+    <div>
+      <a href="index.html" class="rail__brand">Smart<span>Bulb</span></a>
+      <p class="rail__tagline">Local, cloud-independent Tuya bulb dashboard</p>
+    </div>
+    <div>
+      <p class="rail__group-label">Get started</p>
+      <ul>
+        <li><a href="index.html" class="nav-link">Home</a></li>
+        <li><a href="setup.html" class="nav-link">Setup Guide</a></li>
+        <li><a href="faq.html" class="nav-link" aria-current="page">FAQ</a></li>
+        <li><a href="features.html" class="nav-link">Features</a></li>
+      </ul>
+      <p class="rail__group-label">Reference</p>
+      <ul>
+        <li><a href="api.html" class="nav-link">API Reference</a></li>
+        <li><a href="audio.html" class="nav-link">Audio-Reactive Lighting</a></li>
+        <li><a href="security.html" class="nav-link">Remote Access &amp; Security</a></li>
+      </ul>
+      <p class="rail__group-label">Project</p>
+      <ul>
+        <li><a href="roadmap.html" class="nav-link">Roadmap</a></li>
+        <li><a href="changelog.html" class="nav-link">Changelog</a></li>
+        <li><a href="handoff.html" class="nav-link">Build History</a></li>
+      </ul>
+    </div>
+    <div class="rail__external">
+      <a href="https://github.com/THEROCKSSS/smart-bulb-dashboard">GitHub repo →</a>
+    </div>
+  </nav>
+
+  <main class="main">
+    <p class="eyebrow">FAQ</p>
+    <h1>Questions that came up while building this.</h1>
+    <p class="lede">Pulled from the actual troubleshooting sections in <a href="setup.html">Setup</a>, <a href="security.html">Security</a>, and the project skills — not invented for this page.</p>
+
+    <h2>The bulb shows “Device Unreachable” — what do I do?</h2>
+    <p>The bulb lost power or dropped off Wi-Fi — cheap Wi-Fi bulbs do this occasionally, including the one this project was built against, observed multiple times across every build session. Power-cycle it and retry. This is normal bulb/router behavior, not a dashboard bug.</p>
+
+    <h2>Commands return 200 OK but the bulb doesn't actually change</h2>
+    <p>Almost always the wrong protocol <code>version</code> in <code>config.json</code>. Try <code>3.3</code> first, then <code>3.1</code>/<code>3.4</code>/<code>3.5</code> — whichever <code>tinytuya scan</code> reported during setup.</p>
+
+    <h2>The Tuya IoT Platform QR scan does nothing</h2>
+    <p>A known Tuya console bug — almost always a data-center mismatch between the Cloud Project's region and the app account's region, or scanning while logged in as a shared “family member” account. Skip it entirely and use the cloud-assisted <code>tuya-device-sharing-sdk</code> login instead — see <a href="setup.html">Setup</a>.</p>
+
+    <h2>My bulb's IP changed and the dashboard lost it</h2>
+    <p>Routers reassign DHCP leases. Use <strong>Diagnostics → Rescan Network</strong>, or turn on network auto-discovery's scheduled scanning (see the <a href="api.html">API reference</a>'s discovery section), which detects IP changes for already-configured bulbs automatically. Setting a DHCP reservation for the bulb's MAC address avoids this entirely.</p>
+
+    <h2>The Audio Reactive tab shows no input devices</h2>
+    <p>PortAudio couldn't enumerate a device. Confirm <code>sounddevice</code> installed correctly in the backend's own venv (<code>pip show sounddevice</code>), and that you're not running inside Docker — audio devices generally aren't passed through to containers. See <a href="audio.html">Audio-Reactive Lighting</a>.</p>
+
+    <h2>I enabled the PIN gate and now I'm locked out</h2>
+    <p>The dashboard's own root page always stays reachable even with the gate on — if you can't even see the PIN prompt, that's a different, more serious issue worth reporting. If you're seeing the prompt but locked out after wrong attempts, wait out the 5-minute lockout, or restart the backend process (lockout state is in-memory, not persisted). See <a href="security.html">Remote Access &amp; Security</a>.</p>
+
+    <h2>Can I add a second bulb?</h2>
+    <p>Yes — the architecture already supports it. <code>config.json</code> is a list of devices, and <code>groups</code>/audio orchestration already work against however many bulbs are configured. Get the new bulb's credentials the same way as the first (the cloud-assisted login lists every bulb on the account once you're logged in), add an entry to <code>config.json</code>, restart. No code changes needed.</p>
+
+    <h2>Does any of this touch the cloud?</h2>
+    <p>Not for day-to-day use. Bulb control talks directly to the bulb over your LAN. Network discovery is a local UDP broadcast — nothing leaves your network. The one-time setup step (getting the local key) does use Tuya's cloud-assisted login, since that key is never broadcast locally by design.</p>
+
+    <h2>Can I try this without owning a real Tuya bulb?</h2>
+    <p>Not currently — there's no simulated/demo device mode. Everything here was built and tested against one real physical bulb.</p>
+
+    <p>Didn't find your question? <a href="https://github.com/THEROCKSSS/smart-bulb-dashboard/issues/new">Open an issue</a>.</p>
+
+    <footer class="site-footer">
+      <div>
+        <h4>Get Started</h4>
+        <ul>
+          <li><a href="setup.html">Setup guide</a></li>
+          <li><a href="faq.html">FAQ</a></li>
+          <li><a href="https://github.com/THEROCKSSS/smart-bulb-dashboard/blob/master/AGENTS.md">For AI agents</a></li>
+          <li><a href="https://github.com/THEROCKSSS/smart-bulb-dashboard">Clone the repo</a></li>
+        </ul>
+      </div>
+      <div>
+        <h4>Reference</h4>
+        <ul>
+          <li><a href="api.html">API reference</a></li>
+          <li><a href="audio.html">Audio-reactive lighting</a></li>
+          <li><a href="security.html">Remote access &amp; security</a></li>
+        </ul>
+      </div>
+      <div>
+        <h4>Project</h4>
+        <ul>
+          <li><a href="roadmap.html">Roadmap</a></li>
+          <li><a href="changelog.html">Changelog</a></li>
+          <li><a href="https://github.com/THEROCKSSS/smart-bulb-dashboard/blob/master/LICENSE">License</a></li>
+          <li><a href="https://github.com/THEROCKSSS/smart-bulb-dashboard/issues/new">Report an issue</a></li>
+        </ul>
+      </div>
+      <p class="footer-meta">Smart Bulb Dashboard · Polyform Noncommercial License 1.0.0 · No analytics, no tracking — this site doesn't phone home · <a href="handoff.html">Build history</a></p>
+    </footer>
+  </main>
+</div>
+<script src="assets/main.js"></script>
+</body>
+</html>
