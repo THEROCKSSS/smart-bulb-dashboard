@@ -69,7 +69,7 @@ the pitfalls already found the hard way during development.
 
 ## Build process, warts and all
 
-This project's [`iterations/`](https://github.com/THEROCKSSS/smart-bulb-dashboard/tree/main/iterations)
+This project's [`iterations/`](https://github.com/THEROCKSSS/smart-bulb-dashboard/tree/master/iterations)
 directory documents every real bug found during development and how it
 was fixed — a blocking-I/O bug that froze audio analysis, a circular
 hue-smoothing bug, a PIN-gate root-path lockout bug, and more. It's kept
