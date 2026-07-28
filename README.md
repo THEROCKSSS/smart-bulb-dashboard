@@ -36,8 +36,13 @@ No cloud round-trip for day-to-day control.
   `AGENTS.md` first.**
 - A **month-long, ~1000-item roadmap** (`roadmap/`) for planned future
   work, phased across 4 weeks with a dependency graph.
-- A live GitHub Pages site (once enabled) mirroring these docs for easier
-  browsing.
+- A live documentation site at
+  [therocksss.github.io/smart-bulb-dashboard](https://therocksss.github.io/smart-bulb-dashboard/) —
+  a hand-built, hand-styled 9-page site (Home, Setup, Features, API,
+  Audio-Reactive, Security, Roadmap, Changelog, Build History), not the
+  stock Jekyll theme this used to be.
+- A real `CHANGELOG.md`, with `.github/release.yml` set up so
+  `gh release create --generate-notes` drafts future entries automatically.
 
 ## Quickstart
 
