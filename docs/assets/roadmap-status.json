@@ -1,8 +1,9 @@
 {
-  "generatedAt": "2026-07-29T22:59:34.512259+00:00",
+  "generatedAt": "2026-07-29T23:09:55.901423+00:00",
   "totalSections": 58,
   "statusCounts": {
-    "planned": 58
+    "planned": 55,
+    "in_progress": 3
   },
   "sections": [
     {
@@ -455,9 +456,9 @@
       "startNum": 96,
       "endNum": 110,
       "itemCount": 15,
-      "status": "planned",
+      "status": "in_progress",
       "url": "https://github.com/THEROCKSSS/smart-bulb-dashboard/issues/35",
-      "updatedAt": "2026-07-29T02:27:25Z",
+      "updatedAt": "2026-07-29T23:09:51Z",
       "milestone": "Week 3 — Integrations & UX"
     },
     {
@@ -572,9 +573,9 @@
       "startNum": 1,
       "endNum": 20,
       "itemCount": 20,
-      "status": "planned",
+      "status": "in_progress",
       "url": "https://github.com/THEROCKSSS/smart-bulb-dashboard/issues/44",
-      "updatedAt": "2026-07-29T02:28:02Z",
+      "updatedAt": "2026-07-29T23:09:47Z",
       "milestone": "Week 4 — Analytics, Polish & Release"
     },
     {
@@ -663,9 +664,9 @@
       "startNum": 116,
       "endNum": 135,
       "itemCount": 20,
-      "status": "planned",
+      "status": "in_progress",
       "url": "https://github.com/THEROCKSSS/smart-bulb-dashboard/issues/51",
-      "updatedAt": "2026-07-29T02:28:32Z",
+      "updatedAt": "2026-07-29T23:09:54Z",
       "milestone": "Week 4 — Analytics, Polish & Release"
     },
     {
