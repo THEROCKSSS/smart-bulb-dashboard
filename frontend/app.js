@@ -1432,7 +1432,14 @@ function hidePinGate() {
 async function submitPin() {
   const input = document.getElementById("pin-input");
   const errEl = document.getElementById("pin-error");
+  const submitBtn = document.getElementById("pin-submit");
   errEl.textContent = "";
+  // Guard against double-submit (easy to trigger with a clumsy tap on a phone
+  // keyboard) and give real visual feedback that the tap registered.
+  if (submitBtn.disabled) return;
+  submitBtn.disabled = true;
+  const originalLabel = submitBtn.textContent;
+  submitBtn.textContent = "Unlocking…";
   try {
     const res = await fetch("/api/auth/login", {
       method: "POST",
@@ -1443,6 +1450,7 @@ async function submitPin() {
       const body = await res.json().catch(() => ({}));
       errEl.textContent = body.detail || "incorrect PIN";
       input.value = "";
+      input.focus();
       return;
     }
     hidePinGate();
@@ -1450,6 +1458,9 @@ async function submitPin() {
     await bootDashboard();
   } catch (e) {
     errEl.textContent = "could not reach the server";
+  } finally {
+    submitBtn.disabled = false;
+    submitBtn.textContent = originalLabel;
   }
 }
 
