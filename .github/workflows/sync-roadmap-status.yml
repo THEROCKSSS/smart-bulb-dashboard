@@ -1,0 +1,39 @@
+name: Sync roadmap status
+
+on:
+  issues:
+    types: [opened, closed, reopened, labeled, unlabeled]
+  schedule:
+    - cron: "17 3 * * *"
+  workflow_dispatch: {}
+
+permissions:
+  issues: read
+  contents: write
+
+concurrency:
+  group: sync-roadmap-status
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Regenerate docs/assets/roadmap-status.json
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: python .github/scripts/sync_roadmap_status.py
+
+      - name: Commit if changed
+        run: |
+          git config user.name "roadmap-status-bot"
+          git config user.email "actions@users.noreply.github.com"
+          if ! git diff --quiet -- docs/assets/roadmap-status.json; then
+            git add docs/assets/roadmap-status.json
+            git commit -m "Sync roadmap status from issues [skip ci]"
+            git push
+          else
+            echo "No status change."
+          fi

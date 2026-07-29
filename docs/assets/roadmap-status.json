@@ -1,0 +1,589 @@
+{
+  "generatedAt": "2026-07-29T02:33:38.975561+00:00",
+  "totalSections": 58,
+  "statusCounts": {
+    "planned": 58
+  },
+  "sections": [
+    {
+      "issueNumber": 1,
+      "week": 1,
+      "section": "Additional color-mapping modes",
+      "startNum": 1,
+      "endNum": 20,
+      "status": "planned",
+      "url": "https://github.com/THEROCKSSS/smart-bulb-dashboard/issues/1",
+      "updatedAt": "2026-07-29T02:33:42Z"
+    },
+    {
+      "issueNumber": 2,
+      "week": 1,
+      "section": "Beat/rhythm/tempo features",
+      "startNum": 21,
+      "endNum": 40,
+      "status": "planned",
+      "url": "https://github.com/THEROCKSSS/smart-bulb-dashboard/issues/2",
+      "updatedAt": "2026-07-28T07:30:37Z"
+    },
+    {
+      "issueNumber": 3,
+      "week": 1,
+      "section": "Genre & mood presets for audio-reactive",
+      "startNum": 41,
+      "endNum": 60,
+      "status": "planned",
+      "url": "https://github.com/THEROCKSSS/smart-bulb-dashboard/issues/3",
+      "updatedAt": "2026-07-28T07:30:40Z"
+    },
+    {
+      "issueNumber": 4,
+      "week": 1,
+      "section": "Auto-gain & signal conditioning",
+      "startNum": 61,
+      "endNum": 75,
+      "status": "planned",
+      "url": "https://github.com/THEROCKSSS/smart-bulb-dashboard/issues/4",
+      "updatedAt": "2026-07-28T07:30:43Z"
+    },
+    {
+      "issueNumber": 5,
+      "week": 1,
+      "section": "Visualizer & live-preview enhancements",
+      "startNum": 76,
+      "endNum": 95,
+      "status": "planned",
+      "url": "https://github.com/THEROCKSSS/smart-bulb-dashboard/issues/5",
+      "updatedAt": "2026-07-28T07:30:45Z"
+    },
+    {
+      "issueNumber": 6,
+      "week": 1,
+      "section": "Orchestration refinements",
+      "startNum": 96,
+      "endNum": 115,
+      "status": "planned",
+      "url": "https://github.com/THEROCKSSS/smart-bulb-dashboard/issues/6",
+      "updatedAt": "2026-07-28T07:30:48Z"
+    },
+    {
+      "issueNumber": 7,
+      "week": 1,
+      "section": "Per-bulb configuration & zones",
+      "startNum": 116,
+      "endNum": 135,
+      "status": "planned",
+      "url": "https://github.com/THEROCKSSS/smart-bulb-dashboard/issues/7",
+      "updatedAt": "2026-07-28T07:30:50Z"
+    },
+    {
+      "issueNumber": 8,
+      "week": 1,
+      "section": "Session management & presets",
+      "startNum": 136,
+      "endNum": 155,
+      "status": "planned",
+      "url": "https://github.com/THEROCKSSS/smart-bulb-dashboard/issues/8",
+      "updatedAt": "2026-07-28T07:30:53Z"
+    },
+    {
+      "issueNumber": 9,
+      "week": 1,
+      "section": "Performance & reliability hardening for audio",
+      "startNum": 156,
+      "endNum": 175,
+      "status": "planned",
+      "url": "https://github.com/THEROCKSSS/smart-bulb-dashboard/issues/9",
+      "updatedAt": "2026-07-28T07:30:55Z"
+    },
+    {
+      "issueNumber": 10,
+      "week": 1,
+      "section": "Testing & validation tooling for audio",
+      "startNum": 176,
+      "endNum": 190,
+      "status": "planned",
+      "url": "https://github.com/THEROCKSSS/smart-bulb-dashboard/issues/10",
+      "updatedAt": "2026-07-28T07:30:58Z"
+    },
+    {
+      "issueNumber": 11,
+      "week": 1,
+      "section": "Audio input source expansion",
+      "startNum": 191,
+      "endNum": 205,
+      "status": "planned",
+      "url": "https://github.com/THEROCKSSS/smart-bulb-dashboard/issues/11",
+      "updatedAt": "2026-07-28T07:31:00Z"
+    },
+    {
+      "issueNumber": 12,
+      "week": 1,
+      "section": "Music-player-adjacent features",
+      "startNum": 206,
+      "endNum": 225,
+      "status": "planned",
+      "url": "https://github.com/THEROCKSSS/smart-bulb-dashboard/issues/12",
+      "updatedAt": "2026-07-28T07:31:03Z"
+    },
+    {
+      "issueNumber": 13,
+      "week": 1,
+      "section": "Accessibility for audio-reactive",
+      "startNum": 226,
+      "endNum": 235,
+      "status": "planned",
+      "url": "https://github.com/THEROCKSSS/smart-bulb-dashboard/issues/13",
+      "updatedAt": "2026-07-28T07:31:05Z"
+    },
+    {
+      "issueNumber": 14,
+      "week": 1,
+      "section": "Misc / novelty audio ideas",
+      "startNum": 236,
+      "endNum": 250,
+      "status": "planned",
+      "url": "https://github.com/THEROCKSSS/smart-bulb-dashboard/issues/14",
+      "updatedAt": "2026-07-28T07:31:08Z"
+    },
+    {
+      "issueNumber": 15,
+      "week": 2,
+      "section": "DuckDNS / dynamic DNS hardening",
+      "startNum": 1,
+      "endNum": 15,
+      "status": "planned",
+      "url": "https://github.com/THEROCKSSS/smart-bulb-dashboard/issues/15",
+      "updatedAt": "2026-07-29T02:25:59Z"
+    },
+    {
+      "issueNumber": 16,
+      "week": 2,
+      "section": "Tailscale deepening",
+      "startNum": 16,
+      "endNum": 30,
+      "status": "planned",
+      "url": "https://github.com/THEROCKSSS/smart-bulb-dashboard/issues/16",
+      "updatedAt": "2026-07-29T02:26:03Z"
+    },
+    {
+      "issueNumber": 17,
+      "week": 2,
+      "section": "TLS / reverse proxy",
+      "startNum": 31,
+      "endNum": 50,
+      "status": "planned",
+      "url": "https://github.com/THEROCKSSS/smart-bulb-dashboard/issues/17",
+      "updatedAt": "2026-07-29T02:26:07Z"
+    },
+    {
+      "issueNumber": 18,
+      "week": 2,
+      "section": "PIN gate hardening",
+      "startNum": 51,
+      "endNum": 70,
+      "status": "planned",
+      "url": "https://github.com/THEROCKSSS/smart-bulb-dashboard/issues/18",
+      "updatedAt": "2026-07-29T02:26:11Z"
+    },
+    {
+      "issueNumber": 19,
+      "week": 2,
+      "section": "Adversarial security-test phase",
+      "startNum": 71,
+      "endNum": 100,
+      "status": "planned",
+      "url": "https://github.com/THEROCKSSS/smart-bulb-dashboard/issues/19",
+      "updatedAt": "2026-07-29T02:26:15Z"
+    },
+    {
+      "issueNumber": 20,
+      "week": 2,
+      "section": "Rate limiting & abuse prevention",
+      "startNum": 101,
+      "endNum": 120,
+      "status": "planned",
+      "url": "https://github.com/THEROCKSSS/smart-bulb-dashboard/issues/20",
+      "updatedAt": "2026-07-29T02:26:19Z"
+    },
+    {
+      "issueNumber": 21,
+      "week": 2,
+      "section": "Multi-user auth exploration",
+      "startNum": 121,
+      "endNum": 140,
+      "status": "planned",
+      "url": "https://github.com/THEROCKSSS/smart-bulb-dashboard/issues/21",
+      "updatedAt": "2026-07-29T02:26:24Z"
+    },
+    {
+      "issueNumber": 22,
+      "week": 2,
+      "section": "Audit logging & alerting",
+      "startNum": 141,
+      "endNum": 160,
+      "status": "planned",
+      "url": "https://github.com/THEROCKSSS/smart-bulb-dashboard/issues/22",
+      "updatedAt": "2026-07-29T02:26:29Z"
+    },
+    {
+      "issueNumber": 23,
+      "week": 2,
+      "section": "Backup / restore / config sync",
+      "startNum": 161,
+      "endNum": 175,
+      "status": "planned",
+      "url": "https://github.com/THEROCKSSS/smart-bulb-dashboard/issues/23",
+      "updatedAt": "2026-07-29T02:26:33Z"
+    },
+    {
+      "issueNumber": 24,
+      "week": 2,
+      "section": "Deployment / infra",
+      "startNum": 176,
+      "endNum": 195,
+      "status": "planned",
+      "url": "https://github.com/THEROCKSSS/smart-bulb-dashboard/issues/24",
+      "updatedAt": "2026-07-29T02:26:38Z"
+    },
+    {
+      "issueNumber": 25,
+      "week": 2,
+      "section": "Network resilience",
+      "startNum": 196,
+      "endNum": 210,
+      "status": "planned",
+      "url": "https://github.com/THEROCKSSS/smart-bulb-dashboard/issues/25",
+      "updatedAt": "2026-07-29T02:26:42Z"
+    },
+    {
+      "issueNumber": 26,
+      "week": 2,
+      "section": "Secrets management",
+      "startNum": 211,
+      "endNum": 225,
+      "status": "planned",
+      "url": "https://github.com/THEROCKSSS/smart-bulb-dashboard/issues/26",
+      "updatedAt": "2026-07-29T02:26:46Z"
+    },
+    {
+      "issueNumber": 27,
+      "week": 2,
+      "section": "Observability / monitoring",
+      "startNum": 226,
+      "endNum": 240,
+      "status": "planned",
+      "url": "https://github.com/THEROCKSSS/smart-bulb-dashboard/issues/27",
+      "updatedAt": "2026-07-29T02:26:51Z"
+    },
+    {
+      "issueNumber": 28,
+      "week": 2,
+      "section": "Misc security ideas",
+      "startNum": 241,
+      "endNum": 250,
+      "status": "planned",
+      "url": "https://github.com/THEROCKSSS/smart-bulb-dashboard/issues/28",
+      "updatedAt": "2026-07-29T02:26:55Z"
+    },
+    {
+      "issueNumber": 29,
+      "week": 3,
+      "section": "Home Assistant integration",
+      "startNum": 1,
+      "endNum": 20,
+      "status": "planned",
+      "url": "https://github.com/THEROCKSSS/smart-bulb-dashboard/issues/29",
+      "updatedAt": "2026-07-29T02:26:59Z"
+    },
+    {
+      "issueNumber": 30,
+      "week": 3,
+      "section": "HomeKit bridging",
+      "startNum": 21,
+      "endNum": 35,
+      "status": "planned",
+      "url": "https://github.com/THEROCKSSS/smart-bulb-dashboard/issues/30",
+      "updatedAt": "2026-07-29T02:27:03Z"
+    },
+    {
+      "issueNumber": 31,
+      "week": 3,
+      "section": "Google Home / Alexa bridging",
+      "startNum": 36,
+      "endNum": 50,
+      "status": "planned",
+      "url": "https://github.com/THEROCKSSS/smart-bulb-dashboard/issues/31",
+      "updatedAt": "2026-07-29T02:27:07Z"
+    },
+    {
+      "issueNumber": 32,
+      "week": 3,
+      "section": "Local/non-cloud voice control",
+      "startNum": 51,
+      "endNum": 65,
+      "status": "planned",
+      "url": "https://github.com/THEROCKSSS/smart-bulb-dashboard/issues/32",
+      "updatedAt": "2026-07-29T02:27:11Z"
+    },
+    {
+      "issueNumber": 33,
+      "week": 3,
+      "section": "Discord bot integration",
+      "startNum": 66,
+      "endNum": 80,
+      "status": "planned",
+      "url": "https://github.com/THEROCKSSS/smart-bulb-dashboard/issues/33",
+      "updatedAt": "2026-07-29T02:27:16Z"
+    },
+    {
+      "issueNumber": 34,
+      "week": 3,
+      "section": "Webhook & automation platform hooks",
+      "startNum": 81,
+      "endNum": 95,
+      "status": "planned",
+      "url": "https://github.com/THEROCKSSS/smart-bulb-dashboard/issues/34",
+      "updatedAt": "2026-07-29T02:27:20Z"
+    },
+    {
+      "issueNumber": 35,
+      "week": 3,
+      "section": "CLI tool",
+      "startNum": 96,
+      "endNum": 110,
+      "status": "planned",
+      "url": "https://github.com/THEROCKSSS/smart-bulb-dashboard/issues/35",
+      "updatedAt": "2026-07-29T02:27:25Z"
+    },
+    {
+      "issueNumber": 36,
+      "week": 3,
+      "section": "Mobile PWA & native wrapper",
+      "startNum": 111,
+      "endNum": 130,
+      "status": "planned",
+      "url": "https://github.com/THEROCKSSS/smart-bulb-dashboard/issues/36",
+      "updatedAt": "2026-07-29T02:27:29Z"
+    },
+    {
+      "issueNumber": 37,
+      "week": 3,
+      "section": "Scenes/effects expansion",
+      "startNum": 131,
+      "endNum": 155,
+      "status": "planned",
+      "url": "https://github.com/THEROCKSSS/smart-bulb-dashboard/issues/37",
+      "updatedAt": "2026-07-29T02:27:33Z"
+    },
+    {
+      "issueNumber": 38,
+      "week": 3,
+      "section": "Scheduling & automation depth",
+      "startNum": 156,
+      "endNum": 180,
+      "status": "planned",
+      "url": "https://github.com/THEROCKSSS/smart-bulb-dashboard/issues/38",
+      "updatedAt": "2026-07-29T02:27:38Z"
+    },
+    {
+      "issueNumber": 39,
+      "week": 3,
+      "section": "Groups/rooms UX",
+      "startNum": 181,
+      "endNum": 200,
+      "status": "planned",
+      "url": "https://github.com/THEROCKSSS/smart-bulb-dashboard/issues/39",
+      "updatedAt": "2026-07-29T02:27:41Z"
+    },
+    {
+      "issueNumber": 40,
+      "week": 3,
+      "section": "Notifications & alerts",
+      "startNum": 201,
+      "endNum": 215,
+      "status": "planned",
+      "url": "https://github.com/THEROCKSSS/smart-bulb-dashboard/issues/40",
+      "updatedAt": "2026-07-29T02:27:46Z"
+    },
+    {
+      "issueNumber": 41,
+      "week": 3,
+      "section": "Presets marketplace/sharing",
+      "startNum": 216,
+      "endNum": 230,
+      "status": "planned",
+      "url": "https://github.com/THEROCKSSS/smart-bulb-dashboard/issues/41",
+      "updatedAt": "2026-07-29T02:27:50Z"
+    },
+    {
+      "issueNumber": 42,
+      "week": 3,
+      "section": "Accessibility & i18n",
+      "startNum": 231,
+      "endNum": 245,
+      "status": "planned",
+      "url": "https://github.com/THEROCKSSS/smart-bulb-dashboard/issues/42",
+      "updatedAt": "2026-07-29T02:27:54Z"
+    },
+    {
+      "issueNumber": 43,
+      "week": 3,
+      "section": "Keyboard/kiosk/secondary-display UX",
+      "startNum": 246,
+      "endNum": 250,
+      "status": "planned",
+      "url": "https://github.com/THEROCKSSS/smart-bulb-dashboard/issues/43",
+      "updatedAt": "2026-07-29T02:27:58Z"
+    },
+    {
+      "issueNumber": 44,
+      "week": 4,
+      "section": "Energy/usage analytics",
+      "startNum": 1,
+      "endNum": 20,
+      "status": "planned",
+      "url": "https://github.com/THEROCKSSS/smart-bulb-dashboard/issues/44",
+      "updatedAt": "2026-07-29T02:28:02Z"
+    },
+    {
+      "issueNumber": 45,
+      "week": 4,
+      "section": "History/audit deepening",
+      "startNum": 21,
+      "endNum": 35,
+      "status": "planned",
+      "url": "https://github.com/THEROCKSSS/smart-bulb-dashboard/issues/45",
+      "updatedAt": "2026-07-29T02:28:07Z"
+    },
+    {
+      "issueNumber": 46,
+      "week": 4,
+      "section": "Diagnostics & health monitoring",
+      "startNum": 36,
+      "endNum": 50,
+      "status": "planned",
+      "url": "https://github.com/THEROCKSSS/smart-bulb-dashboard/issues/46",
+      "updatedAt": "2026-07-29T02:28:11Z"
+    },
+    {
+      "issueNumber": 47,
+      "week": 4,
+      "section": "Bluetooth bulb readiness",
+      "startNum": 51,
+      "endNum": 65,
+      "status": "planned",
+      "url": "https://github.com/THEROCKSSS/smart-bulb-dashboard/issues/47",
+      "updatedAt": "2026-07-29T02:28:15Z"
+    },
+    {
+      "issueNumber": 48,
+      "week": 4,
+      "section": "Second-bulb / multi-bulb real-world testing checklist",
+      "startNum": 66,
+      "endNum": 75,
+      "status": "planned",
+      "url": "https://github.com/THEROCKSSS/smart-bulb-dashboard/issues/48",
+      "updatedAt": "2026-07-29T02:28:19Z"
+    },
+    {
+      "issueNumber": 49,
+      "week": 4,
+      "section": "GitHub Pages site content",
+      "startNum": 76,
+      "endNum": 100,
+      "status": "planned",
+      "url": "https://github.com/THEROCKSSS/smart-bulb-dashboard/issues/49",
+      "updatedAt": "2026-07-29T02:28:24Z"
+    },
+    {
+      "issueNumber": 50,
+      "week": 4,
+      "section": "Agent-facing onboarding docs",
+      "startNum": 101,
+      "endNum": 115,
+      "status": "planned",
+      "url": "https://github.com/THEROCKSSS/smart-bulb-dashboard/issues/50",
+      "updatedAt": "2026-07-29T02:28:28Z"
+    },
+    {
+      "issueNumber": 51,
+      "week": 4,
+      "section": "Developer experience (tests, CI, linting)",
+      "startNum": 116,
+      "endNum": 135,
+      "status": "planned",
+      "url": "https://github.com/THEROCKSSS/smart-bulb-dashboard/issues/51",
+      "updatedAt": "2026-07-29T02:28:32Z"
+    },
+    {
+      "issueNumber": 52,
+      "week": 4,
+      "section": "Config validation & migration tooling",
+      "startNum": 136,
+      "endNum": 150,
+      "status": "planned",
+      "url": "https://github.com/THEROCKSSS/smart-bulb-dashboard/issues/52",
+      "updatedAt": "2026-07-29T02:28:37Z"
+    },
+    {
+      "issueNumber": 53,
+      "week": 4,
+      "section": "Performance profiling & optimization",
+      "startNum": 151,
+      "endNum": 165,
+      "status": "planned",
+      "url": "https://github.com/THEROCKSSS/smart-bulb-dashboard/issues/53",
+      "updatedAt": "2026-07-29T02:28:41Z"
+    },
+    {
+      "issueNumber": 54,
+      "week": 4,
+      "section": "UI/UX polish pass",
+      "startNum": 166,
+      "endNum": 185,
+      "status": "planned",
+      "url": "https://github.com/THEROCKSSS/smart-bulb-dashboard/issues/54",
+      "updatedAt": "2026-07-29T02:28:45Z"
+    },
+    {
+      "issueNumber": 55,
+      "week": 4,
+      "section": "Documentation polish",
+      "startNum": 186,
+      "endNum": 200,
+      "status": "planned",
+      "url": "https://github.com/THEROCKSSS/smart-bulb-dashboard/issues/55",
+      "updatedAt": "2026-07-29T02:28:49Z"
+    },
+    {
+      "issueNumber": 56,
+      "week": 4,
+      "section": "Release process & versioning",
+      "startNum": 201,
+      "endNum": 215,
+      "status": "planned",
+      "url": "https://github.com/THEROCKSSS/smart-bulb-dashboard/issues/56",
+      "updatedAt": "2026-07-29T02:28:53Z"
+    },
+    {
+      "issueNumber": 57,
+      "week": 4,
+      "section": "Community/contribution docs",
+      "startNum": 216,
+      "endNum": 230,
+      "status": "planned",
+      "url": "https://github.com/THEROCKSSS/smart-bulb-dashboard/issues/57",
+      "updatedAt": "2026-07-29T02:29:32Z"
+    },
+    {
+      "issueNumber": 58,
+      "week": 4,
+      "section": "Final month-end retro & next-month planning",
+      "startNum": 231,
+      "endNum": 250,
+      "status": "planned",
+      "url": "https://github.com/THEROCKSSS/smart-bulb-dashboard/issues/58",
+      "updatedAt": "2026-07-29T02:29:36Z"
+    }
+  ]
+}
