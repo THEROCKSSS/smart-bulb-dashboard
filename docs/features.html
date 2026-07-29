@@ -4,9 +4,9 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Features — Smart Bulb Dashboard</title>
-<meta name="description" content="All 137 working features, itemized by category.">
+<meta name="description" content="All 159 working features, itemized by category.">
 <meta property="og:title" content="Features — Smart Bulb Dashboard">
-<meta property="og:description" content="All 137 working features, itemized by category.">
+<meta property="og:description" content="All 159 working features, itemized by category.">
 <meta property="og:type" content="website">
 <meta name="twitter:card" content="summary">
 <link rel="stylesheet" href="assets/site.css">
@@ -49,7 +49,7 @@
 
   <main class="main">
     <p class="eyebrow">Features</p>
-    <h1>137 features, every one tested against real hardware.</h1>
+    <h1>159 features, every one tested against real hardware.</h1>
     <p class="lede">Counts every distinct working capability, including each individual preset color, scene, and effect as its own line — the same convention most smart-home apps use. Nothing here is a roadmap promise; everything is code verified against a real Bytech A19 Wi-Fi RGB+CCT bulb (see <a href="handoff.html">Build History</a> for the verification log) or, for audio-reactive lighting, against this project's own real audio devices.</p>
 
     <table>
@@ -68,12 +68,15 @@
         <tr><td>History &amp; audit</td><td class="num">1</td><td>Per-device action log, last 200 entries</td></tr>
         <tr><td>Diagnostics</td><td class="num">3</td><td>Connection test, network rescan, system info</td></tr>
         <tr><td>Device management</td><td class="num">4</td><td>Add/remove/edit via Settings, redacted local keys</td></tr>
-        <tr><td>Dashboard UX</td><td class="num">6</td><td>Dark theme, mobile-responsive, toasts, hash routing, debounced offline detection</td></tr>
+        <tr><td>Dashboard UX</td><td class="num">12</td><td>Dark theme, mobile-responsive, toasts w/ Undo, hash routing, debounced offline detection, live-ticking timers &amp; status, remembered device/panel, keyboard shortcuts, copy-to-clipboard</td></tr>
         <tr><td>API &amp; deployment</td><td class="num">3</td><td>55+-route REST API, CORS, Docker</td></tr>
-        <tr><td>Audio-reactive lighting (v1 + v2)</td><td class="num">28</td><td>12 modes, orchestration, live band meter, sub-15ms decision latency, tunable dwell, non-blocking bulb dispatch</td></tr>
+        <tr><td>Audio-reactive lighting (v1 + v2)</td><td class="num">30</td><td>14 modes (incl. <code>harmonic_pairs</code>, <code>kick_snare_split</code>), orchestration, live band meter, sub-15ms decision latency, tunable dwell, non-blocking bulb dispatch</td></tr>
         <tr><td>Network auto-discovery</td><td class="num">8</td><td>Scheduled + on-demand scan, ignore/unignore, IP-change detection</td></tr>
-        <tr><td>Remote-access security</td><td class="num">4</td><td>PIN gate, brute-force lockout, server-verified session expiry, PBKDF2 hashing</td></tr>
-        <tr><td><strong>Total</strong></td><td class="num"><strong>137</strong></td><td></td></tr>
+        <tr><td>Remote-access security</td><td class="num">8</td><td>PIN gate, brute-force lockout, server-verified session expiry, PBKDF2 hashing, session listing/revocation, audit logging, per-IP login rate limiting</td></tr>
+        <tr><td>CLI (<code>bulbctl</code>)</td><td class="num">8</td><td>list/on/off/toggle/color/brightness/scene/status, plus login/logout and shell completions</td></tr>
+        <tr><td>Analytics</td><td class="num">1</td><td>Real per-device on-time usage, derived from logged history</td></tr>
+        <tr><td>Developer tooling</td><td class="num">1</td><td>A real backend pytest suite (76 tests, mocked hardware layer)</td></tr>
+        <tr><td><strong>Total</strong></td><td class="num"><strong>159</strong></td><td></td></tr>
       </tbody>
     </table>
 

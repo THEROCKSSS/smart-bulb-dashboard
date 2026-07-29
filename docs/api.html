@@ -98,7 +98,31 @@ curl -X POST http://localhost:8500/api/system/scan</code></pre>
   -H "Content-Type: application/json" -d '{"pin": "your-real-pin-here"}'
 
 curl -X POST http://localhost:8500/api/auth/login \
-  -H "Content-Type: application/json" -d '{"pin":"your-real-pin-here"}'</code></pre>
+  -H "Content-Type: application/json" -d '{"pin":"your-real-pin-here"}'
+
+# Session management (v0.3.0) — list, revoke one, or revoke everyone
+curl http://localhost:8500/api/auth/sessions
+curl -X POST http://localhost:8500/api/auth/sessions/revoke -d '{"session_id":"..."}' -H "Content-Type: application/json"
+curl -X POST http://localhost:8500/api/auth/sessions/revoke-all
+
+# Per-IP login rate limit, independent of the existing lockout
+curl -X POST http://localhost:8500/api/system/remote-auth/rate-limit \
+  -H "Content-Type: application/json" -d '{"max_attempts": 20, "window_s": 60}'</code></pre>
+    <p>Every auth event (login success/failure, lockout, revocation) is appended to <code>backend/data/auth_audit.log</code> — one JSON line per event, never containing the PIN or a raw session token.</p>
+
+    <h2>Analytics <span class="tag accent">v0.3.0</span></h2>
+    <p>Real per-device on-time, derived from logged history — not fabricated wattage (this bulb has no real power-draw sensor).</p>
+    <pre><button class="copy-btn">Copy</button><code>curl "http://localhost:8500/api/analytics/usage?period=today"
+curl "http://localhost:8500/api/analytics/usage?period=7d"</code></pre>
+
+    <h2>CLI — <code>bulbctl</code> <span class="tag accent">v0.3.0</span></h2>
+    <p>A stdlib-only Python CLI wrapping this whole API, for scripting/cron without hand-rolling curl:</p>
+    <pre><button class="copy-btn">Copy</button><code>python cli/bulbctl.py list
+python cli/bulbctl.py on bulb-1
+python cli/bulbctl.py color bulb-1 ff0000
+python cli/bulbctl.py brightness bulb-1 60
+python cli/bulbctl.py scene bulb-1 movie_night
+python cli/bulbctl.py login   # if the PIN gate is enabled</code></pre>
 
     <h2>Timers, schedule, groups, history, diagnostics</h2>
     <table>
@@ -113,7 +137,7 @@ curl -X POST http://localhost:8500/api/auth/login \
       </tbody>
     </table>
 
-    <p>Full reference for every one of the 55+ routes — favorites, sleep/wake timer status, schedule rule management, group color broadcast, discovery ignore/unignore — is in <a href="https://github.com/THEROCKSSS/smart-bulb-dashboard/blob/master/API.md">the complete <code>API.md</code></a>, or explore it live at <code>/docs</code> on your running instance.</p>
+    <p>Full reference for every one of the 60+ routes — favorites, sleep/wake timer status, schedule rule management, group color broadcast, discovery ignore/unignore, session management, analytics — is in <a href="https://github.com/THEROCKSSS/smart-bulb-dashboard/blob/master/API.md">the complete <code>API.md</code></a>, or explore it live at <code>/docs</code> on your running instance.</p>
 
     <footer class="site-footer">
       <div>

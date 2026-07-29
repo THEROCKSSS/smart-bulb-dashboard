@@ -54,7 +54,55 @@
 
     <section class="changelog-entry">
       <div class="changelog-entry__head">
-        <h2><span class="tag accent">v0.2.0</span> — 2026-07-28</h2>
+        <h2><span class="tag accent">v0.3.0</span> — 2026-07-29</h2>
+        <button class="copy-btn copy-changelog" data-target="cl-030">Copy for Discord</button>
+      </div>
+      <p>Four phases built in parallel (isolated subagent worktrees, hub-verified and merged), plus a QoL round and a mobile-fix PR. Feature count: 137 → <strong>159</strong>.</p>
+      <h3>Added</h3>
+      <ul>
+        <li>Two new audio modes — <code>harmonic_pairs</code> and <code>kick_snare_split</code>.</li>
+        <li>Remote-access hardening — session listing/revocation, an audit log, per-IP login rate limiting.</li>
+        <li><code>bulbctl</code> — a stdlib-only CLI wrapping the full REST API, with shell completions.</li>
+        <li><code>GET /api/analytics/usage</code> — real per-device on-time from logged history.</li>
+        <li>A real backend pytest suite (previously none existed).</li>
+        <li>Live-ticking sleep/wake timer countdowns and status badge — no more refresh-to-see.</li>
+        <li>Remembers last device/panel, keyboard shortcuts, copy-to-clipboard, and Undo on cancelled timers.</li>
+        <li>Rounder/softer visual pass, and a real mobile-friendliness fix (sidebar was squeezing to ~16px on phones).</li>
+        <li>Tailscale Serve documented and exercised as the recommended off-LAN access path.</li>
+        <li>New Active Roadmap / Roadmap Archive / Network Graph pages on this site, replacing the old single roadmap page.</li>
+      </ul>
+      <h3>Fixed</h3>
+      <ul>
+        <li>A real flicker bug in <code>harmonic_pairs</code> — 180°-apart hue anchors cancelling to (0,0) at a 50/50 energy split.</li>
+        <li>The mobile sidebar-squeeze bug (an unreset grid-column span at ≤800px).</li>
+        <li>A real test-isolation gap — most of the pytest suite didn't isolate PIN-gate state, so enabling it for real broke 16 tests with 401s.</li>
+      </ul>
+      <template id="cl-030">**Smart Bulb Dashboard — v0.3.0** (2026-07-29)
+Four phases built in parallel (isolated subagent worktrees, hub-verified and merged), plus a QoL round and a mobile-fix PR. Feature count: 137 → 159.
+
+**Added**
+- Two new audio modes — harmonic_pairs and kick_snare_split
+- Remote-access hardening — session listing/revocation, an audit log, per-IP login rate limiting
+- bulbctl — a stdlib-only CLI wrapping the full REST API, with shell completions
+- GET /api/analytics/usage — real per-device on-time from logged history
+- A real backend pytest suite (previously none existed)
+- Live-ticking sleep/wake timer countdowns and status badge
+- Remembers last device/panel, keyboard shortcuts, copy-to-clipboard, and Undo on cancelled timers
+- Rounder/softer visual pass, and a real mobile-friendliness fix
+- Tailscale Serve documented and exercised as the recommended off-LAN access path
+- New Active Roadmap / Roadmap Archive / Network Graph pages on this site
+
+**Fixed**
+- A real flicker bug in harmonic_pairs at a 50/50 energy split
+- The mobile sidebar-squeeze bug (an unreset grid-column span at <=800px)
+- A real test-isolation gap that broke 16 tests once the PIN gate was enabled for real
+
+Full changelog: https://therocksss.github.io/smart-bulb-dashboard/changelog.html</template>
+    </section>
+
+    <section class="changelog-entry">
+      <div class="changelog-entry__head">
+        <h2><span class="tag">v0.2.0</span> — 2026-07-28</h2>
         <button class="copy-btn copy-changelog" data-target="cl-020">Copy for Discord</button>
       </div>
       <p>Two build rounds shipped together: audio-reactive lighting (and its v2 rework) and secure remote access. Feature count: 97 → <strong>137</strong>.</p>

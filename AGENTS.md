@@ -9,10 +9,12 @@ points — this file is deliberately terser and more directive.
 
 A local, cloud-independent dashboard + REST API for controlling Tuya-based
 Wi-Fi smart bulbs. FastAPI backend (`backend/`), vanilla-JS frontend
-(`frontend/`, no build step). 137 working features as of the last count in
-`FEATURES.md` — audio-reactive lighting (12 modes, multi-bulb
-orchestration), network auto-discovery, scenes/effects/schedules, and a
-PIN-gated remote-access path.
+(`frontend/`, no build step). 159 working features as of the last count in
+`FEATURES.md` — audio-reactive lighting (14 modes, multi-bulb
+orchestration), network auto-discovery, scenes/effects/schedules, a
+PIN-gated remote-access path with session management and audit logging,
+a stdlib CLI (`cli/bulbctl.py`), and a real pytest suite (`backend/tests/`,
+`cli/tests/`).
 
 ## Do this first, in order
 

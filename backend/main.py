@@ -16,7 +16,7 @@ import remote_auth
 import analytics
 from scenes_presets import PRESET_COLORS, SCENES, EFFECTS
 
-APP_VERSION = "0.2.0"
+APP_VERSION = "0.3.0"
 START_TIME = time.time()
 
 app = FastAPI(title="Smart Bulb Dashboard", version=APP_VERSION)

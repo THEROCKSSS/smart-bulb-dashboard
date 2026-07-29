@@ -16,11 +16,11 @@ No cloud round-trip for day-to-day control.
 
 ## What's here
 
-- **137 working features** — see `FEATURES.md` for the full itemized list
+- **159 working features** — see `FEATURES.md` for the full itemized list
   (power/brightness/color control, 25 color presets, 15 mood scenes, 7
   animated effects, sleep/wake timers, a recurring schedule engine,
-  multi-bulb groups, history, diagnostics, and more).
-- **12 audio-reactive lighting modes** with sub-15ms decision latency and
+  multi-bulb groups, history, diagnostics, a CLI, usage analytics, and more).
+- **14 audio-reactive lighting modes** with sub-15ms decision latency and
   multi-bulb orchestration (unison/chase/band-split) — see
   `docs/music-reactive-lighting.md`.
 - **Network auto-discovery** (weekly or on-demand LAN scanning) — see
@@ -67,12 +67,13 @@ Full step-by-step instructions, including how to obtain your bulb's
 |---|---|
 | `SETUP.md` | Step-by-step setup from zero, including getting Tuya credentials |
 | `API.md` | Full REST API reference with curl examples |
-| `FEATURES.md` | Every implemented feature, itemized (137 total) |
+| `FEATURES.md` | Every implemented feature, itemized (159 total) |
 | `ROADMAP.md` | Near-term planned work and what's deliberately not built yet |
 | `roadmap/` | The month-long, ~1000-item phased backlog with a dependency graph |
-| `docs/music-reactive-lighting.md` | The 12 audio-reactive modes, latency/dwell design, orchestration |
+| `docs/music-reactive-lighting.md` | The 14 audio-reactive modes, latency/dwell design, orchestration |
 | `docs/network-discovery.md` | Auto-scan and manual network discovery |
-| `docs/remote-access-security.md` | Tailscale vs. DuckDNS+PIN gate, threat model |
+| `docs/remote-access-security.md` | Tailscale vs. DuckDNS+PIN gate, session management, audit logging |
+| `cli/bulbctl.py` | Stdlib-only CLI wrapping the full REST API — see `cli/tests/` and `cli/examples/` |
 | `HANDOFF.md` | How this was built, verified, and what's known-fragile |
 | `iterations/` | Real build-test-fix logs — what broke and how it was fixed, round by round |
 | `AGENTS.md` | Start here if you're an AI agent picking this repo up cold |

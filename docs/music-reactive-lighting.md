@@ -22,7 +22,7 @@ two real bugs that testing caught).
    confirming the right input device is selected even before the bulb
    responds.
 
-## The 12 implemented modes (v2 added 4 — see `iterations/003-audio-engine-v2/`)
+## The 14 implemented modes (v2 added 4, v0.3.0 added 2 more — see `iterations/003-audio-engine-v2/`)
 
 | Mode | What it does |
 |---|---|
@@ -38,6 +38,10 @@ two real bugs that testing caught).
 | `band_flash_overlay` | Same N-band gradient as a low-brightness ambient base, with brief full-brightness accent flashes whenever any individual band spikes above its own rolling average. |
 | `stereo_split` | Hue leans toward a left or right anchor based on which stereo channel is louder — needs a 2-channel-capable input device (falls back to mono behavior otherwise). |
 | `breathing_silence` | During quiet passages, brightness does a slow ~4s breathing oscillation instead of going flat/dark, so the bulb still looks "alive"; smoothly hands over to normal reactive brightness once real audio returns. |
+| `harmonic_pairs` | Finds the two most-energetic non-adjacent bands and blends between two complementary (180°-apart) hue anchors by their energy ratio, walking a fixed direction rather than the shortest arc (see the note below on why). |
+| `kick_snare_split` | Bass-band energy drives brightness (kick-like pulses); a separate mid/high band drives a hue swing layered on top (snare/hihat-like accent). |
+
+**A real bug, found via its own test suite:** `harmonic_pairs`'s first version blended its two hue anchors with the same shortest-arc circular mean every other mode uses. Since the anchors are exactly 180° apart, a 50/50 energy split makes the two hue vectors cancel to `(0, 0)`, and `atan2` returns whatever direction floating-point noise happens to favor — a real, silent flicker at the single most common "two bands both hot" case. Fixed by walking a fixed linear direction between the two anchors instead, which has no ambiguous case.
 
 ## Latency vs. visibility (v2)
 

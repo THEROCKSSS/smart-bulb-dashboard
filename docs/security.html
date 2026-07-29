@@ -4,9 +4,9 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Remote Access &amp; Security — Smart Bulb Dashboard</title>
-<meta name="description" content="Tailscale vs. DuckDNS+PIN gate, threat model, and the planned security-test phase.">
+<meta name="description" content="Tailscale vs. DuckDNS+PIN gate, session management, audit logging, and the planned security-test phase.">
 <meta property="og:title" content="Remote Access &amp; Security — Smart Bulb Dashboard">
-<meta property="og:description" content="Tailscale vs. DuckDNS+PIN gate, threat model, and the planned security-test phase.">
+<meta property="og:description" content="Tailscale vs. DuckDNS+PIN gate, session management, audit logging, and the planned security-test phase.">
 <meta property="og:type" content="website">
 <meta name="twitter:card" content="summary">
 <link rel="stylesheet" href="assets/site.css">
@@ -52,8 +52,12 @@
     <h1>Reaching it from outside your LAN, safely.</h1>
     <p class="lede">The dashboard defaults to LAN-only, no auth — correct for a trusted home network with a REST API that otherwise has zero authentication. This covers what to do if you want more than that.</p>
 
-    <h2>Recommended: Tailscale</h2>
+    <h2>Recommended: Tailscale <span class="tag success">exercised, not just recommended</span></h2>
     <p><a href="https://tailscale.com">Tailscale</a> creates a private mesh VPN between your devices. Your phone can reach the dashboard as if it were on your home LAN, from anywhere, <strong>without opening any port on your router or exposing anything to the public internet</strong>. Install it on the dashboard machine and your phone, sign into the same account on both, and you're done — Tailscale's own device auth is the access control.</p>
+    <p>This path is now real, not just documented: the dashboard is exposed via <code>tailscale serve</code> on a tailnet-only HTTPS route (real cert, no browser warnings, no port forwarding, no Funnel/public-internet exposure) — verified end-to-end with the PIN gate <em>also</em> enabled, so the tailnet acts as the network-level control and the PIN gate as the application-level one.</p>
+    <pre><button class="copy-btn">Copy</button><code># One-time, per machine: expose a local port over the tailnet only (not Funnel)
+tailscale serve --bg --https=8502 http://127.0.0.1:8502
+tailscale serve status   # confirm it's listed as "(tailnet only)", not "Funnel on"</code></pre>
 
     <h2>If you want actual public access: DuckDNS + port forward</h2>
     <p>A materially different risk profile — your router forwards a port straight to this dashboard. <strong>Anyone on the internet who finds that hostname:port can reach the API.</strong></p>
@@ -70,17 +74,19 @@
       <li><span class="tag success">tested</span> Blocks casual/automated discovery from controlling bulbs.</li>
       <li><span class="tag success">tested</span> Locks out an IP for 5 minutes after 5 wrong attempts — including a subsequently-correct PIN.</li>
       <li><span class="tag success">tested</span> Session expiry is enforced server-side, not just relying on the client's cookie expiry.</li>
+      <li><span class="tag success">tested</span> <strong>v0.3.0:</strong> per-IP login rate limiting trips <em>before</em> the lockout counter, blunting slow distributed attempts that spread guesses across many PINs-per-IP under the lockout's radar.</li>
+      <li><span class="tag success">tested</span> <strong>v0.3.0:</strong> every auth event — login success/failure, lockout, session revocation — is appended to a real audit log (<code>backend/data/auth_audit.log</code>), one JSON line per event, never containing the PIN or a raw token.</li>
+      <li><span class="tag success">tested</span> <strong>v0.3.0:</strong> sessions can be listed and revoked individually or all at once (<code>/api/auth/sessions</code>) — a stolen or forgotten session doesn't have to just expire on its own.</li>
     </ul>
-    <h3>What it doesn't</h3>
+    <h3>What it still doesn't</h3>
     <ul>
-      <li>Encrypt traffic — this is plain HTTP once forwarded publicly. Put a reverse proxy (Caddy gets free automatic TLS for a DuckDNS domain) in front if this matters to you.</li>
+      <li>Encrypt traffic on its own — plain HTTP if forwarded publicly without a reverse proxy. Tailscale Serve (above) sidesteps this entirely by giving you a real HTTPS cert for free; a DuckDNS+port-forward setup still needs Caddy or similar in front.</li>
       <li>Defend against an attacker who can read the PIN off the wire directly.</li>
-      <li>Rate-limit distributed attempts across many source IPs — lockout is per-IP.</li>
-      <li>Replace a real multi-user login system — one shared PIN, no per-user audit trail.</li>
+      <li>Replace a real multi-user login system — one shared PIN. The new audit log gives a trail of <em>what happened</em>, not <em>which person</em> did it.</li>
     </ul>
 
-    <h2>Planned: a dedicated security-test phase</h2>
-    <p>Before treating a DuckDNS+PIN setup as done, the <a href="roadmap-active.html">roadmap</a> includes a phase where a separate agent actively attempts to break the exposed setup from the outside — brute-force timing analysis, session-token forgery, replay attacks, port-scan discovery timing, lockout-bypass attempts. Scoped as its own phase since it needs a real deployed instance to attack meaningfully, not a same-machine simulation.</p>
+    <h2>Still planned: a dedicated adversarial security-test phase</h2>
+    <p>This round added real hardening (rate limiting, audit logging, session revocation) and a live 21-check verification pass against the actual running server — but that's a same-machine verification, not an adversarial one. The <a href="roadmap-active.html">roadmap</a> still has a phase where a separate agent actively attempts to break a real, publicly-exposed instance from the outside — brute-force timing analysis, session-token forgery, replay attacks, port-scan discovery timing, lockout-bypass attempts. Still scoped as its own phase since it needs a real deployed, exposed instance to attack meaningfully.</p>
 
     <p>Full threat-model writeup and setup walkthrough: <a href="https://github.com/THEROCKSSS/smart-bulb-dashboard/blob/master/docs/remote-access-security.md">the complete doc</a>. What was actually tested when this was built: <a href="https://github.com/THEROCKSSS/smart-bulb-dashboard/tree/master/iterations/004-pin-gate-remote-auth">iteration 004</a>.</p>
 

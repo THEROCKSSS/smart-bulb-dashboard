@@ -28,6 +28,24 @@ authentication is already the access control. You can still enable the PIN
 gate for defense-in-depth (e.g. if someone else's device is also on your
 tailnet), but it's not the primary defense in this setup.
 
+**v0.3.0 update — exercised, not just recommended:** this setup was actually
+run this way, with the PIN gate *also* enabled. Rather than hitting the bare
+Tailscale IP over plain HTTP, `tailscale serve` gives you a real HTTPS
+endpoint (no self-signed-cert warnings) that's still tailnet-only — not
+`funnel`, which would expose it to the public internet:
+
+```bash
+# One-time, per machine — exposes a local port over the tailnet only
+tailscale serve --bg --https=8502 http://127.0.0.1:8502
+tailscale serve status   # confirm it's listed as "(tailnet only)", not "Funnel on"
+# To turn it off later:
+tailscale serve --https=8502 off
+```
+
+Verified end-to-end: root path stays reachable, every protected route
+correctly returns 401 without a session, and a real PIN login through the
+Tailscale HTTPS route works identically to hitting it over plain LAN HTTP.
+
 ## If you want actual public access: DuckDNS + port forward
 
 This is a materially different risk profile — your router forwards a port
@@ -80,29 +98,45 @@ Does:
 - Locks out an IP for 5 minutes after 5 wrong PIN attempts — a real,
   tested brute-force throttle (see iteration 004).
 - Session expiry is enforced server-side, not just by cookie expiration.
+- **v0.3.0:** rate-limits login attempts per-IP *independent of and ahead
+  of* the lockout counter (`POST /api/system/remote-auth/rate-limit` to
+  tune it) — this specifically closes the "distributed attempts across
+  many source IPs" gap noted below in the pre-v0.3.0 version of this doc.
+- **v0.3.0:** every auth event is appended to a real audit log
+  (`backend/data/auth_audit.log`, one JSON line per event: login
+  success/failure, lockout, session revocation) — never containing the PIN
+  or a raw session token. Verified by asserting the raw PIN string is
+  absent from the log file after both a correct and incorrect login.
+- **v0.3.0:** sessions can be listed (`GET /api/auth/sessions`) and revoked
+  individually or all at once — a forgotten or compromised session doesn't
+  have to just expire on its own.
 
 Doesn't:
-- Encrypt traffic (see the HTTPS point above).
+- Encrypt traffic on its own (see the HTTPS point above) — though Tailscale
+  Serve, above, sidesteps this for the tailnet path specifically.
 - Defend against an attacker who can see your network traffic and doesn't
   need to guess the PIN because they can just read it off the wire.
-- Rate-limit distributed attempts across many source IPs (lockout is
-  per-IP).
 - Replace a real login/user system — there is exactly one PIN, shared by
-  anyone you give it to, with no per-user audit trail beyond this
-  project's existing action history log.
+  anyone you give it to. The new audit log gives a trail of *what*
+  happened, not *which person* did it.
 
-## Planned: a dedicated security-test phase
+## Still planned: a dedicated adversarial security-test phase
 
-Before treating a DuckDNS+PIN setup as "done," this project's roadmap
-(see `roadmap/`) includes a dedicated phase where a separate agent
+v0.3.0 added real hardening (rate limiting, audit logging, session
+revocation) and a live 21-check verification pass against the actual
+running server with the PIN gate enabled — but that's a same-machine
+verification pass, not an adversarial one; every check was written by the
+same session that built the feature. Before treating a DuckDNS+PIN (or even
+a Tailscale+PIN) setup as fully "done," this project's roadmap (see
+`roadmap/`) still includes a dedicated phase where a separate agent
 actively attempts to break the exposed setup from the outside — brute-force
 timing analysis, session token forgery attempts, replay attacks, port-scan
-discovery timing, and confirming the lockout can't be trivially bypassed
-(e.g. via `X-Forwarded-For` spoofing if a proxy is added later). That's
-intentionally scoped as its own phase rather than folded into this build,
-since a real adversarial test deserves to run against an actually-deployed
-instance (real DuckDNS domain, real port forward) rather than a
-same-machine simulation.
+discovery timing, and confirming the lockout/rate-limiter can't be
+trivially bypassed (e.g. via `X-Forwarded-For` spoofing if a proxy is added
+later). That's intentionally scoped as its own phase rather than folded
+into this build, since a real adversarial test deserves to run against an
+actually-deployed instance (real DuckDNS domain, real port forward) rather
+than a same-machine simulation.
 
 ## Not doing (for now)
 

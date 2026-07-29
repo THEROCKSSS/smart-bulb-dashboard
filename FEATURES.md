@@ -133,9 +133,43 @@ Gaming
 136. Session expiry enforced server-side via a signed token, not just relying on cookie expiration
 137. PIN stored as a salted PBKDF2-SHA256 hash — never in plaintext
 
+## Audio engine v2 additions — v0.3.0 (2)
+138. `harmonic_pairs` mode — the two most-energetic non-adjacent bands mapped to complementary hues, fixed-direction blend (a real flicker bug was found and fixed here: the shortest-arc blend cancels to `(0,0)` at a 50/50 energy split between anchors exactly 180° apart)
+139. `kick_snare_split` mode — bass-band energy drives brightness, a mid/high band drives a hue accent
+
+## Remote-access security additions — v0.3.0 (4)
+140. Session listing — view every currently-active session (issued time, last-seen, IP), never exposing the raw token
+141. Single-session revocation
+142. Revoke-all-sessions (logs everyone out, rotates the signing secret)
+143. Audit log of every auth event (login success/failure, lockout, revocation) — never records the PIN or a raw token
+144. Per-IP login rate limiting, independent of and tripping ahead of the existing lockout counter
+
+## CLI — `bulbctl` (4)
+145. Core device commands: `list`/`on`/`off`/`toggle`/`color`/`brightness`/`scene`/`status`, stdlib-only (no new dependency)
+146. `login`/`logout`/`auth-status` — PIN-gate session handling from the CLI, session cookie stored locally
+147. Shell completions for bash, zsh, and PowerShell
+148. Scripting examples (`cli/examples/`) for cron-driven sunrise/movie-night automation
+
+## Analytics (1)
+149. `GET /api/analytics/usage` — real per-device on-time for a given period, derived from logged history (no fabricated wattage — this bulb has no real power-draw data)
+
+## Developer tooling (1)
+150. A real backend pytest suite (76 tests: 54 backend + 22 CLI), mocked Tuya hardware layer — no test touches real hardware or `config.json`
+
+## Dashboard UX additions — v0.3.0 (9)
+151. Sleep-timer countdown ticks live, client-side, every second — no more refresh-to-see
+152. Wake-timer countdown ticks live too, recomputed from the real target time each second
+153. Device status badge shows a live-ticking "last seen Xs ago"
+154. Remembers your last device + panel across reloads (`localStorage`)
+155. Keyboard shortcuts on the Control panel — Space toggles power, Up/Down arrows nudge brightness ±5%
+156. Copy-to-clipboard on Diagnostics' device ID and IP fields
+157. Undo action on the cancel-timer toast — actually recreates the cancelled timer with its original parameters, not just a cosmetic dismissal
+158. Rounder, softer visual pass — 8px → 12px corner radius, real card elevation, smoother hover states
+159. Real mobile-friendliness fix — the sidebar was collapsing to a ~16px sliver on phones (an unreset grid-column span), plus 44px minimum tap targets throughout
+
 ---
 
-**Total: 137 working features**, verified end-to-end against a real Bytech
+**Total: 159 working features**, verified end-to-end against a real Bytech
 A19 Wi-Fi RGB+CCT bulb (Tuya protocol v3.5) and this machine's real audio
 devices (VoiceMeeter + physical microphone) — see the verification log in
 `HANDOFF.md`, and `iterations/001` through `iterations/004` for each new

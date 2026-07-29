@@ -18,6 +18,55 @@ merged PRs — see the note at the bottom of this file for the process.
 
 Nothing queued yet — see `roadmap/` for what's planned next.
 
+## [0.3.0] — 2026-07-29
+
+Built as four parallel phases (one subagent each, in isolated git worktrees,
+hub-verified and hand-merged), plus a follow-up QoL round and a mobile fix
+shipped as its own PR. Feature count: 137 → **159**.
+
+### Added
+- Two new audio-reactive modes: `harmonic_pairs` (two most-energetic
+  non-adjacent bands mapped to complementary hues) and `kick_snare_split`
+  (bass drives brightness, a mid/high band drives a hue accent).
+- Remote-access hardening: session listing/revocation, an audit log
+  (`backend/data/auth_audit.log`) that never records the PIN, and per-IP
+  login rate limiting independent of the existing lockout.
+- `bulbctl` — a stdlib-only CLI wrapping the full REST API (list/on/off/
+  color/brightness/scene/status/login), with shell completions and
+  scripting examples.
+- `GET /api/analytics/usage` — real per-device on-time derived from logged
+  history (not fabricated wattage — this bulb has no real power-draw data).
+- A real backend pytest suite (mocked Tuya hardware layer) — previously
+  none existed.
+- Sleep/wake timer countdowns and the device status badge now tick live,
+  client-side, instead of requiring a page refresh.
+- Remembers your last device + panel across reloads, keyboard shortcuts on
+  the Control panel (space = power, arrows = brightness), copy-to-clipboard
+  on Diagnostics, and an Undo action on the cancel-timer toast that actually
+  recreates the timer.
+- A rounder, softer visual pass (8px → 12px radius, real card shadows,
+  smoother hover states) and a genuine mobile-friendliness fix — the
+  sidebar was collapsing to a ~16px sliver on phones due to an unreset
+  grid-column span, now fixed, plus 44px tap targets throughout.
+- Tailscale Serve documented and exercised as the recommended way to reach
+  this dashboard off-LAN (tailnet-only HTTPS, no port-forwarding).
+- Two new Pages-site views: an Active Roadmap (status-aware kanban, live
+  issues tracker, per-week progress rings) and a Roadmap Archive
+  (timeline, tagged database, time-share sunburst, analytics dashboard),
+  replacing the old single roadmap page — plus a real network-graph page
+  built from this repo's own `graphify` output (570 nodes, 1,002 edges).
+
+### Fixed
+- A real flicker bug in `harmonic_pairs`: two hue anchors exactly 180°
+  apart cancel to `(0,0)` under the shortest-arc blend at a 50/50 energy
+  split — caught by its own test suite, fixed with a fixed-direction blend.
+- The mobile sidebar-squeeze bug described above (issue #62).
+- A real test-isolation gap: most of the pytest suite's `client` fixture
+  didn't isolate `remote_auth`'s on-disk state, so enabling the PIN gate
+  for real (for the Tailscale exposure below) made 16 previously-passing
+  tests fail with 401s — found by actually re-running the suite after
+  that change, not caught in review.
+
 ## [0.2.0] — 2026-07-28
 
 Two build rounds shipped together: audio-reactive lighting (and its v2

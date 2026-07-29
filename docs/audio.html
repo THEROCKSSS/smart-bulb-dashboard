@@ -49,10 +49,10 @@
 
   <main class="main">
     <p class="eyebrow">Audio-Reactive Lighting</p>
-    <h1>The bulb reacts to sound. Twelve ways.</h1>
+    <h1>The bulb reacts to sound. Fourteen ways.</h1>
     <p class="lede">Capture from a VoiceMeeter/virtual-cable device (whatever's playing on your PC) or a real microphone (whatever's audible in the room). Pick a mode, hit start.</p>
 
-    <h2>The 12 modes</h2>
+    <h2>The 14 modes</h2>
     <table>
       <thead><tr><th>Mode</th><th>What it does</th></tr></thead>
       <tbody>
@@ -68,8 +68,13 @@
         <tr><td><code>band_flash_overlay</code></td><td>Ambient gradient base, with accent flashes when any band spikes.</td></tr>
         <tr><td><code>stereo_split</code></td><td>Hue leans toward a left/right anchor based on channel balance.</td></tr>
         <tr><td><code>breathing_silence</code></td><td>Slow ambient breathing during quiet passages instead of going flat.</td></tr>
+        <tr><td><code>harmonic_pairs</code> <span class="tag accent">v0.3.0</span></td><td>Finds the two most-energetic non-adjacent bands and blends between two complementary (180°-apart) hue anchors by their energy ratio.</td></tr>
+        <tr><td><code>kick_snare_split</code> <span class="tag accent">v0.3.0</span></td><td>Bass energy drives brightness (kick-like pulses); a mid/high band drives a hue swing on top (snare/hihat accent).</td></tr>
       </tbody>
     </table>
+    <div class="callout">
+      <p>A real flicker bug was found and fixed while building <code>harmonic_pairs</code>: two hue anchors exactly 180° apart cancel to a zero vector under a shortest-arc blend at a 50/50 energy split, so it walks a fixed direction between the anchors instead — caught by its own test suite before shipping.</p>
+    </div>
 
     <h2>Latency vs. visibility</h2>
     <p>“Down to the millisecond” isn't physically achievable on this hardware — the bulb itself has a ~50–100ms round-trip floor. What's actually tunable are two separate numbers:</p>

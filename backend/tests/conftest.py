@@ -169,12 +169,21 @@ def fake_tuya(monkeypatch):
 
 
 @pytest.fixture
-def client(fake_config, fake_tuya):
+def client(fake_config, fake_tuya, auth_reset):
     return TestClient(main_module.app)
 
 
 @pytest.fixture
 def auth_reset(tmp_path, monkeypatch):
+    # Real bug, found by actually running this suite against a machine with
+    # the PIN gate enabled for real (Tailscale exposure): without this, these
+    # tests read the REAL backend/data/remote_auth.json, so a real "enabled"
+    # gate makes every route in this file 401 instead of the expected
+    # 200/400/404. `client` now depends on this so no route call in this
+    # module ever sees whatever the real local machine's auth state happens
+    # to be. (test_remote_auth.py defines its own module-local `client`
+    # fixture that shadows this one entirely, and manages its own auth
+    # isolation deliberately, since it's specifically testing that system.)
     fake_path = tmp_path / "remote_auth.json"
     monkeypatch.setattr(remote_auth, "AUTH_PATH", str(fake_path))
     remote_auth._attempts.clear()
