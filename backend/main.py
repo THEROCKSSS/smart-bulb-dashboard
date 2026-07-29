@@ -13,6 +13,7 @@ import schedule_engine
 import discovery
 import audio_reactive
 import remote_auth
+import analytics
 from scenes_presets import PRESET_COLORS, SCENES, EFFECTS
 
 APP_VERSION = "0.2.0"
@@ -165,6 +166,15 @@ class RemoteAuthEnableBody(BaseModel):
     session_ttl_s: int | None = None
 
 
+class RevokeSessionBody(BaseModel):
+    session_id: str
+
+
+class LoginRateLimitBody(BaseModel):
+    max_attempts: int
+    window_s: int
+
+
 # --------------------------------------------------------------- system ---
 @app.get("/api/system/health")
 def health():
@@ -186,10 +196,21 @@ def info():
 @app.post("/api/auth/login")
 def auth_login(body: PinLoginBody, request: Request):
     ip = request.client.host if request.client else "unknown"
+
+    allowed, retry_after = remote_auth.check_login_rate_limit(ip)
+    if not allowed:
+        remote_auth.log_audit_event("login_rate_limited", "blocked", ip=ip)
+        raise HTTPException(429, "too many login attempts -- slow down",
+                             headers={"Retry-After": str(int(retry_after) + 1)})
+
     ok, detail = remote_auth.verify_pin(body.pin, ip)
     if not ok:
+        event = "login_lockout" if detail and "locked out" in detail else "login_failure"
+        remote_auth.log_audit_event(event, "failure", ip=ip)
         raise HTTPException(401, detail)
-    token = remote_auth.create_session_token()
+
+    token = remote_auth.create_session_token(ip=ip)
+    remote_auth.log_audit_event("login_success", "success", ip=ip)
     resp = JSONResponse({"ok": True})
     resp.set_cookie(remote_auth.SESSION_COOKIE, token, httponly=True, samesite="lax",
                      max_age=remote_auth.get_session_ttl())
@@ -197,7 +218,15 @@ def auth_login(body: PinLoginBody, request: Request):
 
 
 @app.post("/api/auth/logout")
-def auth_logout():
+def auth_logout(request: Request):
+    token = request.cookies.get(remote_auth.SESSION_COOKIE)
+    if token:
+        # Real server-side invalidation (the allowlist entry is revoked),
+        # not just deleting the cookie client-side -- a copy of the cookie
+        # captured before logout is rejected on its next use too.
+        revoked = remote_auth.revoke_current_session(token)
+        if revoked:
+            remote_auth.log_audit_event("logout", "success")
     resp = JSONResponse({"ok": True})
     resp.delete_cookie(remote_auth.SESSION_COOKIE)
     return resp
@@ -229,6 +258,39 @@ def remote_auth_disable():
 @app.get("/api/system/remote-auth/status")
 def remote_auth_status():
     return remote_auth.status()
+
+
+@app.post("/api/system/remote-auth/rate-limit")
+def remote_auth_set_rate_limit(body: LoginRateLimitBody):
+    try:
+        remote_auth.set_login_rate_limit(body.max_attempts, body.window_s)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    return remote_auth.status()
+
+
+# ------------------------------------------------------- session mgmt ---
+@app.get("/api/auth/sessions")
+def auth_sessions_list():
+    return {"sessions": remote_auth.list_sessions()}
+
+
+@app.post("/api/auth/sessions/revoke")
+def auth_sessions_revoke(body: RevokeSessionBody):
+    found = remote_auth.revoke_session(body.session_id)
+    remote_auth.log_audit_event(
+        "session_revoked", "success" if found else "not_found", session_id=body.session_id,
+    )
+    if not found:
+        raise HTTPException(404, "session not found")
+    return {"ok": True}
+
+
+@app.post("/api/auth/sessions/revoke-all")
+def auth_sessions_revoke_all():
+    count = remote_auth.revoke_all_sessions()
+    remote_auth.log_audit_event("session_revoke_all", "success", count=count)
+    return {"ok": True, "revoked": count}
 
 
 # -------------------------------------------------------------- devices ---
@@ -630,6 +692,15 @@ def discovery_unignore(device_id: str):
 def discovery_forget(device_id: str):
     discovery.forget_discovered(device_id)
     return {"ok": True}
+
+
+# -------------------------------------------------------------- analytics -
+@app.get("/api/analytics/usage")
+def analytics_usage(period: str = "today"):
+    try:
+        return analytics.usage_summary(period)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
 
 
 # --------------------------------------------------------- static files ---

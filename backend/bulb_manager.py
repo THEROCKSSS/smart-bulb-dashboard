@@ -415,7 +415,7 @@ class BulbController:
     def start_wake_timer(self, target_hhmm, brightness=100, color_temp=70, fade_minutes=10):
         self.cancel_wake_timer()
         self._wake_timer_stop = threading.Event()
-        self._wake_timer_info = {"target": target_hhmm, "brightness": brightness, "fade_minutes": fade_minutes}
+        self._wake_timer_info = {"target": target_hhmm, "brightness": brightness, "color_temp": color_temp, "fade_minutes": fade_minutes}
 
         def seconds_until(hhmm):
             now = datetime.now()
