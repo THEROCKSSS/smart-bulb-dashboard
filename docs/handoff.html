@@ -50,7 +50,7 @@
   <main class="main">
     <p class="eyebrow">Build History</p>
     <h1>How this actually got built.</h1>
-    <p class="lede">Three rounds so far. This is the condensed version — the expanded, blow-by-blow write-up of each real bug (what broke, how it was found, how it was fixed, and how the fix was verified) lives in the repo's <code>iterations/</code> directory.</p>
+    <p class="lede">Four rounds so far. This is the condensed version — the expanded, blow-by-blow write-up of each real bug (what broke, how it was found, how it was fixed, and how the fix was verified) lives in the repo's <code>iterations/</code> directory and <code>HANDOFF.md</code>.</p>
 
     <h2>Round 1 — local control from zero</h2>
     <p>Started with no credentials at all for a Bytech A19 Wi-Fi RGB+CCT bulb. A mitmproxy interception attempt failed (the Tuya app's real API traffic runs over HTTP/3/QUIC, which slips past a standard proxy). The Tuya IoT Platform's QR-link step scanned but never confirmed — a known data-center-mismatch bug. What actually worked: <code>tuya-device-sharing-sdk</code>, the same cloud-assisted QR-login flow Home Assistant's own Tuya integration uses, needing only the app's User Code — no developer platform project at all. Verified with real color changes: red, then blue, then yellow, watched on the physical bulb.</p>
@@ -66,6 +66,15 @@
     </ul>
     <p>All five are documented with the actual failure evidence and the fix verification in <code>iterations/001</code> through <code>004</code>.</p>
 
+    <h2>Round 4 — parallel-phase build, mobile fix, Tailscale, docs (v0.3.0)</h2>
+    <p>Four roadmap phases built in parallel via isolated subagent worktrees, hub-verified and hand-merged: two new audio modes, PIN-gate hardening (session revocation, audit logging, per-IP rate limiting), a stdlib CLI (<code>bulbctl</code>), and a real 76-test pytest suite. Followed by a QoL round (live-ticking timers/status, visual polish, power-user niceties) and a mobile-friendliness fix shipped as its own PR. Three real bugs found via actual testing:</p>
+    <ul>
+      <li>A hue-blend flicker in the new <code>harmonic_pairs</code> audio mode — two anchors exactly 180° apart cancelled to a zero vector at a 50/50 energy split.</li>
+      <li>A real mobile layout bug — the sidebar was collapsing to a ~16px sliver on phones due to an unreset grid-column span.</li>
+      <li>A test-isolation gap — enabling the PIN gate for real (for a Tailscale exposure) broke 16 previously-passing tests that weren't isolating auth state.</li>
+    </ul>
+    <p>Tailscale Serve was set up and verified end-to-end as the actual off-LAN access path (tailnet-only HTTPS, PIN gate enabled alongside it) — 21/21 live security checks passed.</p>
+
     <h2>Known-fragile / watch for</h2>
     <ul>
       <li>The physical bulb genuinely drops off Wi-Fi periodically — observed multiple times across every build session, unprompted. This is bulb/router behavior, not a dashboard bug.</li>
@@ -77,7 +86,7 @@
     <ul>
       <li>Bluetooth bulb support — no BLE hardware to test against yet.</li>
       <li>A second physical bulb — architecture already supports it; just needs the hardware.</li>
-      <li>A dedicated adversarial security pentest against a real deployed instance — scoped as its own roadmap phase.</li>
+      <li>A dedicated adversarial security pentest against a real deployed instance — scoped as its own roadmap phase. Round 4's security pass was a same-machine verification, not an independent attacker's attempt.</li>
     </ul>
 
     <p>Full narrative with every command run and its actual output: <a href="https://github.com/THEROCKSSS/smart-bulb-dashboard/blob/master/HANDOFF.md">the complete <code>HANDOFF.md</code></a>.</p>
