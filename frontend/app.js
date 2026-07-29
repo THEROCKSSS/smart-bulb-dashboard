@@ -191,7 +191,7 @@ async function router() {
     n.classList.toggle("active", n.dataset.route === route);
   });
   const main = document.getElementById("main");
-  main.innerHTML = `<div class="empty-state">Loading…</div>`;
+  main.innerHTML = `<div class="empty-state loading">Loading…</div>`;
   try {
     await ROUTES[route](main);
   } catch (e) {

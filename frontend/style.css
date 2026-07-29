@@ -11,7 +11,7 @@
   --danger: #ff5c5c;
   --success: #4ade80;
   --warning: #fbbf24;
-  --radius: 8px;
+  --radius: 12px;
 }
 
 * { box-sizing: border-box; }
@@ -93,11 +93,11 @@ select, input, button {
 
 button {
   cursor: pointer;
-  transition: background-color .15s, border-color .15s, color .15s;
+  transition: background-color .15s, border-color .15s, color .15s, transform .15s ease-out;
 }
 
-button:hover { background: #21262f; border-color: #3a4050; }
-button:active { background: #262c37; }
+button:hover { background: #21262f; border-color: #3a4050; transform: translateY(-1px); }
+button:active { background: #262c37; transform: translateY(0); }
 
 button.primary {
   background: var(--accent);
@@ -115,6 +115,7 @@ button.danger {
 button.danger:hover { background: rgba(255,92,92,0.12); }
 
 button:disabled { opacity: 0.45; cursor: not-allowed; }
+button:disabled:hover { transform: none; }
 
 .sidebar {
   border-right: 1px solid var(--border);
@@ -132,11 +133,11 @@ button:disabled { opacity: 0.45; cursor: not-allowed; }
   color: var(--text-dim);
   cursor: pointer;
   font-weight: 500;
-  transition: background-color .15s, color .15s;
+  transition: background-color .15s, color .15s, transform .15s ease-out;
   user-select: none;
 }
 
-.nav-item:hover { background: var(--bg-card); color: var(--text); }
+.nav-item:hover { background: var(--bg-card); color: var(--text); transform: translateX(2px); }
 .nav-item.active { background: rgba(124,156,255,0.14); color: var(--accent); }
 
 .main {
@@ -162,6 +163,7 @@ button:disabled { opacity: 0.45; cursor: not-allowed; }
   border-radius: var(--radius);
   padding: 18px;
   margin-bottom: 18px;
+  box-shadow: 0 4px 16px rgba(0,0,0,0.5);
 }
 
 .card h3 {
@@ -260,6 +262,23 @@ tr:hover td { background: rgba(255,255,255,0.02); }
   color: var(--text-faint);
   border: 1px dashed var(--border);
   border-radius: var(--radius);
+  animation: empty-state-in .2s ease-out;
+}
+@keyframes empty-state-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+/* Distinct look for the transient "Loading…" panel state (router() in app.js) vs.
+   a genuine "nothing here" empty state: solid border (not dashed — dashed reads as
+   permanent/empty) and a gentle pulse so it reads as in-progress, not inert text. */
+.empty-state.loading {
+  border-style: solid;
+  color: var(--text-dim);
+  animation: empty-state-pulse 1.2s ease-in-out infinite;
+}
+@keyframes empty-state-pulse {
+  0%, 100% { opacity: 0.6; }
+  50% { opacity: 1; }
 }
 
 .tag {
@@ -400,6 +419,16 @@ code.inline {
   .form-grid { grid-template-columns: 1fr; }
   .device-picker { margin-left: 0; }
   .topbar { flex-wrap: wrap; height: auto; padding: 10px 16px; }
+}
+
+/* Matches docs/assets/site.css's convention: cap (not fully disable) motion for
+   users who've asked for reduced motion, rather than jarringly snapping every
+   transition/animation to instant. */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 150ms !important;
+    transition-duration: 150ms !important;
+  }
 }
 
 /* Phase A (Roadmap One, issue #59): live-ticking sleep/wake timer countdown text. */
