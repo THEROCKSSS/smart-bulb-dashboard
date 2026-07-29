@@ -1,0 +1,145 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Roadmap Archive — Smart Bulb Dashboard</title>
+<meta name="description" content="Finished and closed roadmap work, plus the full 1,000-item plan for reference.">
+<meta property="og:title" content="Roadmap Archive — Smart Bulb Dashboard">
+<meta property="og:description" content="Finished and closed roadmap work, plus the full plan for reference.">
+<meta property="og:type" content="website">
+<meta name="twitter:card" content="summary">
+<link rel="stylesheet" href="assets/site.css">
+</head>
+<body>
+<button class="rail__toggle" aria-expanded="false" aria-controls="rail">☰ Menu</button>
+<div class="shell">
+  <nav class="rail" id="rail">
+    <div>
+      <a href="index.html" class="rail__brand">Smart<span>Bulb</span></a>
+      <p class="rail__tagline">Local, cloud-independent Tuya bulb dashboard</p>
+    </div>
+    <div>
+      <p class="rail__group-label">Get started</p>
+      <ul>
+        <li><a href="index.html" class="nav-link">Home</a></li>
+        <li><a href="setup.html" class="nav-link">Setup Guide</a></li>
+        <li><a href="faq.html" class="nav-link">FAQ</a></li>
+        <li><a href="features.html" class="nav-link">Features</a></li>
+      </ul>
+      <p class="rail__group-label">Reference</p>
+      <ul>
+        <li><a href="api.html" class="nav-link">API Reference</a></li>
+        <li><a href="audio.html" class="nav-link">Audio-Reactive Lighting</a></li>
+        <li><a href="security.html" class="nav-link">Remote Access &amp; Security</a></li>
+      </ul>
+      <p class="rail__group-label">Project</p>
+      <ul>
+        <li><a href="roadmap-active.html" class="nav-link">Active Roadmap</a></li>
+        <li><a href="roadmap-archive.html" class="nav-link" aria-current="page">Roadmap Archive</a></li>
+        <li><a href="network-graph.html" class="nav-link">Network Graph</a></li>
+        <li><a href="changelog.html" class="nav-link">Changelog</a></li>
+        <li><a href="handoff.html" class="nav-link">Build History</a></li>
+      </ul>
+    </div>
+    <div class="rail__external">
+      <a href="https://github.com/THEROCKSSS/smart-bulb-dashboard">GitHub repo →</a>
+    </div>
+  </nav>
+
+  <main class="main">
+    <p class="eyebrow">Roadmap Archive</p>
+    <h1>What's finished, closed, or couldn't be fixed.</h1>
+    <p class="lede">This is the historical record — work that's actually done or was deliberately closed out — kept separate from the <a href="roadmap-active.html">active board</a> so "what's happening now" never gets buried in "what already happened." The analytics below cover the whole 1,000-item plan for context.</p>
+
+    <div class="provenance-badge" id="archive-sync-badge">Loading sync status…</div>
+    <p id="archive-loading" class="lede">Loading roadmap data…</p>
+    <p id="archive-error" class="callout danger" hidden></p>
+
+    <h2>Status breakdown (all 1,000 items)</h2>
+    <div class="analytics-grid">
+      <div class="bar-chart" id="bar-chart"></div>
+      <div class="donut-wrap">
+        <svg id="donut-svg" viewBox="0 0 180 180" style="width:11rem;height:11rem;"></svg>
+        <ul class="sunburst-legend" id="donut-legend"></ul>
+      </div>
+    </div>
+
+    <h2>Time-share per week</h2>
+    <p>Each week is sized by its 250 planned items (inner ring); the outer ring breaks each week down by section, colored by real status.</p>
+    <div class="sunburst-wrap">
+      <svg id="sunburst-svg" class="sunburst-svg" viewBox="0 0 240 240" style="width:16rem;height:16rem;"></svg>
+      <ul class="sunburst-legend" id="sunburst-legend"></ul>
+    </div>
+
+    <label style="display:flex; align-items:center; gap:0.5em; font-size:var(--text-sm); color:var(--color-muted); margin:var(--space-lg) 0;">
+      <input type="checkbox" id="ref-toggle"> Show all sections for reference (not just closed ones)
+    </label>
+
+    <h2>Timeline</h2>
+    <p id="timeline-empty" class="empty-note" hidden>Nothing archived yet — no sections have been closed out or marked won't-fix. Work just started; check back as things wrap up, or toggle "show all sections" above to browse the full plan.</p>
+    <div class="timeline" id="timeline"></div>
+
+    <h2>Database</h2>
+    <p id="db-empty" class="empty-note" hidden>No closed sections to list yet. Toggle "show all sections" above for the full reference database.</p>
+    <input type="search" id="db-search" placeholder="Search sections…" style="width:100%; max-width:24rem; background:var(--color-paper-2); border:1px solid var(--color-rule-2); border-radius:var(--radius-md); padding:0.6em 0.9em; color:var(--color-ink); font-size:var(--text-sm); margin-bottom:var(--space-md);">
+    <div class="data-table-wrap">
+      <table id="db-table">
+        <thead><tr>
+          <th data-sort="section">Section ↕</th>
+          <th data-sort="week">Tags ↕</th>
+          <th data-sort="itemCount" class="num">Items ↕</th>
+          <th data-sort="updatedAt">Updated ↕</th>
+          <th>Issue</th>
+        </tr></thead>
+        <tbody id="db-body"></tbody>
+      </table>
+    </div>
+
+    <footer class="site-footer">
+      <div>
+        <h4>Get Started</h4>
+        <ul>
+          <li><a href="setup.html">Setup guide</a></li>
+          <li><a href="faq.html">FAQ</a></li>
+          <li><a href="https://github.com/THEROCKSSS/smart-bulb-dashboard/blob/master/AGENTS.md">For AI agents</a></li>
+          <li><a href="https://github.com/THEROCKSSS/smart-bulb-dashboard">Clone the repo</a></li>
+        </ul>
+      </div>
+      <div>
+        <h4>Reference</h4>
+        <ul>
+          <li><a href="api.html">API reference</a></li>
+          <li><a href="audio.html">Audio-reactive lighting</a></li>
+          <li><a href="security.html">Remote access &amp; security</a></li>
+        </ul>
+      </div>
+      <div>
+        <h4>Project</h4>
+        <ul>
+          <li><a href="roadmap-active.html">Active roadmap</a></li>
+          <li><a href="roadmap-archive.html">Roadmap archive</a></li>
+          <li><a href="network-graph.html">Network graph</a></li>
+          <li><a href="changelog.html">Changelog</a></li>
+          <li><a href="https://github.com/THEROCKSSS/smart-bulb-dashboard/blob/master/LICENSE">License</a></li>
+          <li><a href="https://github.com/THEROCKSSS/smart-bulb-dashboard/issues/new">Report an issue</a></li>
+        </ul>
+      </div>
+      <p class="footer-meta">Smart Bulb Dashboard · Polyform Noncommercial License 1.0.0 · No analytics, no tracking — this site doesn’t phone home · <a href="handoff.html">Build history</a></p>
+    </footer>
+  </main>
+</div>
+
+<div class="modal-overlay" id="detail-modal" hidden>
+  <div class="modal-box">
+    <button class="modal-close" id="modal-close">Close ✕</button>
+    <h3 id="modal-title"></h3>
+    <div id="modal-body"></div>
+  </div>
+</div>
+
+<script src="assets/main.js"></script>
+<script src="assets/roadmap-data.js"></script>
+<script src="assets/roadmap-archive.js"></script>
+</body>
+</html>

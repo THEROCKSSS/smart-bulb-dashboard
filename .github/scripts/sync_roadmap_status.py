@@ -32,7 +32,7 @@ def gh_issues():
         [
             "gh", "issue", "list", "--repo", REPO, "--state", "all",
             "--label", "roadmap", "--limit", "200",
-            "--json", "number,title,state,stateReason,labels,url,updatedAt",
+            "--json", "number,title,body,state,stateReason,labels,url,updatedAt,milestone",
         ],
         capture_output=True, check=True,
     )
@@ -50,6 +50,15 @@ def classify(issue):
     return "planned"
 
 
+def first_paragraph(body):
+    # Issue bodies are "<description>\n\nFull itemized list in `roadmap/...`, ..." --
+    # the first paragraph is the real human-written one-liner, everything after
+    # is boilerplate scaffolding shared by every issue and not worth surfacing.
+    if not body:
+        return ""
+    return body.strip().split("\n\n")[0].strip()
+
+
 def parse_issue(issue):
     m = TITLE_RE.match(issue["title"])
     if not m:
@@ -58,15 +67,19 @@ def parse_issue(issue):
     week = int(m.group(1))
     section = m.group(2)
     start_num, end_num = int(m.group(3)), int(m.group(4))
+    milestone = issue.get("milestone")
     return {
         "issueNumber": issue["number"],
         "week": week,
         "section": section,
+        "description": first_paragraph(issue.get("body", "")),
         "startNum": start_num,
         "endNum": end_num,
+        "itemCount": end_num - start_num + 1,
         "status": classify(issue),
         "url": issue["url"],
         "updatedAt": issue["updatedAt"],
+        "milestone": milestone["title"] if milestone else None,
     }
 
 

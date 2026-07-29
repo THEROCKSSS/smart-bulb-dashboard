@@ -20,3 +20,11 @@ server.log
 # OS
 .DS_Store
 Thumbs.db
+
+# graphify build cache/output — the useful artifact (graph.html) is copied into
+# docs/assets/network-graph.html for the Pages site; the raw working dir isn't committed
+graphify-out/
+
+# Throwaway roadmap-visualization prototype (50 variants) — explicitly local-only,
+# per the prototype skill's own convention. See roadmap/prototypes/README.md.
+roadmap/prototypes/
