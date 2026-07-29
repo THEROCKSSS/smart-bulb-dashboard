@@ -377,6 +377,8 @@ const AUDIO_MODE_INFO = {
   band_flash_overlay: { name: "Band Flash Overlay", desc: "Ambient N-band gradient base color, with brief accent flashes whenever any individual band spikes.", bands: true },
   stereo_split: { name: "Stereo Split", desc: "Hue leans left/right-anchor based on which stereo channel is louder (needs a 2-channel input device).", bands: false },
   breathing_silence: { name: "Breathing Silence", desc: "Slow ambient breathing brightness during quiet passages instead of going flat/dark; wakes up smoothly when audio returns.", bands: false },
+  harmonic_pairs: { name: "Harmonic Pairs", desc: "Finds the two most energetic non-adjacent bands each frame and blends between two complementary (180°-apart) hues based on which one dominates; more bands (below) sharpen the pairing.", bands: true },
+  kick_snare_split: { name: "Kick/Snare Split", desc: "Bass drives brightness like a kick drum while a separate mid-band accent shifts the hue like a layered snare/hihat.", bands: false },
 };
 
 function stopAudioPolling() {

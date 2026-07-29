@@ -29,11 +29,15 @@ MID_HUE = 130.0
 TREBLE_HUE = 230.0
 LEFT_HUE = 200.0   # stereo_split anchors
 RIGHT_HUE = 20.0
+HARMONIC_HUE_A = 45.0    # harmonic_pairs anchors — 180 deg apart by construction
+HARMONIC_HUE_B = (HARMONIC_HUE_A + 180.0) % 360
+KICK_SNARE_BASE_HUE = 15.0  # kick_snare_split's resting hue before any snare accent
 
 MODES = [
     "band_fixed", "dominant_band", "weighted_blend", "vu_meter",
     "auto_rotate_hue", "monochrome_pulse", "strobe_on_drop", "palette_cycle",
     "spectrum_gradient", "band_flash_overlay", "stereo_split", "breathing_silence",
+    "harmonic_pairs", "kick_snare_split",
 ]
 
 ROLE_MODES = ["unison", "phase_offset", "band_split"]
@@ -289,6 +293,75 @@ def _apply_mode(mode, bands, ctx):
         brightness = min(100, breathing + active_boost)
         return ("hsv", ctx["rotate_hue"], 70 if active_boost < 5 else 100, brightness)
 
+    if mode == "harmonic_pairs":
+        # Find the two most energetic NON-ADJACENT bands (adjacent bands
+        # are excluded because they're basically the same part of the
+        # spectrum leaking across a band edge — the interesting "pair"
+        # signal is two genuinely separate regions lighting up together,
+        # e.g. bass + treble both hot while mid stays quiet).
+        energies_list = bands["energies"]
+        n = len(energies_list)
+        best = None
+        for i in range(n):
+            for j in range(i + 2, n):
+                total_e = energies_list[i] + energies_list[j]
+                if best is None or total_e > best[0]:
+                    best = (total_e, i, j)
+        if best is None:
+            # Fewer than 3 bands means no strictly non-adjacent pair
+            # exists — fall back to the two extreme bands we do have.
+            idx_a, idx_b = 0, (n - 1 if n > 1 else 0)
+        else:
+            _, idx_a, idx_b = best
+        e_a, e_b = energies_list[idx_a], energies_list[idx_b]
+        # ratio_a in [0, 1]: which of the pair currently dominates. The
+        # "+1e-9" is the same divide-by-zero guard used elsewhere in this
+        # file (see analyze_frame's `total`) — at true silence e_a == e_b
+        # == 0, so ratio_a deterministically resolves to 0 every frame
+        # (never an arbitrary/noisy value), which is what keeps this mode
+        # from flickering in a quiet room: it always settles on HUE_B.
+        #
+        # NOTE: target is a plain linear walk from HUE_B to HUE_A along a
+        # single fixed direction (not _smooth_hue's shortest-arc circular
+        # mean). Because the two anchors are exactly 180 degrees apart,
+        # the shortest arc between them is ambiguous (two equal-length
+        # paths), and right at a 50/50 split (ratio_a == 0.5) that
+        # ambiguity makes the circular mean numerically degenerate — the
+        # two anchor vectors cancel to ~(0, 0), so atan2 returns whatever
+        # direction floating-point rounding noise happens to favor,
+        # flipping unpredictably frame to frame. Walking along one fixed
+        # direction sidesteps that entirely: every ratio_a maps to exactly
+        # one point on the circle, with no ambiguous case.
+        ratio_a = e_a / (e_a + e_b + 1e-9)
+        hue_span = (HARMONIC_HUE_A - HARMONIC_HUE_B) % 360  # == 180 by construction
+        target = (HARMONIC_HUE_B + ratio_a * hue_span) % 360
+        ctx["smoothed_hue"] = _smooth_hue(ctx["smoothed_hue"], target, 0.25)
+        return ("hsv", ctx["smoothed_hue"], 100, pulse_brightness)
+
+    if mode == "kick_snare_split":
+        # Low band = kick-like pulses driving brightness; a mid/high band
+        # = snare/hihat-like accents layered on top as a hue shift around
+        # a fixed base hue. Uses `fractions` (already normalized 0..1)
+        # rather than raw energies so the hue swing stays well-behaved
+        # regardless of overall input loudness/gain.
+        n = len(fractions)
+        bass_frac = fractions[0] if n else 0.0
+        snare_idx = min(n - 1, max(1, n // 2)) if n > 1 else 0
+        snare_frac = fractions[snare_idx] if n else 0.0
+        # Brightness is still the standard rms*gain pulse (so overall
+        # volume still matters) but weighted up when bass fractionally
+        # dominates the mix, i.e. an actual kick hit, and down otherwise.
+        kick_brightness = min(100, max(4, 4 + rms * gain * 4500 * (0.4 + 1.2 * bass_frac)))
+        accent = min(1.0, snare_frac * 3.0)
+        target = (KICK_SNARE_BASE_HUE + accent * 90.0) % 360
+        # At silence, fractions -> 0 for both bass and snare bands (same
+        # near-zero-total behavior as analyze_frame), so `target` settles
+        # deterministically on KICK_SNARE_BASE_HUE and brightness floors
+        # at 4 — no flicker, matching dominant_band's silence convention.
+        ctx["smoothed_hue"] = _smooth_hue(ctx["smoothed_hue"], target, 0.3)
+        brightness = min(100, kick_brightness + (15 if is_beat else 0))
+        return ("hsv", ctx["smoothed_hue"], 100, brightness)
+
     return ("hsv", BASS_HUE, 100, pulse_brightness)
 
 
@@ -410,7 +483,7 @@ class AudioSession:
         if rms_check > 0.0008:
             self._last_audio_at = now
 
-        n_bands = self.n_bands if self.mode in ("spectrum_gradient", "band_flash_overlay") else 3
+        n_bands = self.n_bands if self.mode in ("spectrum_gradient", "band_flash_overlay", "harmonic_pairs") else 3
         bands = analyze_frame(samples, band_edges=log_band_edges(n_bands) if n_bands != 3 else None)
         action = _apply_mode(self.mode, bands, self.ctx)
         self.sender.queue(action)

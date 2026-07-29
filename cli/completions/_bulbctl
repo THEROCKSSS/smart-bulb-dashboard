@@ -1,0 +1,38 @@
+#compdef bulbctl
+# zsh completion for bulbctl
+# Install: drop this file (named exactly "_bulbctl") somewhere on your $fpath,
+# e.g. ~/.zsh/completions/_bulbctl, then `autoload -Uz compinit && compinit`.
+
+_bulbctl() {
+    local -a commands
+    commands=(
+        'list:list known devices'
+        'on:turn a device on'
+        'off:turn a device off'
+        'toggle:toggle a device power state'
+        'color:set a device RGB color from hex'
+        'brightness:set a device brightness 0-100'
+        'scene:apply a named scene to a device'
+        'status:show a device current status'
+        'scenes:list available scenes'
+        'presets:list available preset colors'
+        'groups:list configured device groups'
+        'login:authenticate against a PIN-gated dashboard'
+        'logout:clear the saved session'
+        'auth-status:show remote-auth/session status'
+        'completion:print a shell completion script'
+    )
+
+    if (( CURRENT == 2 )); then
+        _describe 'command' commands
+        return
+    fi
+
+    case "${words[2]}" in
+        completion)
+            _values 'shell' bash zsh powershell
+            ;;
+    esac
+}
+
+_bulbctl "$@"
