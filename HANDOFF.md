@@ -193,6 +193,131 @@ Rounds 1 and 2, not a new issue.
   intentionally scoped as future roadmap work, not squeezed into this
   build — see `roadmap/`.
 
+## Round 4 — parallel-phase build, Roadmap One QoL, mobile fix, Tailscale, docs (2026-07-29)
+
+### Current state
+
+`master` at commit `2123262`, working tree clean, fully pushed to GitHub
+(`THEROCKSSS/smart-bulb-dashboard`). `APP_VERSION = "0.3.0"`. **159 working
+features** (`FEATURES.md`). 76/76 tests pass (`backend/tests/` + `cli/tests/`).
+A real backend server is running locally right now: `127.0.0.1:8502`
+(started via `backend/venv/Scripts/python.exe -m uvicorn main:app --host
+127.0.0.1 --port 8502` from inside `backend/`), plus reachable over the
+tailnet at `https://owens-pc-vpn.tailff2683.ts.net:8502` via `tailscale
+serve` (tailnet-only, not Funnel). **The PIN gate is currently enabled** —
+see Credentials below.
+
+### What was done this session
+
+1. **Four roadmap phases, built in parallel** (one subagent each, isolated
+   git worktrees, hub-verified, hand-merged where diffs overlapped):
+   audio modes (`harmonic_pairs`, `kick_snare_split` — a real flicker bug
+   found and fixed, see `docs/music-reactive-lighting.md`), PIN-gate
+   hardening (session listing/revocation, an audit log that never records
+   the PIN, per-IP rate limiting independent of lockout), `cli/bulbctl.py`
+   (stdlib-only REST client with shell completions), and a real
+   `backend/tests/`/`cli/tests/` pytest suite (76 tests) plus
+   `GET /api/analytics/usage` (real per-device on-time, no fabricated
+   wattage).
+2. **Roadmap One** — a QoL round, also built via parallel subagents: live-
+   ticking sleep/wake timer countdowns and status badge (no more refresh-
+   to-see), a visual polish pass (8px→12px radius, real card shadows,
+   smoother hover states), and power-user niceties (remembered
+   device/panel via `localStorage`, keyboard shortcuts on Control, copy-
+   to-clipboard on Diagnostics, an Undo action on cancel-timer toasts that
+   actually recreates the timer).
+3. **Mobile-friendliness fix, shipped as PR #63** (merged): found and
+   fixed a real bug — `.topbar`'s desktop `grid-column: 1 / 3` was never
+   reset in the mobile `@media` block, so the sidebar was collapsing to a
+   ~16px sliver on phones. Also added 44px minimum tap targets and a
+   responsive PIN-gate screen. Verified live at 375/414/800/1400px.
+4. **Tailscale Serve** set up and verified end-to-end as the actual
+   off-LAN access path (tailnet-only HTTPS, real cert, no port
+   forwarding), with the PIN gate enabled alongside it — 21/21 live
+   security checks passed (root path stays open, protected routes 401
+   without a session, lockout/rate-limiter/session-revocation all work,
+   audit log never leaks the PIN).
+5. **Git identity / attribution cleanup**: rewrote the 6 commits that had
+   been authored as `agentsoul` with `Co-Authored-By`/session-link
+   trailers — stripped the trailers, reauthored as
+   `THEROCKSSS <193167949+THEROCKSSS@users.noreply.github.com>` (repo-local
+   git config, not global), force-pushed. **Caught and fixed a mistake
+   made mid-cleanup**: the first force-push accidentally clobbered 3 real
+   `roadmap-status-bot` sync commits on `master` (local `master` had
+   quietly diverged from remote before this round started) — rebuilt
+   master properly by resetting to right after the CI-fix commit and
+   replaying the bot's 3 real commits on top with their actual authorship
+   intact, then force-pushed the corrected version. Verified the bot
+   commits' content matched exactly before re-pushing.
+6. **Documentation pass to v0.3.0**: `CHANGELOG.md`/`docs/changelog.html`
+   (new v0.3.0 entry), `FEATURES.md` (22 new itemized entries, 138–159),
+   `README.md`, `AGENTS.md`, `docs/index.html`, `docs/features.html`,
+   `docs/api.html` (analytics + session-management + `bulbctl` sections),
+   `docs/audio.html` (14 modes), `docs/security.html` +
+   `docs/remote-access-security.md` (session/audit/rate-limit hardening,
+   Tailscale Serve now exercised not just recommended). Marked 3 real
+   Week 3/4 roadmap issues (`#44` energy/usage analytics, `#35` CLI tool,
+   `#51` developer experience/tests) `in-progress` with honest partial-
+   progress notes, since this round's work genuinely advances them without
+   completing their full W-item ranges. Closed `#59`–`#61` (Roadmap One
+   tracking issues, now merged). Re-ran `.github/scripts/sync_roadmap_status.py`
+   so the live Active Roadmap page reflects this immediately.
+7. **Real bug found and fixed while re-verifying**: enabling the PIN gate
+   for real (step 4) broke 16 previously-passing tests, because most of
+   `backend/tests/`'s shared `client` fixture didn't isolate
+   `remote_auth`'s on-disk state and was reading the real, now-enabled
+   `backend/data/remote_auth.json`. Fixed by making the fixture depend on
+   the existing (previously opt-in) `auth_reset` fixture. 76/76 pass again.
+
+### What's NOT done (the gap)
+
+- The adversarial security-test phase is still not done — this round's
+  21-check security pass was a same-machine verification (the same
+  session that built the feature also wrote the checks), not an
+  independent attacker's attempt against a real deployed instance. See
+  `docs/remote-access-security.md`'s "Still planned" section.
+- The Undo action's wake-timer path was code-reviewed and its backend
+  payload verified correct, but not independently clicked through in a
+  real browser (only the sleep-timer undo path was UI-driven end-to-end).
+- The PIN gate is currently **enabled** on the locally-running server
+  (was disabled before this session touched it) — intentional for the
+  Tailscale exposure, but worth knowing before assuming the dashboard is
+  open like it used to be.
+
+### How to resume
+
+```bash
+cd "C:\Users\User\Documents\Hermes stuff\hermes workspace\projects\smart-bulb-dashboard"
+git status --short            # should be clean, on master, at or after 2123262
+backend\venv\Scripts\python.exe -m pytest backend\tests\ cli\tests\ -q   # expect 76 passed
+
+# Bring the dashboard up locally:
+cd backend
+venv\Scripts\python.exe -m uvicorn main:app --host 127.0.0.1 --port 8502
+# Then: http://127.0.0.1:8502 (PIN gate enabled — see Credentials)
+
+# Re-expose it over Tailscale if the serve mapping isn't still active:
+tailscale serve status                                    # check current mappings
+tailscale serve --bg --https=8502 http://127.0.0.1:8502    # re-create if missing
+```
+
+### Credentials / config
+
+- **Local server PIN**: `143490` (set this session for the Tailscale
+  exposure — rotate it if this handoff is ever shared beyond this
+  machine's owner). Session TTL: 30 days once logged in.
+- **Tailscale URL**: `https://owens-pc-vpn.tailff2683.ts.net:8502`
+  (tailnet-only — reachable from any device signed into the same
+  Tailscale account, not the public internet).
+- `backend/config.json` (real device credentials) remains git-ignored,
+  never committed.
+- Git identity for this repo (local, not global):
+  `user.name = THEROCKSSS`, `user.email =
+  193167949+THEROCKSSS@users.noreply.github.com`. Do not add
+  `Co-Authored-By`/session-link trailers to commits, PR bodies, or issue
+  comments unless explicitly asked — this was an explicit standing
+  instruction from this session.
+
 ## Repo
 
 Pushed to Forgejo: `agentsoul/smart-bulb-dashboard` (see commit log for
