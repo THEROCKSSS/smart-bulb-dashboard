@@ -7,6 +7,7 @@ const state = {
   scenes: [],
   effects: [],
   lastStatus: null,
+  hasPolledOnce: false,
   statusPollHandle: null,
   consecutiveOfflinePolls: 0,
   audioPollHandle: null,
@@ -256,9 +257,19 @@ function formatAgo(ms) {
 // counting up between real poll cycles, without issuing any extra network requests.
 function renderStatusText() {
   const text = document.getElementById("status-text");
-  if (!text || !state.lastStatus) return; // still on the initial "connecting…" text
+  if (!text || !state.hasPolledOnce) return; // still on the initial "connecting…" text, first poll in flight
   const agoPart = state.lastSeenAt ? ` · last seen ${formatAgo(Date.now() - state.lastSeenAt)}` : "";
-  if (state.consecutiveOfflinePolls >= OFFLINE_CONFIRM_THRESHOLD) {
+  // `renderControl()` (below) caches whatever /status returns into
+  // state.lastStatus unconditionally, including a definitive {online: false}
+  // response -- so `!state.lastStatus` alone no longer distinguishes "never
+  // polled" from "polled and confirmed offline". Check `.online === false`
+  // explicitly too, and skip the consecutive-miss grace period in that case:
+  // an explicit "not online" answer doesn't need debouncing the way a
+  // transient network blip does. Without this, a confirmed-offline device
+  // could still flash "LIVE DATA · OFF" (reading `.power` off stale/absent
+  // data) until enough consecutive misses piled up.
+  const knownOffline = !state.lastStatus || state.lastStatus.online === false;
+  if (knownOffline || state.consecutiveOfflinePolls >= OFFLINE_CONFIRM_THRESHOLD) {
     text.textContent = `OFFLINE${agoPart}`;
   } else {
     text.textContent = `LIVE DATA · ${state.lastStatus.power ? "ON" : "OFF"}${agoPart}`;
@@ -287,6 +298,7 @@ async function pollStatus(quiet) {
       badge.classList.remove("live");
     }
   }
+  state.hasPolledOnce = true;
   renderStatusText();
 }
 

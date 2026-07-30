@@ -12,6 +12,19 @@ import tinytuya
 import config as cfgmod
 from scenes_presets import PRESET_COLORS, SCENES, find_preset, find_scene
 
+# Real bug found while testing Week 1 live: tinytuya's default connection
+# timeout (5s) x its default retry limit (5) meant a bulb that's gone
+# unreachable (powered off, DHCP moved it, wrong local network) hung a
+# status() call for MINUTES instead of seconds -- confirmed by timing it
+# directly against a real unreachable device: 3m26s before this fix, ~2s
+# after. That hang is what left the dashboard stuck on "Loading..."/
+# "connecting..." forever. Also cut the retry limit to 1 -- empirically,
+# each extra retry added several more seconds (not just 2s), likely from
+# ARP/route re-resolution on a truly-unreachable host, so it isn't safe to
+# assume "retries * timeout" bounds the total wait.
+DEFAULT_SOCKET_TIMEOUT_S = 2.0
+DEFAULT_SOCKET_RETRY_LIMIT = 1
+
 DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
 os.makedirs(DATA_DIR, exist_ok=True)
 FAVORITES_PATH = os.path.join(DATA_DIR, "favorites.json")
@@ -66,6 +79,10 @@ class BulbController:
                 version=self.cfg.get("version", 3.3),
             )
             self._dev.set_socketPersistent(True)
+            if hasattr(self._dev, "set_socketTimeout"):
+                self._dev.set_socketTimeout(DEFAULT_SOCKET_TIMEOUT_S)
+            if hasattr(self._dev, "set_socketRetryLimit"):
+                self._dev.set_socketRetryLimit(DEFAULT_SOCKET_RETRY_LIMIT)
         return self._dev
 
     def reset_connection(self):
