@@ -12,6 +12,9 @@ import bulb_manager as bm
 import schedule_engine
 import discovery
 import audio_reactive
+import audio_presets
+import audio_safety
+import audio_lightshow
 import remote_auth
 import analytics
 from scenes_presets import PRESET_COLORS, SCENES, EFFECTS
@@ -146,6 +149,15 @@ class AudioReactiveStartBody(BaseModel):
     monochrome_hue: float = 280.0
     n_bands: int = 3
     min_dwell_ms: int = audio_reactive.DEFAULT_MIN_DWELL_MS
+    max_duration_s: float | None = None
+    warmup_s: float = 0.0
+    auto_resume_grace_s: float = audio_reactive.DEFAULT_AUTO_RESUME_GRACE_S
+    max_flash_rate_hz: float | None = None
+    disable_flash_heavy: bool = False
+    max_brightness_swing: float | None = None
+    silence_auto_off: bool = True
+    fallback_device_index: int | None = None
+    force: bool = False  # override an active-group conflict on this device
 
 
 class GroupAudioReactiveStartBody(BaseModel):
@@ -155,6 +167,50 @@ class GroupAudioReactiveStartBody(BaseModel):
     sensitivity: float = 1.0
     monochrome_hue: float = 280.0
     min_dwell_ms: int = audio_reactive.DEFAULT_MIN_DWELL_MS
+    max_duration_s: float | None = None
+    warmup_s: float = 0.0
+    max_flash_rate_hz: float | None = None
+    disable_flash_heavy: bool = False
+    silence_auto_off: bool = True
+    fallback_device_index: int | None = None
+    force: bool = False  # stop conflicting solo sessions on these devices first
+
+
+class AudioSessionPresetSaveBody(BaseModel):
+    name: str
+    device_index: int
+    mode: str = "band_fixed"
+    sensitivity: float = 1.0
+    monochrome_hue: float = 280.0
+    n_bands: int = 3
+    min_dwell_ms: int = audio_reactive.DEFAULT_MIN_DWELL_MS
+    max_duration_s: float | None = None
+    warmup_s: float = 0.0
+    auto_resume_grace_s: float = audio_reactive.DEFAULT_AUTO_RESUME_GRACE_S
+    max_flash_rate_hz: float | None = None
+    disable_flash_heavy: bool = False
+
+
+class AudioSessionPresetApplyBody(BaseModel):
+    preset_id: str
+    device_index: int | None = None  # override the preset's own stored capture device
+
+
+class SafetyMaxFlashRateBody(BaseModel):
+    max_flash_rate_hz: float
+
+
+class SafetyDisableFlashHeavyBody(BaseModel):
+    disabled: bool
+
+
+class LightshowExportBody(BaseModel):
+    name: str
+
+
+class LightshowReplayBody(BaseModel):
+    lightshow_id: str
+    loop: bool = False
 
 
 class PinLoginBody(BaseModel):
@@ -333,43 +389,57 @@ def device_status(device_id: str):
 @app.post("/api/devices/{device_id}/power")
 def device_power(device_id: str, body: PowerBody):
     c = get_controller_or_404(device_id)
-    return {"result": c.power(body.on)}
+    result = c.power(body.on)
+    audio_reactive.notify_manual_command(device_id)
+    return {"result": result}
 
 
 @app.post("/api/devices/{device_id}/toggle")
 def device_toggle(device_id: str):
     c = get_controller_or_404(device_id)
-    return {"result": c.toggle()}
+    result = c.toggle()
+    audio_reactive.notify_manual_command(device_id)
+    return {"result": result}
 
 
 @app.post("/api/devices/{device_id}/brightness")
 def device_brightness(device_id: str, body: BrightnessBody):
     c = get_controller_or_404(device_id)
-    return {"result": c.set_brightness(body.value)}
+    result = c.set_brightness(body.value)
+    audio_reactive.notify_manual_command(device_id)
+    return {"result": result}
 
 
 @app.post("/api/devices/{device_id}/color")
 def device_color(device_id: str, body: RGBBody):
     c = get_controller_or_404(device_id)
-    return {"result": c.set_rgb(body.r, body.g, body.b)}
+    result = c.set_rgb(body.r, body.g, body.b)
+    audio_reactive.notify_manual_command(device_id)
+    return {"result": result}
 
 
 @app.post("/api/devices/{device_id}/color/hsv")
 def device_color_hsv(device_id: str, body: HSVBody):
     c = get_controller_or_404(device_id)
-    return {"result": c.set_hsv(body.h, body.s, body.v)}
+    result = c.set_hsv(body.h, body.s, body.v)
+    audio_reactive.notify_manual_command(device_id)
+    return {"result": result}
 
 
 @app.post("/api/devices/{device_id}/color/random")
 def device_color_random(device_id: str):
     c = get_controller_or_404(device_id)
-    return {"result": c.random_color()}
+    result = c.random_color()
+    audio_reactive.notify_manual_command(device_id)
+    return {"result": result}
 
 
 @app.post("/api/devices/{device_id}/white")
 def device_white(device_id: str, body: WhiteBody):
     c = get_controller_or_404(device_id)
-    return {"result": c.set_white(body.brightness, body.color_temp)}
+    result = c.set_white(body.brightness, body.color_temp)
+    audio_reactive.notify_manual_command(device_id)
+    return {"result": result}
 
 
 @app.post("/api/devices/{device_id}/identify")
@@ -434,18 +504,22 @@ def get_effects():
 def apply_preset(device_id: str, body: PresetApplyBody):
     c = get_controller_or_404(device_id)
     try:
-        return c.apply_preset(body.preset_id)
+        result = c.apply_preset(body.preset_id)
     except ValueError as e:
         raise HTTPException(400, str(e))
+    audio_reactive.notify_manual_command(device_id)
+    return result
 
 
 @app.post("/api/devices/{device_id}/scenes/apply")
 def apply_scene(device_id: str, body: SceneApplyBody):
     c = get_controller_or_404(device_id)
     try:
-        return c.apply_scene(body.scene_id)
+        result = c.apply_scene(body.scene_id)
     except ValueError as e:
         raise HTTPException(400, str(e))
+    audio_reactive.notify_manual_command(device_id)
+    return result
 
 
 @app.get("/api/devices/{device_id}/favorites")
@@ -503,22 +577,138 @@ def audio_devices():
         raise HTTPException(500, f"could not list audio devices: {e}")
 
 
+@app.get("/api/audio/modes/info")
+def audio_modes_info():
+    """Section 13: per-mode metadata (flash-heavy vs. ambient) so a
+    frontend can label modes without hardcoding the classification."""
+    settings = audio_safety.get_safety_settings()
+    return {
+        "modes": audio_safety.mode_metadata(audio_reactive.MODES),
+        "hard_max_flash_rate_hz": audio_safety.HARD_MAX_FLASH_RATE_HZ,
+        "flash_rate_standard": (
+            "WCAG 2.3.1 'Three Flashes or Below Threshold' (max 3 flashes/second); "
+            "see also ITU-R BT.1702 guidance for programme makers on photosensitive epilepsy."
+        ),
+        "settings": settings,
+    }
+
+
+@app.post("/api/audio/safety/max-flash-rate")
+def audio_safety_set_max_flash_rate(body: SafetyMaxFlashRateBody):
+    """Configurable max flash rate as an explicit safety ceiling, distinct
+    from the dwell slider — always clamped to <= the hard, non-bypassable
+    HARD_MAX_FLASH_RATE_HZ regardless of what's requested here."""
+    return audio_safety.set_max_flash_rate(body.max_flash_rate_hz)
+
+
+@app.post("/api/audio/safety/disable-flash-heavy")
+def audio_safety_set_disable_flash_heavy(body: SafetyDisableFlashHeavyBody):
+    """One-click 'disable all flash-heavy modes' toggle."""
+    return audio_safety.set_disable_flash_heavy(body.disabled)
+
+
+@app.get("/api/audio/safety/reduced-motion-profile")
+def audio_safety_reduced_motion_profile():
+    """A ready-to-use 'reduced motion' preset: gentle mode, no strobe-style
+    modes, capped brightness swing/flash rate."""
+    return audio_safety.reduced_motion_profile()
+
+
 @app.post("/api/devices/{device_id}/audio-reactive/start")
 def audio_reactive_start(device_id: str, body: AudioReactiveStartBody):
     c = get_controller_or_404(device_id)
     if body.mode not in audio_reactive.MODES:
         raise HTTPException(400, f"unknown mode '{body.mode}', expected one of {audio_reactive.MODES}")
-    if body.min_dwell_ms < audio_reactive.MIN_DWELL_FLOOR_MS:
-        raise HTTPException(400, f"min_dwell_ms below the safety floor of {audio_reactive.MIN_DWELL_FLOOR_MS}ms")
-    audio_reactive.start_session(c, body.device_index, body.mode, body.sensitivity,
-                                  body.monochrome_hue, body.n_bands, body.min_dwell_ms)
-    return {"ok": True, "mode": body.mode, "device_index": body.device_index}
+    if not audio_reactive.check_rate_limit(f"start:{device_id}"):
+        raise HTTPException(429, "too many audio-reactive start/stop requests for this device — slow down")
+
+    # Section 8: conflict check — this device already inside an active
+    # *group* session would mean two independent senders fighting the bulb.
+    conflicts = audio_reactive.check_solo_conflict(device_id)
+    if conflicts and not body.force:
+        raise HTTPException(
+            409,
+            f"device '{device_id}' is already in active group session(s) {conflicts} — "
+            f"pass force=true to stop them and start a solo session instead",
+        )
+    for gid in conflicts:
+        audio_reactive.stop_group_session(gid)
+
+    try:
+        session = audio_reactive.start_session(
+            c, body.device_index, body.mode, body.sensitivity, body.monochrome_hue, body.n_bands,
+            body.min_dwell_ms, max_duration_s=body.max_duration_s, warmup_s=body.warmup_s,
+            auto_resume_grace_s=body.auto_resume_grace_s, max_flash_rate_hz=body.max_flash_rate_hz,
+            disable_flash_heavy=body.disable_flash_heavy, max_brightness_swing=body.max_brightness_swing,
+            silence_auto_off=body.silence_auto_off, fallback_device_index=body.fallback_device_index,
+        )
+    except audio_reactive.AudioConfigError as e:
+        raise HTTPException(400, str(e))
+    return {"ok": True, **session.confirmation()}
 
 
 @app.post("/api/devices/{device_id}/audio-reactive/stop")
 def audio_reactive_stop(device_id: str):
+    if not audio_reactive.check_rate_limit(f"stop:{device_id}"):
+        raise HTTPException(429, "too many audio-reactive start/stop requests for this device — slow down")
     audio_reactive.stop_session(device_id)
     return {"ok": True}
+
+
+@app.post("/api/devices/{device_id}/audio-reactive/resume-last")
+def audio_reactive_resume_last(device_id: str):
+    """Section 8: one-click 'resume last session' after a restart."""
+    c = get_controller_or_404(device_id)
+    session = audio_reactive.resume_last_session(c)
+    if not session:
+        raise HTTPException(404, f"no last-known-good audio-reactive session saved for '{device_id}'")
+    return {"ok": True, **session.confirmation()}
+
+
+# ----------------------------------------------- audio session presets ----
+@app.post("/api/devices/{device_id}/audio-reactive/session-presets")
+def save_audio_session_preset(device_id: str, body: AudioSessionPresetSaveBody):
+    """Section 8: save an entire running session's config (mode,
+    sensitivity, dwell, n_bands, device, ...) as a named, reusable preset."""
+    get_controller_or_404(device_id)
+    config = body.model_dump(exclude={"name"})
+    return audio_presets.save_preset(body.name, device_id, config)
+
+
+@app.get("/api/audio/session-presets")
+def list_audio_session_presets(device_id: str | None = None):
+    return audio_presets.list_presets(device_id)
+
+
+@app.delete("/api/audio/session-presets/{preset_id}")
+def delete_audio_session_preset(preset_id: str):
+    found = audio_presets.delete_preset(preset_id)
+    if not found:
+        raise HTTPException(404, "session preset not found")
+    return {"ok": True}
+
+
+@app.post("/api/devices/{device_id}/audio-reactive/session-presets/apply")
+def apply_audio_session_preset(device_id: str, body: AudioSessionPresetApplyBody):
+    c = get_controller_or_404(device_id)
+    preset = audio_presets.get_preset(body.preset_id)
+    if not preset:
+        raise HTTPException(404, "session preset not found")
+    cfg = preset["config"]
+    device_index = body.device_index if body.device_index is not None else cfg.get("device_index")
+    try:
+        session = audio_reactive.start_session(
+            c, device_index, cfg.get("mode", "band_fixed"), cfg.get("sensitivity", 1.0),
+            cfg.get("monochrome_hue", 280.0), cfg.get("n_bands", 3),
+            cfg.get("min_dwell_ms", audio_reactive.DEFAULT_MIN_DWELL_MS),
+            max_duration_s=cfg.get("max_duration_s"), warmup_s=cfg.get("warmup_s", 0.0),
+            auto_resume_grace_s=cfg.get("auto_resume_grace_s", audio_reactive.DEFAULT_AUTO_RESUME_GRACE_S),
+            max_flash_rate_hz=cfg.get("max_flash_rate_hz"),
+            disable_flash_heavy=cfg.get("disable_flash_heavy", False),
+        )
+    except audio_reactive.AudioConfigError as e:
+        raise HTTPException(400, str(e))
+    return {"ok": True, "preset_id": body.preset_id, **session.confirmation()}
 
 
 # --------------------------------------------------- audio-reactive groups -
@@ -532,17 +722,42 @@ def group_audio_reactive_start(group_id: str, body: GroupAudioReactiveStartBody)
         raise HTTPException(400, f"unknown mode '{body.mode}', expected one of {audio_reactive.MODES}")
     if body.role_mode not in audio_reactive.ROLE_MODES:
         raise HTTPException(400, f"unknown role_mode '{body.role_mode}', expected one of {audio_reactive.ROLE_MODES}")
+    if not audio_reactive.check_rate_limit(f"start:group:{group_id}"):
+        raise HTTPException(429, "too many audio-reactive start/stop requests for this group — slow down")
     controllers = [bm.get_controller(d) for d in group["device_ids"]]
     controllers = [c for c in controllers if c is not None]
     if not controllers:
         raise HTTPException(400, "group has no resolvable devices")
-    audio_reactive.start_group_session(group_id, controllers, body.device_index, body.mode,
-                                        body.role_mode, body.sensitivity, body.monochrome_hue, body.min_dwell_ms)
+
+    # Section 8: conflict check — warn/reject if any bulb in this group is
+    # already running its own solo audio-reactive session.
+    conflicts = audio_reactive.check_group_conflict(group["device_ids"])
+    if conflicts and not body.force:
+        raise HTTPException(
+            409,
+            f"device(s) {conflicts} already have an active solo audio-reactive session — "
+            f"pass force=true to stop them and start the group session instead",
+        )
+    for device_id in conflicts:
+        audio_reactive.stop_session(device_id)
+
+    try:
+        audio_reactive.start_group_session(
+            group_id, controllers, body.device_index, body.mode, body.role_mode, body.sensitivity,
+            body.monochrome_hue, body.min_dwell_ms, max_duration_s=body.max_duration_s,
+            warmup_s=body.warmup_s, max_flash_rate_hz=body.max_flash_rate_hz,
+            disable_flash_heavy=body.disable_flash_heavy, silence_auto_off=body.silence_auto_off,
+            fallback_device_index=body.fallback_device_index,
+        )
+    except audio_reactive.AudioConfigError as e:
+        raise HTTPException(400, str(e))
     return {"ok": True, "mode": body.mode, "role_mode": body.role_mode, "bulb_count": len(controllers)}
 
 
 @app.post("/api/groups/{group_id}/audio-reactive/stop")
 def group_audio_reactive_stop(group_id: str):
+    if not audio_reactive.check_rate_limit(f"stop:group:{group_id}"):
+        raise HTTPException(429, "too many audio-reactive start/stop requests for this group — slow down")
     audio_reactive.stop_group_session(group_id)
     return {"ok": True}
 
@@ -555,6 +770,58 @@ def group_audio_reactive_status(group_id: str):
 @app.get("/api/devices/{device_id}/audio-reactive/status")
 def audio_reactive_status(device_id: str):
     return {"data_source": "LIVE DATA", **audio_reactive.get_session_status(device_id)}
+
+
+# ------------------------------------------------------------ lightshow ---
+@app.post("/api/devices/{device_id}/lightshow/export")
+def lightshow_export(device_id: str, body: LightshowExportBody):
+    """Section 12: export the color-over-time sequence a session actually
+    sent (captured live if still running, or from the most recent session
+    if it was just stopped) as a replayable light show."""
+    session = audio_reactive.get_active_session(device_id)
+    if session:
+        points = session.sender.get_captured_points()
+    else:
+        points = audio_reactive.get_last_capture(device_id)
+    try:
+        record = audio_lightshow.export_lightshow(device_id, body.name, points)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    return {k: v for k, v in record.items() if k != "points"}
+
+
+@app.get("/api/devices/{device_id}/lightshow")
+def lightshow_list(device_id: str):
+    return audio_lightshow.list_lightshows(device_id)
+
+
+@app.delete("/api/lightshow/{lightshow_id}")
+def lightshow_delete(lightshow_id: str):
+    found = audio_lightshow.delete_lightshow(lightshow_id)
+    if not found:
+        raise HTTPException(404, "lightshow not found")
+    return {"ok": True}
+
+
+@app.post("/api/devices/{device_id}/lightshow/replay")
+def lightshow_replay_start(device_id: str, body: LightshowReplayBody):
+    c = get_controller_or_404(device_id)
+    try:
+        audio_lightshow.start_replay(device_id, c, body.lightshow_id, loop=body.loop)
+    except ValueError as e:
+        raise HTTPException(404, str(e))
+    return {"ok": True, "lightshow_id": body.lightshow_id, "loop": body.loop}
+
+
+@app.post("/api/devices/{device_id}/lightshow/replay/stop")
+def lightshow_replay_stop(device_id: str):
+    audio_lightshow.stop_replay(device_id)
+    return {"ok": True}
+
+
+@app.get("/api/devices/{device_id}/lightshow/replay/status")
+def lightshow_replay_status(device_id: str):
+    return {"data_source": "LIVE DATA", **audio_lightshow.get_replay_status(device_id)}
 
 
 # --------------------------------------------------------------- timers ---
