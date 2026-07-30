@@ -72,6 +72,18 @@ class BulbController:
         with self._device_lock:
             self._dev = None
 
+    def set_socket_timeout(self, seconds):
+        """Used by audio_reactive.BulbSender to apply a short, explicit
+        socket timeout specifically for audio-reactive sends (and restore
+        the normal default when a session stops) — see
+        AUDIO_SEND_SOCKET_TIMEOUT_S in audio_reactive.py for why. Guarded
+        with hasattr since older tinytuya versions (and the pytest fake
+        device) may not implement set_socketTimeout."""
+        with self._device_lock:
+            dev = self._get_device()
+            if hasattr(dev, "set_socketTimeout"):
+                dev.set_socketTimeout(seconds)
+
     # -- history ----------------------------------------------------------
     def _log(self, action, params=None, ok=True, error=None):
         self._history.appendleft({
