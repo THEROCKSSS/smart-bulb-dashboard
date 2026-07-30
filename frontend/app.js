@@ -22,6 +22,10 @@ const state = {
 // so it can be removed the moment another panel is routed to. Kept outside
 // `state` since it's a DOM wiring detail, not app data.
 let controlKeyHandler = null;
+// Pending debounced brightness commit from the Control panel's arrow-key
+// shortcuts. Cleared alongside the listener in router(), so navigating away
+// mid-debounce can't fire a POST against a slider that's no longer mounted.
+let controlKeyCommitTimer = null;
 
 // ------------------------------------------------------------ local storage --
 // Remembers the last device + panel across reloads. Wrapped in try/catch
@@ -171,6 +175,10 @@ async function router() {
   if (controlKeyHandler) {
     document.removeEventListener("keydown", controlKeyHandler);
     controlKeyHandler = null;
+  }
+  if (controlKeyCommitTimer) {
+    clearTimeout(controlKeyCommitTimer);
+    controlKeyCommitTimer = null;
   }
   if (state.audioPollHandle) {
     clearInterval(state.audioPollHandle);
@@ -441,6 +449,12 @@ async function renderControl(main) {
   // cleanup there), and skipped while any input/select/textarea has focus so this
   // never hijacks typing or a slider's own native arrow-key handling elsewhere in the app.
   const BRIGHTNESS_KEY_STEP = 5; // percent per Up/Down press
+  // Arrow keys fire one keydown per press — and repeat rapidly while held — so
+  // committing on every one sent a POST to the bulb per keypress AND stacked a
+  // "Brightness updated" toast per keypress. The slider UI still updates on
+  // every press (that's just a local `input` event, no network), but the actual
+  // commit is debounced so a burst of presses lands as one request and one toast.
+  const KEY_COMMIT_DEBOUNCE_MS = 400;
   function handleControlKeydown(e) {
     const active = document.activeElement;
     const tag = active && active.tagName;
@@ -457,7 +471,11 @@ async function renderControl(main) {
       const next = Math.max(1, Math.min(100, parseInt(slider.value, 10) + delta));
       slider.value = String(next);
       slider.dispatchEvent(new Event("input"));
-      slider.dispatchEvent(new Event("change"));
+      clearTimeout(controlKeyCommitTimer);
+      controlKeyCommitTimer = setTimeout(function () {
+        controlKeyCommitTimer = null;
+        slider.dispatchEvent(new Event("change"));
+      }, KEY_COMMIT_DEBOUNCE_MS);
     }
   }
   document.addEventListener("keydown", handleControlKeydown);
@@ -702,6 +720,8 @@ async function renderAudio(main) {
             <option value="unison">Unison — all identical</option>
             <option value="phase_offset">Phase Offset — chase effect</option>
             <option value="band_split">Band Split — one bulb per band</option>
+            <option value="wave">Wave — hue sweeps across the group</option>
+            <option value="mirror">Mirror — bulbs mirror around a center hue</option>
           </select>
         </label>
       </div>
