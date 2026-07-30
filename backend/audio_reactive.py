@@ -27,6 +27,13 @@ DEFAULT_MIN_DWELL_MS = 90  # matches this bulb's measured ~50-100ms round trip
 MIN_DWELL_FLOOR_MS = 40    # refuse anything sillier than this — see docs
 SILENCE_TIMEOUT_S = 300
 
+FAILOVER_THRESHOLD = 3  # consecutive send failures before a bulb is reported
+                        # "offline" in group status -- see BulbSender.status()
+                        # and GroupAudioSession's per-bulb status. Crossing
+                        # this never stops or restarts the group session;
+                        # every other bulb's own independent BulbSender loop
+                        # keeps sending on schedule regardless.
+
 # Fixed hue anchors used by the 3-band modes.
 BASS_HUE = 10.0
 MID_HUE = 130.0
@@ -64,7 +71,7 @@ MODES = [
     "silence_flash_recover", "crescendo_ramp",
 ]
 
-ROLE_MODES = ["unison", "phase_offset", "band_split"]
+ROLE_MODES = ["unison", "phase_offset", "band_split", "wave", "mirror"]
 
 
 def list_input_devices():
@@ -99,6 +106,43 @@ def _smooth_hue(current_deg, target_deg, alpha):
     x = math.cos(cur) * (1 - alpha) + math.cos(tgt) * alpha
     y = math.sin(cur) * (1 - alpha) + math.sin(tgt) * alpha
     return math.degrees(math.atan2(y, x)) % 360
+
+
+def _wave_brightness_scale(tick, index, n, period_ticks=40, floor=0.15):
+    """Pure function backing the "wave" role mode: a brightness multiplier
+    in [floor, 1.0] for bulb `index` (of `n`, in the order they were
+    configured) at a given `tick`.
+
+    `tick` is a per-GroupAudioSession frame counter (incremented once per
+    processed audio callback), NOT wall-clock time -- deterministic and
+    exactly reproducible in tests, unlike anything driven by time.time().
+    One full traveling-wave crest sweeps end-to-end across the ordered
+    bulb list every `period_ticks` frames; every bulb gets an identical
+    base color (from `_apply_mode`) and only its brightness is scaled by
+    where the crest currently is relative to that bulb's position.
+    """
+    if n <= 1:
+        return 1.0
+    position = (tick % period_ticks) / period_ticks * n  # crest position, 0..n
+    dist = abs(index - position)
+    width = max(0.75, n / 3.0)
+    bump = math.exp(-(dist ** 2) / (2 * width ** 2))  # gaussian bump centered on the crest
+    return floor + (1 - floor) * bump
+
+
+def _mirror_hue(hue_deg, index, n, center_hue=0.0):
+    """Pure function backing the "mirror" role mode: bulbs are paired
+    front-to-back in the ordered list -- (0, n-1), (1, n-2), ... -- and the
+    second bulb of each pair reflects the first bulb's hue around
+    `center_hue` (mirrored = 2*center - hue, wrapped to 0..360). The
+    "leader" of each pair (the lower index) always keeps the unmodified
+    hue; an unpaired middle bulb in an odd-length list (index == partner)
+    also keeps it unmodified, since it has no partner to mirror against.
+    """
+    partner = n - 1 - index
+    if index <= partner:
+        return hue_deg % 360  # leader (lower index of the pair), or the unpaired middle bulb
+    return (2 * center_hue - hue_deg) % 360  # follower mirrors around center
 
 
 def log_band_edges(n_bands, lo=20.0, hi=20000.0):
@@ -192,6 +236,7 @@ class BulbSender:
         self._last_latency_ms = None
         self._latency_history = collections.deque(maxlen=self.LATENCY_HISTORY_LEN)
         self._error = None
+        self._consecutive_failures = 0
         self._thread = threading.Thread(target=self._loop, daemon=True)
         self._thread.start()
 
@@ -208,9 +253,17 @@ class BulbSender:
             self._thread.join(timeout=3)
 
     def status(self):
-        return {"last_latency_ms": self._last_latency_ms, "error": self._error,
-                "min_dwell_ms": self.min_dwell_ms,
-                "latency_history_ms": list(self._latency_history)}
+        return {
+            "last_latency_ms": self._last_latency_ms, "error": self._error,
+            "min_dwell_ms": self.min_dwell_ms,
+            "latency_history_ms": list(self._latency_history),
+            "consecutive_failures": self._consecutive_failures,
+            # Failover visibility only -- crossing the threshold never stops
+            # this sender's loop or the group session; it keeps retrying on
+            # every future queued action exactly as before, so the bulb
+            # rejoins automatically the moment it's reachable again.
+            "offline": self._consecutive_failures >= FAILOVER_THRESHOLD,
+        }
 
     def _loop(self):
         while not self._stop.is_set():
@@ -236,8 +289,10 @@ class BulbSender:
                     self.controller.set_rgb(action[1], action[2], action[3])
                     self.controller.set_brightness(action[4])
                 self._error = None
+                self._consecutive_failures = 0
             except Exception as e:
                 self._error = str(e)
+                self._consecutive_failures += 1
             self._last_latency_ms = round((time.time() - t0) * 1000, 1)
             self._latency_history.append(self._last_latency_ms)
             self._last_sent_at = time.time()
@@ -1057,19 +1112,42 @@ class GroupAudioSession:
     runs once per callback and every bulb gets its own derived target,
     rather than opening N redundant streams against the same device. Each
     bulb still has its own `BulbSender`, so one slow/offline bulb in the
-    group can never stall the others.
+    group can never stall the others (see FAILOVER_THRESHOLD / BulbSender —
+    a bulb that starts failing just gets reported "offline" in status();
+    the group thread never restarts and every other bulb's sender keeps
+    dispatching on its own independent schedule).
 
     role_mode:
       - "unison"       — every bulb shows the identical color.
-      - "phase_offset" — same effect, hue shifted per bulb (a simple chase).
+      - "phase_offset" — same effect, hue shifted per bulb. Even spacing
+                          (360/n * i) by default, or an explicit
+                          `hue_offsets[i]` in degrees when provided.
       - "band_split"   — bulb i is primarily driven by band i of an
                           N-band split (N = number of bulbs), a literal
-                          per-bulb "this one is the bass bulb" assignment.
+                          per-bulb "this one is the bass bulb" assignment,
+                          overridable per-bulb via `band_assignments[i]`.
+      - "wave"         — every bulb shows the identical color, but
+                          brightness is scaled by a traveling gaussian
+                          "crest" that sweeps across the ordered bulb list
+                          over `wave_period_ticks` audio frames.
+      - "mirror"       — bulbs paired front-to-back in the ordered list
+                          ((0, n-1), (1, n-2), ...); the second bulb of
+                          each pair mirrors the first bulb's hue around
+                          `mirror_center_hue`. An unpaired middle bulb (odd
+                          n) keeps its own hue unmodified.
+
+    `hue_offsets`, `brightness_scales`, and `band_assignments` are optional
+    per-bulb override lists, indexed in the same order as `controllers`.
+    `brightness_scales` applies as a final multiplier in EVERY role_mode
+    (not just phase_offset), so e.g. "this bulb is dimmer than the others,
+    scale it up" works regardless of which role_mode is active.
     """
 
     def __init__(self, controllers, device_index, mode="band_fixed", role_mode="unison",
                  sensitivity=1.0, monochrome_hue=280.0, min_dwell_ms=DEFAULT_MIN_DWELL_MS,
-                 beat_sensitivity=DEFAULT_BEAT_SENSITIVITY):
+                 beat_sensitivity=DEFAULT_BEAT_SENSITIVITY,
+                 hue_offsets=None, brightness_scales=None, band_assignments=None,
+                 mirror_center_hue=0.0, wave_period_ticks=40):
         self.controllers = controllers
         self.device_index = device_index
         self.mode = mode if mode in MODES else "band_fixed"
@@ -1077,6 +1155,12 @@ class GroupAudioSession:
         self.senders = [BulbSender(c, min_dwell_ms) for c in controllers]
         self.ctxs = [_new_ctx(sensitivity, monochrome_hue) for _ in controllers]
         self.tempo = TempoTracker(beat_sensitivity=beat_sensitivity)
+        self.hue_offsets = hue_offsets
+        self.brightness_scales = brightness_scales
+        self.band_assignments = band_assignments
+        self.mirror_center_hue = mirror_center_hue % 360
+        self.wave_period_ticks = max(1, wave_period_ticks)
+        self._wave_tick = 0
         self._stop = threading.Event()
         self._thread = None
         self._error = None
@@ -1099,14 +1183,51 @@ class GroupAudioSession:
     def is_alive(self):
         return self._thread is not None and self._thread.is_alive()
 
+    def _role_label(self, i, n):
+        """Human-readable description of what bulb `i` is currently doing,
+        for the live per-bulb status field -- independent of whether that
+        bulb is actually online (see `state` in status(), computed from the
+        sender separately)."""
+        if self.role_mode == "phase_offset":
+            offset = self.hue_offsets[i] if self.hue_offsets and i < len(self.hue_offsets) else (360.0 / n) * i
+            return f"phase_offset +{round(offset % 360, 1)} deg"
+        if self.role_mode == "band_split":
+            assigned = self.band_assignments[i] if self.band_assignments and i < len(self.band_assignments) else None
+            assigned = i if assigned is None else assigned
+            return f"band_split band {assigned}"
+        if self.role_mode == "wave":
+            return f"wave position {i}/{n}"
+        if self.role_mode == "mirror":
+            partner = n - 1 - i
+            if i == partner:
+                return "mirror center (unpaired)"
+            return "mirror leader" if i < partner else f"mirror follower of {partner}"
+        return "unison"
+
     def status(self):
+        n = len(self.controllers)
+        bulbs = []
+        for i, (ctx, s) in enumerate(zip(self.ctxs, self.senders)):
+            sender_status = s.status()
+            if sender_status["offline"]:
+                state = "offline"
+            elif sender_status["error"]:
+                state = "error"
+            else:
+                state = "active"
+            bulbs.append({
+                "index": i,
+                "role": self._role_label(i, n),
+                "bands": ctx["latest_bands"],
+                "sender": sender_status,
+                "state": state,
+            })
         return {
             "active": self.is_alive(),
             "mode": self.mode,
             "role_mode": self.role_mode,
-            "bulb_count": len(self.controllers),
-            "bulbs": [{"bands": ctx["latest_bands"], "sender": s.status()}
-                      for ctx, s in zip(self.ctxs, self.senders)],
+            "bulb_count": n,
+            "bulbs": bulbs,
             "tempo": self.tempo.status(),
             "error": self._error,
         }
@@ -1125,6 +1246,20 @@ class GroupAudioSession:
         except Exception as e:
             self._error = str(e)
 
+    def _apply_brightness_scale(self, action, i):
+        """Final per-bulb brightness multiplier, applied on top of
+        whatever the role_mode already computed. Independent of role_mode
+        so it composes with all of them (unison/phase_offset/band_split/
+        wave/mirror alike)."""
+        if not self.brightness_scales or i >= len(self.brightness_scales) or self.brightness_scales[i] is None:
+            return action
+        scale = max(0.0, self.brightness_scales[i])
+        if action[0] == "hsv":
+            return ("hsv", action[1], action[2], min(100, action[3] * scale))
+        if action[0] == "rgb_brightness":
+            return ("rgb_brightness", action[1], action[2], action[3], min(100, action[4] * scale))
+        return action
+
     def _process(self, samples):
         now = time.time()
         n = len(self.controllers)
@@ -1135,25 +1270,45 @@ class GroupAudioSession:
 
         if self.role_mode == "band_split":
             bands = analyze_frame(samples, band_edges=log_band_edges(max(3, n)))
+            n_split_bands = len(bands["fractions"])
             for i in range(n):
-                # each bulb sees a band-split view rotated so bulb i's
-                # "primary" band comes first — reuses the same mode logic,
-                # just with each bulb's fractions rolled to foreground its
-                # assigned band.
-                rolled = {**bands, "fractions": bands["fractions"][i:] + bands["fractions"][:i],
-                          "energies": bands["energies"][i:] + bands["energies"][:i]}
+                # Each bulb sees a band-split view rotated so its assigned
+                # band comes first — reuses the same mode logic, just with
+                # each bulb's fractions rolled to foreground its band.
+                # Default assignment is bulb i <-> band i; `band_assignments`
+                # lets a specific bulb be pinned to any band regardless of
+                # its position in the bulb list (e.g. bulb 0 pinned to the
+                # treble band instead of bass).
+                assigned = None
+                if self.band_assignments and i < len(self.band_assignments):
+                    assigned = self.band_assignments[i]
+                assigned = i if assigned is None else (assigned % n_split_bands)
+                rolled = {**bands, "fractions": bands["fractions"][assigned:] + bands["fractions"][:assigned],
+                          "energies": bands["energies"][assigned:] + bands["energies"][:assigned]}
                 action = _apply_mode(self.mode, rolled, self.ctxs[i])
+                action = self._apply_brightness_scale(action, i)
                 self.senders[i].queue(action)
             return
 
         bands = analyze_frame(samples)
-        base_action = None
         for i in range(n):
             action = _apply_mode(self.mode, bands, self.ctxs[i])
             if self.role_mode == "phase_offset" and action[0] == "hsv":
-                offset = (360.0 / n) * i
+                if self.hue_offsets and i < len(self.hue_offsets) and self.hue_offsets[i] is not None:
+                    offset = self.hue_offsets[i]
+                else:
+                    offset = (360.0 / n) * i
                 action = ("hsv", (action[1] + offset) % 360, action[2], action[3])
+            elif self.role_mode == "wave" and action[0] == "hsv":
+                scale = _wave_brightness_scale(self._wave_tick, i, n, self.wave_period_ticks)
+                action = ("hsv", action[1], action[2], min(100, action[3] * scale))
+            elif self.role_mode == "mirror" and action[0] == "hsv":
+                mirrored = _mirror_hue(action[1], i, n, self.mirror_center_hue)
+                action = ("hsv", mirrored, action[2], action[3])
+            action = self._apply_brightness_scale(action, i)
             self.senders[i].queue(action)
+
+        self._wave_tick += 1
 
 
 # ------------------------------------------------------------ sessions ---
@@ -1220,13 +1375,18 @@ def set_session_beat_sensitivity(device_id, preset):
 
 def start_group_session(group_id, controllers, device_index, mode="band_fixed", role_mode="unison",
                          sensitivity=1.0, monochrome_hue=280.0, min_dwell_ms=DEFAULT_MIN_DWELL_MS,
-                         beat_sensitivity=DEFAULT_BEAT_SENSITIVITY):
+                         beat_sensitivity=DEFAULT_BEAT_SENSITIVITY,
+                         hue_offsets=None, brightness_scales=None, band_assignments=None,
+                         mirror_center_hue=0.0, wave_period_ticks=40):
     with _sessions_lock:
         existing = _group_sessions.get(group_id)
         if existing and existing.is_alive():
             existing.stop()
         session = GroupAudioSession(controllers, device_index, mode, role_mode, sensitivity, monochrome_hue,
-                                     min_dwell_ms, beat_sensitivity)
+                                     min_dwell_ms, beat_sensitivity=beat_sensitivity,
+                                     hue_offsets=hue_offsets, brightness_scales=brightness_scales,
+                                     band_assignments=band_assignments,
+                                     mirror_center_hue=mirror_center_hue, wave_period_ticks=wave_period_ticks)
         _group_sessions[group_id] = session
         session.start()
         return session
@@ -1263,3 +1423,69 @@ def set_group_beat_sensitivity(group_id, preset):
     if not session:
         return False
     return session.tempo.set_sensitivity(preset)
+
+
+# ------------------------------------------------------- input device health
+def validate_device_index(device_index):
+    """Returns (ok, error_message). Meant to be called BEFORE starting a
+    session so a saved `device_index` that no longer matches any connected
+    device (the classic "reboot re-numbered my audio devices" failure)
+    fails fast with one clear, actionable message instead of silently
+    starting a session whose capture thread can never produce audio and
+    whose only symptom is "the bulb just... doesn't react"."""
+    try:
+        devices = sd.query_devices()
+    except Exception as e:
+        return False, f"could not query audio devices: {e}"
+    if device_index < 0 or device_index >= len(devices):
+        return False, (
+            f"input device index {device_index} not found (only {len(devices)} "
+            f"audio devices currently connected) -- it may have been "
+            f"unplugged or renumbered since this was configured; re-select "
+            f"an input device from /api/audio/devices"
+        )
+    if devices[device_index].get("max_input_channels", 0) < 1:
+        name = devices[device_index].get("name")
+        return False, f"device index {device_index} ('{name}') has no input channels"
+    return True, None
+
+
+def device_health_check(device_index, duration_s=0.3):
+    """Open a short-lived capture stream against `device_index`, grab a
+    small burst of real samples, and report whether it actually produced
+    audio -- without starting a full audio-reactive session. Lets the UI
+    validate a device selection (and troubleshoot "no reaction" complaints)
+    before committing to `start_session`/`start_group_session`."""
+    ok, err = validate_device_index(device_index)
+    if not ok:
+        return {"ok": False, "error": err, "device_index": device_index}
+
+    info = sd.query_devices(device_index)
+    max_channels = info.get("max_input_channels", 0)
+    channels = min(2, max_channels) or 1
+
+    captured = {"frames": 0, "peak": 0.0}
+
+    def callback(indata, frames, time_info, status_flags):
+        captured["frames"] += frames
+        if frames:
+            peak = float(np.abs(indata).max())
+            if peak > captured["peak"]:
+                captured["peak"] = peak
+
+    try:
+        with sd.InputStream(device=device_index, channels=channels, samplerate=SAMPLE_RATE,
+                             blocksize=BLOCK_SIZE, callback=callback):
+            time.sleep(duration_s)
+    except Exception as e:
+        return {"ok": False, "error": str(e), "device_index": device_index, "channels_tested": channels}
+
+    return {
+        "ok": captured["frames"] > 0,
+        "device_index": device_index,
+        "name": info.get("name"),
+        "channels_tested": channels,
+        "frames_captured": captured["frames"],
+        "peak_amplitude": round(captured["peak"], 5),
+        "silent": captured["frames"] > 0 and captured["peak"] < 0.0005,
+    }

@@ -143,7 +143,11 @@ class DiscoveryIntervalBody(BaseModel):
 class AudioReactiveStartBody(BaseModel):
     device_index: int
     mode: str = "band_fixed"
-    sensitivity: float = 1.0
+    # None means "no explicit override" -- falls back to this input
+    # device's saved calibration (see /api/audio/devices/{index}/calibration),
+    # or 1.0 if none is saved. Passing an explicit value (including 1.0)
+    # always wins over the saved calibration.
+    sensitivity: float | None = None
     monochrome_hue: float = 280.0
     n_bands: int = 3
     min_dwell_ms: int = audio_reactive.DEFAULT_MIN_DWELL_MS
@@ -170,10 +174,21 @@ class GroupAudioReactiveStartBody(BaseModel):
     device_index: int
     mode: str = "band_fixed"
     role_mode: str = "unison"
-    sensitivity: float = 1.0
+    sensitivity: float | None = None
     monochrome_hue: float = 280.0
     min_dwell_ms: int = audio_reactive.DEFAULT_MIN_DWELL_MS
     beat_sensitivity: str = audio_reactive.DEFAULT_BEAT_SENSITIVITY
+    # Per-bulb orchestration overrides, indexed the same as the group's
+    # device_ids. All optional -- omit for the existing default behavior.
+    hue_offsets: list[float | None] | None = None
+    brightness_scales: list[float | None] | None = None
+    band_assignments: list[int | None] | None = None
+    mirror_center_hue: float = 0.0
+    wave_period_ticks: int = 40
+    # If set, load role_mode + per-bulb overrides from a saved
+    # orchestration preset first; any field explicitly set above still
+    # wins over what the preset stored.
+    orchestration_preset_id: str | None = None
 
 
 class TapTempoBody(BaseModel):
@@ -206,6 +221,33 @@ class AudioCustomPresetBody(BaseModel):
     beat_sensitivity: str = audio_reactive.DEFAULT_BEAT_SENSITIVITY
     palette: list[str] = []
     description: str = ""
+
+
+class ZoneCreateBody(BaseModel):
+    id: str
+    name: str
+    device_ids: list[str] = []
+    group_ids: list[str] = []
+
+
+class ZoneDeviceBody(BaseModel):
+    device_id: str
+
+
+class OrchestrationPresetBody(BaseModel):
+    id: str
+    name: str
+    role_mode: str = "unison"
+    hue_offsets: list[float | None] | None = None
+    brightness_scales: list[float | None] | None = None
+    band_assignments: list[int | None] | None = None
+    mirror_center_hue: float = 0.0
+    wave_period_ticks: int = 40
+
+
+class AudioCalibrationBody(BaseModel):
+    sensitivity: float
+    name: str | None = None
 
 
 class PinLoginBody(BaseModel):
@@ -604,6 +646,32 @@ def audio_calibration_delete(device_key: str):
     return {"ok": True}
 
 
+@app.get("/api/audio/devices/{device_index}/health")
+def audio_device_health(device_index: int):
+    """Test a specific input device's basic capture without starting a
+    full audio-reactive session -- lets the UI validate a device selection
+    (or diagnose a "why isn't it reacting" report) up front."""
+    return audio_reactive.device_health_check(device_index)
+
+
+@app.get("/api/audio/calibrations")
+def list_audio_calibrations():
+    return cfgmod.list_audio_input_calibrations()
+
+
+@app.put("/api/audio/devices/{device_index}/calibration")
+def set_audio_calibration(device_index: int, body: AudioCalibrationBody):
+    if not (0.1 <= body.sensitivity <= 5.0):
+        raise HTTPException(400, "sensitivity must be between 0.1 and 5.0")
+    return cfgmod.set_audio_input_calibration(device_index, body.sensitivity, body.name)
+
+
+@app.delete("/api/audio/devices/{device_index}/calibration")
+def delete_audio_calibration(device_index: int):
+    cfgmod.delete_audio_input_calibration(device_index)
+    return {"ok": True}
+
+
 @app.post("/api/devices/{device_id}/audio-reactive/start")
 def audio_reactive_start(device_id: str, body: AudioReactiveStartBody):
     c = get_controller_or_404(device_id)
@@ -614,16 +682,29 @@ def audio_reactive_start(device_id: str, body: AudioReactiveStartBody):
     if body.beat_sensitivity not in audio_reactive.BEAT_SENSITIVITY_PRESETS:
         raise HTTPException(400, f"unknown beat_sensitivity '{body.beat_sensitivity}', "
                                   f"expected one of {list(audio_reactive.BEAT_SENSITIVITY_PRESETS)}")
+    ok, err = audio_reactive.validate_device_index(body.device_index)
+    if not ok:
+        raise HTTPException(400, err)
     device_key = _device_key_for_index(body.device_index)
+    # Per-device-index sensitivity calibration (Section 11) is a separate,
+    # coarser fallback from the per-device-key signal-conditioning
+    # calibration (Section 4, use_saved_calibration/device_key above) -- an
+    # explicit sensitivity always wins over both.
+    sensitivity = body.sensitivity
+    if sensitivity is None:
+        sensitivity = cfgmod.get_audio_input_calibration(body.device_index)
+        if sensitivity is None:
+            sensitivity = 1.0
     audio_reactive.start_session(
-        c, body.device_index, body.mode, body.sensitivity, body.monochrome_hue, body.n_bands, body.min_dwell_ms,
+        c, body.device_index, body.mode, sensitivity, body.monochrome_hue, body.n_bands, body.min_dwell_ms,
         beat_sensitivity=body.beat_sensitivity,
         device_key=device_key, agc_enabled=body.agc_enabled, noise_gate_enabled=body.noise_gate_enabled,
         dc_removal_enabled=body.dc_removal_enabled, noise_gate_floor=body.noise_gate_floor,
         agc_target_rms=body.agc_target_rms, agc_attack_ms=body.agc_attack_ms, agc_release_ms=body.agc_release_ms,
         band_gains=body.band_gains, use_saved_calibration=body.use_saved_calibration,
     )
-    return {"ok": True, "mode": body.mode, "device_index": body.device_index, "device_key": device_key}
+    return {"ok": True, "mode": body.mode, "device_index": body.device_index,
+            "device_key": device_key, "sensitivity": sensitivity}
 
 
 @app.post("/api/devices/{device_id}/audio-reactive/stop")
@@ -717,21 +798,65 @@ def group_audio_reactive_start(group_id: str, body: GroupAudioReactiveStartBody)
     group = next((g for g in cfg.get("groups", []) if g["id"] == group_id), None)
     if not group:
         raise HTTPException(404, "group not found")
+
+    role_mode = body.role_mode
+    hue_offsets = body.hue_offsets
+    brightness_scales = body.brightness_scales
+    band_assignments = body.band_assignments
+    mirror_center_hue = body.mirror_center_hue
+    wave_period_ticks = body.wave_period_ticks
+    if body.orchestration_preset_id:
+        preset = cfgmod.get_orchestration_preset(body.orchestration_preset_id)
+        if not preset:
+            raise HTTPException(404, f"orchestration preset '{body.orchestration_preset_id}' not found")
+        # Explicit body fields always win over the preset's stored values --
+        # only fall back to the preset when the caller left a field at its
+        # own default/unset value.
+        role_mode = body.role_mode if body.role_mode != "unison" else preset.get("role_mode", role_mode)
+        hue_offsets = hue_offsets if hue_offsets is not None else preset.get("hue_offsets")
+        brightness_scales = brightness_scales if brightness_scales is not None else preset.get("brightness_scales")
+        band_assignments = band_assignments if band_assignments is not None else preset.get("band_assignments")
+        mirror_center_hue = mirror_center_hue if mirror_center_hue != 0.0 else preset.get("mirror_center_hue", 0.0)
+        wave_period_ticks = wave_period_ticks if wave_period_ticks != 40 else preset.get("wave_period_ticks", 40)
+
     if body.mode not in audio_reactive.MODES:
         raise HTTPException(400, f"unknown mode '{body.mode}', expected one of {audio_reactive.MODES}")
-    if body.role_mode not in audio_reactive.ROLE_MODES:
-        raise HTTPException(400, f"unknown role_mode '{body.role_mode}', expected one of {audio_reactive.ROLE_MODES}")
+    if role_mode not in audio_reactive.ROLE_MODES:
+        raise HTTPException(400, f"unknown role_mode '{role_mode}', expected one of {audio_reactive.ROLE_MODES}")
     if body.beat_sensitivity not in audio_reactive.BEAT_SENSITIVITY_PRESETS:
         raise HTTPException(400, f"unknown beat_sensitivity '{body.beat_sensitivity}', "
                                   f"expected one of {list(audio_reactive.BEAT_SENSITIVITY_PRESETS)}")
-    controllers = [bm.get_controller(d) for d in group["device_ids"]]
+    ok, err = audio_reactive.validate_device_index(body.device_index)
+    if not ok:
+        raise HTTPException(400, err)
+
+    # Bulbs flagged audio_reactive_eligible=False never get auto-included
+    # in a group session, even when they're a member of this group.
+    device_ids = [
+        d for d in group["device_ids"]
+        if (cfgmod.get_device(d) or {}).get("audio_reactive_eligible", True)
+    ]
+    controllers = [bm.get_controller(d) for d in device_ids]
     controllers = [c for c in controllers if c is not None]
     if not controllers:
-        raise HTTPException(400, "group has no resolvable devices")
-    audio_reactive.start_group_session(group_id, controllers, body.device_index, body.mode,
-                                        body.role_mode, body.sensitivity, body.monochrome_hue, body.min_dwell_ms,
-                                        body.beat_sensitivity)
-    return {"ok": True, "mode": body.mode, "role_mode": body.role_mode, "bulb_count": len(controllers)}
+        raise HTTPException(400, "group has no resolvable, audio-reactive-eligible devices")
+
+    sensitivity = body.sensitivity
+    if sensitivity is None:
+        sensitivity = cfgmod.get_audio_input_calibration(body.device_index)
+        if sensitivity is None:
+            sensitivity = 1.0
+
+    audio_reactive.start_group_session(group_id, controllers, body.device_index, body.mode, role_mode,
+                                        sensitivity, body.monochrome_hue, body.min_dwell_ms,
+                                        beat_sensitivity=body.beat_sensitivity,
+                                        hue_offsets=hue_offsets, brightness_scales=brightness_scales,
+                                        band_assignments=band_assignments,
+                                        mirror_center_hue=mirror_center_hue, wave_period_ticks=wave_period_ticks)
+    return {
+        "ok": True, "mode": body.mode, "role_mode": role_mode, "bulb_count": len(controllers),
+        "sensitivity": sensitivity,
+    }
 
 
 @app.post("/api/groups/{group_id}/audio-reactive/stop")
@@ -882,6 +1007,100 @@ def group_color(group_id: str, body: RGBBody):
         if c:
             results[dev_id] = c.set_rgb(body.r, body.g, body.b)
     return results
+
+
+# ----------------------------------------------------------------- zones --
+# A Zone sits above groups (e.g. "Living Room" containing several groups
+# and/or loose bulbs) -- real CRUD + membership, persisted in config.json
+# the same way groups already are.
+@app.get("/api/zones")
+def list_zones():
+    cfg = cfgmod.load_config()
+    return cfg.get("zones", [])
+
+
+@app.post("/api/zones")
+def create_zone(body: ZoneCreateBody):
+    if cfgmod.get_zone(body.id):
+        raise HTTPException(400, f"zone '{body.id}' already exists")
+    zone = body.model_dump()
+    cfgmod.upsert_zone(zone)
+    return zone
+
+
+@app.get("/api/zones/{zone_id}")
+def get_zone_route(zone_id: str):
+    zone = cfgmod.get_zone(zone_id)
+    if not zone:
+        raise HTTPException(404, "zone not found")
+    return {**zone, "resolved_device_ids": cfgmod.zone_resolved_device_ids(zone)}
+
+
+@app.patch("/api/zones/{zone_id}")
+def update_zone(zone_id: str, body: dict):
+    zone = cfgmod.get_zone(zone_id)
+    if not zone:
+        raise HTTPException(404, "zone not found")
+    zone.update(body)
+    cfgmod.upsert_zone(zone)
+    return zone
+
+
+@app.delete("/api/zones/{zone_id}")
+def delete_zone_route(zone_id: str):
+    cfgmod.delete_zone(zone_id)
+    return {"ok": True}
+
+
+@app.post("/api/zones/{zone_id}/devices")
+def zone_add_device(zone_id: str, body: ZoneDeviceBody):
+    zone = cfgmod.get_zone(zone_id)
+    if not zone:
+        raise HTTPException(404, "zone not found")
+    zone.setdefault("device_ids", [])
+    if body.device_id not in zone["device_ids"]:
+        zone["device_ids"].append(body.device_id)
+        cfgmod.upsert_zone(zone)
+    return zone
+
+
+@app.delete("/api/zones/{zone_id}/devices/{device_id}")
+def zone_remove_device(zone_id: str, device_id: str):
+    zone = cfgmod.get_zone(zone_id)
+    if not zone:
+        raise HTTPException(404, "zone not found")
+    zone["device_ids"] = [d for d in zone.get("device_ids", []) if d != device_id]
+    cfgmod.upsert_zone(zone)
+    return zone
+
+
+# ------------------------------------------------- orchestration presets --
+@app.get("/api/orchestration-presets")
+def list_orchestration_presets():
+    return cfgmod.list_orchestration_presets()
+
+
+@app.post("/api/orchestration-presets")
+def save_orchestration_preset(body: OrchestrationPresetBody):
+    if body.role_mode not in audio_reactive.ROLE_MODES:
+        raise HTTPException(400, f"unknown role_mode '{body.role_mode}', expected one of {audio_reactive.ROLE_MODES}")
+    preset = body.model_dump()
+    cfgmod.upsert_orchestration_preset(preset)
+    return preset
+
+
+@app.get("/api/orchestration-presets/{preset_id}")
+def get_orchestration_preset_route(preset_id: str):
+    preset = cfgmod.get_orchestration_preset(preset_id)
+    if not preset:
+        raise HTTPException(404, "orchestration preset not found")
+    return preset
+
+
+@app.delete("/api/orchestration-presets/{preset_id}")
+def delete_orchestration_preset_route(preset_id: str):
+    cfgmod.delete_orchestration_preset(preset_id)
+    return {"ok": True}
 
 
 @app.on_event("startup")
