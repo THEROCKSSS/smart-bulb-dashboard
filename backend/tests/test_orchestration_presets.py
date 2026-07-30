@@ -58,7 +58,7 @@ def test_group_audio_reactive_start_applies_preset_overrides(client, fake_config
     def fake_start_group_session(group_id, controllers, device_index, mode, role_mode,
                                   sensitivity, monochrome_hue, min_dwell_ms,
                                   hue_offsets=None, brightness_scales=None, band_assignments=None,
-                                  mirror_center_hue=0.0, wave_period_ticks=40):
+                                  mirror_center_hue=0.0, wave_period_ticks=40, **kwargs):
         captured.update(role_mode=role_mode, brightness_scales=brightness_scales,
                         wave_period_ticks=wave_period_ticks)
         return object()
@@ -89,7 +89,7 @@ def test_group_audio_reactive_start_explicit_fields_win_over_preset(client, fake
     def fake_start_group_session(group_id, controllers, device_index, mode, role_mode,
                                   sensitivity, monochrome_hue, min_dwell_ms,
                                   hue_offsets=None, brightness_scales=None, band_assignments=None,
-                                  mirror_center_hue=0.0, wave_period_ticks=40):
+                                  mirror_center_hue=0.0, wave_period_ticks=40, **kwargs):
         captured.update(role_mode=role_mode, brightness_scales=brightness_scales)
         return object()
 

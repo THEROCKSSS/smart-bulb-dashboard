@@ -219,7 +219,7 @@ def test_audio_reactive_start_auto_applies_saved_calibration(client, fake_tuya, 
 
     captured = {}
 
-    def fake_start_session(controller, device_index, mode, sensitivity, monochrome_hue, n_bands, min_dwell_ms):
+    def fake_start_session(controller, device_index, mode, sensitivity, monochrome_hue, n_bands, min_dwell_ms, **kwargs):
         captured["sensitivity"] = sensitivity
         return object()
 
@@ -238,7 +238,7 @@ def test_audio_reactive_start_explicit_sensitivity_overrides_calibration(client,
 
     captured = {}
 
-    def fake_start_session(controller, device_index, mode, sensitivity, monochrome_hue, n_bands, min_dwell_ms):
+    def fake_start_session(controller, device_index, mode, sensitivity, monochrome_hue, n_bands, min_dwell_ms, **kwargs):
         captured["sensitivity"] = sensitivity
         return object()
 
@@ -257,7 +257,7 @@ def test_audio_reactive_start_defaults_to_1_0_when_no_calibration_saved(client, 
 
     captured = {}
 
-    def fake_start_session(controller, device_index, mode, sensitivity, monochrome_hue, n_bands, min_dwell_ms):
+    def fake_start_session(controller, device_index, mode, sensitivity, monochrome_hue, n_bands, min_dwell_ms, **kwargs):
         captured["sensitivity"] = sensitivity
         return object()
 
