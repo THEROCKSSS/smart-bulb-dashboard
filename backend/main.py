@@ -794,6 +794,8 @@ def audio_safety_reduced_motion_profile():
 @app.post("/api/devices/{device_id}/audio-reactive/start")
 def audio_reactive_start(device_id: str, body: AudioReactiveStartBody):
     c = get_controller_or_404(device_id)
+    if body.mode not in audio_reactive.MODES:
+        raise HTTPException(400, f"unknown mode '{body.mode}', expected one of {audio_reactive.MODES}")
     if body.min_dwell_ms < audio_reactive.MIN_DWELL_FLOOR_MS:
         raise HTTPException(400, f"min_dwell_ms below the safety floor of {audio_reactive.MIN_DWELL_FLOOR_MS}ms")
     if body.beat_sensitivity not in audio_reactive.BEAT_SENSITIVITY_PRESETS:

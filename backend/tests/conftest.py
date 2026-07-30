@@ -248,6 +248,21 @@ def reset_controllers():
         bm._controllers.clear()
 
 
+@pytest.fixture(autouse=True)
+def reset_audio_rate_limit():
+    # Real bug, found by actually running the full suite after merging Week 1
+    # Phase D's per-endpoint rate limiter: audio_reactive._rate_limit_hits is
+    # module-level global state, so tests in the same file hitting the same
+    # group/device repeatedly (well within a real 10s window) tripped a 429
+    # that had nothing to do with what that test was actually checking.
+    import audio_reactive as ar_module
+    with ar_module._rate_limit_lock:
+        ar_module._rate_limit_hits.clear()
+    yield
+    with ar_module._rate_limit_lock:
+        ar_module._rate_limit_hits.clear()
+
+
 @pytest.fixture
 def fake_tuya(monkeypatch):
     created = {}

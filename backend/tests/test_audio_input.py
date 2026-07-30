@@ -221,7 +221,9 @@ def test_audio_reactive_start_auto_applies_saved_calibration(client, fake_tuya, 
 
     def fake_start_session(controller, device_index, mode, sensitivity, monochrome_hue, n_bands, min_dwell_ms, **kwargs):
         captured["sensitivity"] = sensitivity
-        return object()
+        fake_session = type("FakeSession", (), {})()
+        fake_session.confirmation = lambda: {"mode": mode, "device_index": device_index, "sensitivity": sensitivity}
+        return fake_session
 
     monkeypatch.setattr(ar_module, "start_session", fake_start_session)
 
@@ -240,7 +242,9 @@ def test_audio_reactive_start_explicit_sensitivity_overrides_calibration(client,
 
     def fake_start_session(controller, device_index, mode, sensitivity, monochrome_hue, n_bands, min_dwell_ms, **kwargs):
         captured["sensitivity"] = sensitivity
-        return object()
+        fake_session = type("FakeSession", (), {})()
+        fake_session.confirmation = lambda: {"mode": mode, "device_index": device_index, "sensitivity": sensitivity}
+        return fake_session
 
     monkeypatch.setattr(ar_module, "start_session", fake_start_session)
 
@@ -259,7 +263,9 @@ def test_audio_reactive_start_defaults_to_1_0_when_no_calibration_saved(client, 
 
     def fake_start_session(controller, device_index, mode, sensitivity, monochrome_hue, n_bands, min_dwell_ms, **kwargs):
         captured["sensitivity"] = sensitivity
-        return object()
+        fake_session = type("FakeSession", (), {})()
+        fake_session.confirmation = lambda: {"mode": mode, "device_index": device_index, "sensitivity": sensitivity}
+        return fake_session
 
     monkeypatch.setattr(ar_module, "start_session", fake_start_session)
 
