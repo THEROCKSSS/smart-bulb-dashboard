@@ -14,6 +14,7 @@ Run with:
     pytest backend/tests/test_audio_golden.py -v
 """
 import os
+import random
 import sys
 
 import pytest
@@ -50,6 +51,13 @@ GOLDEN_3BAND_MODES = {
     "strobe_on_drop": ("hsv", 10.0, 100, 40.0),
     "palette_cycle": ("rgb_brightness", 255, 0, 0, 100),
     "kick_snare_split": ("hsv", 100.5715, 100, 100),
+    # Added when Week 1 Phase A's new modes were merged alongside this
+    # phase's golden-test harness -- captured by actually running each mode
+    # against the same MULTI_TONE fixture, same as every value above.
+    "energy_contour": ("hsv", 280.0, 100.0, 100.0),
+    "bass_only_pulse": ("hsv", 280.0, 100, 100),
+    "crescendo_ramp": ("hsv", 280.0, 55.0, 100),
+    "silence_flash_recover": ("hsv", 81.9393, 100, 100),
 }
 
 GOLDEN_6BAND_MODES = {
@@ -108,6 +116,35 @@ def test_golden_breathing_silence(monkeypatch):
     assert action[3] == pytest.approx(16.0, abs=TOL)
 
 
+def test_golden_random_walk_hue():
+    # random_walk_hue's step is drawn from random.uniform() each frame, so
+    # its golden value freezes the RNG with a fixed seed rather than
+    # hardcoding a moving-target number the way breathing_silence freezes
+    # time.time(). Any change to the step formula (not just the RNG calls
+    # themselves) will still move this value, same guarantee as every
+    # other golden test here.
+    random.seed(42)
+    action, _ = af.converge_mode("random_walk_hue", MULTI_TONE, n_frames=CONVERGE_FRAMES, n_bands=3)
+    assert action[0] == "hsv"
+    assert action[1] == pytest.approx(337.3053, abs=TOL)
+    assert action[2] == pytest.approx(100, abs=TOL)
+    assert action[3] == pytest.approx(100, abs=TOL)
+
+
+def test_golden_mirror_mode(monkeypatch):
+    # mirror_mode's brightness breathes via time.time() % period_s, the same
+    # wall-clock dependency as breathing_silence -- freeze it the same way
+    # rather than hardcoding a moving-target number.
+    FIXED_TS = 1_000_000.0
+    monkeypatch.setattr(ar.time, "time", lambda: FIXED_TS)
+    action, _ = af.converge_mode("mirror_mode", MULTI_TONE, n_frames=CONVERGE_FRAMES, n_bands=3)
+    assert action[0] == "hsv"
+    assert action[1] == pytest.approx(240.0146, abs=TOL)
+    assert action[2] == pytest.approx(100, abs=TOL)
+    assert action[3] == pytest.approx(98.6603, abs=TOL)
+
+
 def test_all_modes_covered_by_golden_tests():
-    covered = set(GOLDEN_3BAND_MODES) | set(GOLDEN_6BAND_MODES) | {"stereo_split", "breathing_silence"}
+    covered = (set(GOLDEN_3BAND_MODES) | set(GOLDEN_6BAND_MODES)
+               | {"stereo_split", "breathing_silence", "random_walk_hue", "mirror_mode"})
     assert covered == set(ar.MODES), f"missing golden coverage for: {set(ar.MODES) - covered}"
