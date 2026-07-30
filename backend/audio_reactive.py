@@ -9,6 +9,7 @@ import time
 import numpy as np
 import sounddevice as sd
 
+import audio_signal
 from scenes_presets import PRESET_COLORS
 
 SAMPLE_RATE = 44100
@@ -107,11 +108,34 @@ def log_band_edges(n_bands, lo=20.0, hi=20000.0):
     return list(np.logspace(math.log10(lo), math.log10(hi), n_bands + 1))
 
 
-def analyze_frame(samples, sample_rate=SAMPLE_RATE, n_bands=None, band_edges=None):
+def analyze_frame(samples, sample_rate=SAMPLE_RATE, n_bands=None, band_edges=None, extra_band_edges=None):
     """Pure analysis step, shared by every mode and by both single-bulb and
     group (orchestrated) sessions. Returns energies (raw + normalized
     fractions for each band), rms, and the frequency arrays in case a mode
-    wants the full spectrum (e.g. spectral centroid)."""
+    wants the full spectrum (e.g. spectral centroid).
+
+    Sanitizes non-finite input (NaN/Inf) and empty arrays before the FFT --
+    found via fuzz testing (see backend/tests/test_audio_fuzz.py) that a
+    single NaN sample silently poisons the ENTIRE output (rms, every band
+    energy, every fraction all become NaN), which several modes then pass
+    straight through to hue (e.g. band_fixed, dominant_band, harmonic_pairs)
+    -- a NaN hue reaching the real bulb's set_hsv() call is a genuine bug
+    class (garbage/disconnected audio devices can and do emit dropouts),
+    not just a theoretical one. Nothing about this changes output for any
+    well-formed finite input -- np.nan_to_num and the isfinite check are
+    both no-ops when every sample is already finite.
+
+    `extra_band_edges`, if given, additionally computes a second energies/
+    fractions split from the SAME spectrum (no second FFT) -- used to expose
+    a full-resolution band view for `/status` visualization independent of
+    whatever narrower band split a given mode actually uses for its color
+    logic (see AudioSession._process)."""
+    samples = np.asarray(samples, dtype=np.float64)
+    if samples.size == 0:
+        samples = np.zeros(1, dtype=np.float64)
+    elif not np.all(np.isfinite(samples)):
+        samples = np.nan_to_num(samples, nan=0.0, posinf=1.0, neginf=-1.0)
+
     windowed = samples * np.hanning(len(samples))
     spectrum = np.abs(np.fft.rfft(windowed, n=FFT_SIZE))
     freqs = np.fft.rfftfreq(FFT_SIZE, 1.0 / sample_rate)
@@ -125,10 +149,20 @@ def analyze_frame(samples, sample_rate=SAMPLE_RATE, n_bands=None, band_edges=Non
     ]
     total = sum(energies) + 1e-9
     fractions = [e / total for e in energies]
-    return {
+    result = {
         "spectrum": spectrum, "freqs": freqs, "rms": rms,
         "energies": energies, "fractions": fractions, "band_edges": band_edges,
     }
+    if extra_band_edges is not None:
+        extra_energies = [
+            _band_energy(spectrum, freqs, extra_band_edges[i], extra_band_edges[i + 1])
+            for i in range(len(extra_band_edges) - 1)
+        ]
+        extra_total = sum(extra_energies) + 1e-9
+        result["extra_energies"] = extra_energies
+        result["extra_fractions"] = [e / extra_total for e in extra_energies]
+        result["extra_band_edges"] = extra_band_edges
+    return result
 
 
 class BulbSender:
@@ -145,6 +179,8 @@ class BulbSender:
     and how long does each color stay visible" per the two competing asks
     (near-instant reaction vs. actually being able to see it)."""
 
+    LATENCY_HISTORY_LEN = 50  # rolling window exposed via status() for a latency-graph UI
+
     def __init__(self, controller, min_dwell_ms=DEFAULT_MIN_DWELL_MS):
         self.controller = controller
         self.min_dwell_ms = max(MIN_DWELL_FLOOR_MS, min_dwell_ms)
@@ -154,6 +190,7 @@ class BulbSender:
         self._stop = threading.Event()
         self._last_sent_at = 0.0
         self._last_latency_ms = None
+        self._latency_history = collections.deque(maxlen=self.LATENCY_HISTORY_LEN)
         self._error = None
         self._thread = threading.Thread(target=self._loop, daemon=True)
         self._thread.start()
@@ -172,7 +209,8 @@ class BulbSender:
 
     def status(self):
         return {"last_latency_ms": self._last_latency_ms, "error": self._error,
-                "min_dwell_ms": self.min_dwell_ms}
+                "min_dwell_ms": self.min_dwell_ms,
+                "latency_history_ms": list(self._latency_history)}
 
     def _loop(self):
         while not self._stop.is_set():
@@ -201,6 +239,7 @@ class BulbSender:
             except Exception as e:
                 self._error = str(e)
             self._last_latency_ms = round((time.time() - t0) * 1000, 1)
+            self._latency_history.append(self._last_latency_ms)
             self._last_sent_at = time.time()
 
 
@@ -221,8 +260,37 @@ def _apply_mode(mode, bands, ctx):
     avg = sum(rolling) / len(rolling)
     is_beat = len(rolling) > 8 and bass_like > avg * 1.5
     is_hard_hit = len(rolling) > 8 and bass_like > avg * 2.2
+    beat_strength = round(bass_like / avg, 3) if avg > 1e-9 else 0.0
+
+    # --- basic beat-flash / BPM data hook -------------------------------
+    # Deliberately basic: derives BPM straight from this same is_beat signal
+    # (a bass-energy spike over its own rolling average) rather than a real
+    # beat/tempo estimator -- that's Phase A's lane if/when it lands. This
+    # just gives a live-preview UI something real to flash/read without
+    # inventing a competing BPM algorithm.
+    BEAT_COOLDOWN_S = 0.12  # refuse to count the same physical hit twice while
+                            # bass_like stays elevated across consecutive frames
+    last_beat_at = ctx["last_beat_at"]
+    beat_intervals = ctx["beat_intervals"]
+    if is_beat and (now - last_beat_at) > BEAT_COOLDOWN_S:
+        if last_beat_at > 0:
+            beat_intervals.append(now - last_beat_at)
+        ctx["last_beat_at"] = now
+        last_beat_at = now
+
+    bpm = None
+    if len(beat_intervals) >= 3:
+        # 30-200 BPM plausible range -- filters out stray huge gaps from a
+        # long quiet passage between songs skewing the average.
+        valid = [iv for iv in beat_intervals if 0.3 <= iv <= 2.0]
+        if len(valid) >= 3:
+            bpm = round(60.0 / (sum(valid) / len(valid)), 1)
+
     ctx["latest_bands"] = {
-        "fractions": [round(f, 3) for f in fractions], "rms": round(rms, 5), "is_beat": is_beat,
+        "fractions": [round(f, 3) for f in fractions], "rms": round(rms, 5),
+        "is_beat": is_beat, "is_hard_hit": is_hard_hit, "beat_strength": beat_strength,
+        "ms_since_beat": round((now - last_beat_at) * 1000, 1) if last_beat_at > 0 else None,
+        "bpm": bpm,
     }
 
     base_brightness = min(100, max(4, 4 + rms * gain * 4500))
@@ -511,7 +579,12 @@ def _new_ctx(sensitivity, monochrome_hue):
         "palette_idx": 0,
         "last_flash_at": 0.0,
         "rolling_bass": collections.deque(maxlen=40),
-        "latest_bands": {"fractions": [], "rms": 0.0, "is_beat": False},
+        "last_beat_at": 0.0,
+        "beat_intervals": collections.deque(maxlen=8),
+        "latest_bands": {
+            "fractions": [], "rms": 0.0, "is_beat": False, "is_hard_hit": False,
+            "beat_strength": 0.0, "ms_since_beat": None, "bpm": None,
+        },
     }
 
 
@@ -837,7 +910,11 @@ class AudioSession:
 
     def __init__(self, controller, device_index, mode="band_fixed", sensitivity=1.0,
                  monochrome_hue=280.0, n_bands=3, min_dwell_ms=DEFAULT_MIN_DWELL_MS,
-                 beat_sensitivity=DEFAULT_BEAT_SENSITIVITY):
+                 beat_sensitivity=DEFAULT_BEAT_SENSITIVITY,
+                 device_key=None, agc_enabled=False, noise_gate_enabled=True,
+                 dc_removal_enabled=True, noise_gate_floor=None, agc_target_rms=None,
+                 agc_attack_ms=None, agc_release_ms=None, band_gains=None,
+                 use_saved_calibration=True):
         self.controller = controller
         self.device_index = device_index
         self.mode = mode if mode in MODES else "band_fixed"
@@ -846,6 +923,29 @@ class AudioSession:
         self.ctx = _new_ctx(sensitivity, monochrome_hue)
         self.sender = BulbSender(controller, min_dwell_ms)
         self.tempo = TempoTracker(beat_sensitivity=beat_sensitivity)
+
+        # Signal conditioning (Section 4: AGC / noise gate / clip detection /
+        # DC removal / per-band gain). `device_key` lets a previously saved
+        # per-device calibration (see audio_signal.calibrate_from_device)
+        # supply the noise-gate floor automatically unless the caller passed
+        # an explicit override.
+        self.device_key = device_key
+        calibration = (audio_signal.get_device_calibration(device_key)
+                       if (use_saved_calibration and device_key) else None)
+        floor = noise_gate_floor
+        if floor is None:
+            floor = calibration["noise_gate_floor"] if calibration else audio_signal.DEFAULT_NOISE_GATE_FLOOR
+        self.conditioner = audio_signal.SignalConditioner(
+            sample_rate=SAMPLE_RATE,
+            agc_enabled=agc_enabled,
+            noise_gate_enabled=noise_gate_enabled,
+            dc_removal_enabled=dc_removal_enabled,
+            noise_gate_floor=floor,
+            target_rms=agc_target_rms or audio_signal.DEFAULT_AGC_TARGET_RMS,
+            attack_ms=agc_attack_ms or audio_signal.DEFAULT_AGC_ATTACK_MS,
+            release_ms=agc_release_ms or audio_signal.DEFAULT_AGC_RELEASE_MS,
+            band_gains=band_gains,
+        )
 
         self._stop = threading.Event()
         self._thread = None
@@ -877,6 +977,9 @@ class AudioSession:
             "sensitivity": self.ctx["sensitivity"],
             "n_bands": self.n_bands,
             "bands": self.ctx["latest_bands"],
+            "bands_full": self.ctx.get(
+                "latest_full_bands", {"n_bands": self.n_bands, "fractions": [], "energies": []}),
+            "signal": self.conditioner.last_meter or {},
             "sender": self.sender.status(),
             "tempo": self.tempo.status(),
             "error": self._error,
@@ -923,8 +1026,28 @@ class AudioSession:
             self._last_audio_at = now
         self.tempo.update(rms_check)
 
+        # Signal conditioning (DC removal / noise gate / AGC) runs on the
+        # RAW captured samples -- the silence-timeout check above deliberately
+        # uses `samples` (not conditioned), so a low noise-gate floor can
+        # never mask genuine audio activity from the timeout's perspective.
+        conditioned, meter = self.conditioner.process(samples)
+
         n_bands = self.n_bands if self.mode in ("spectrum_gradient", "band_flash_overlay", "harmonic_pairs") else 3
-        bands = analyze_frame(samples, band_edges=log_band_edges(n_bands) if n_bands != 3 else None)
+        mode_edges = log_band_edges(n_bands) if n_bands != 3 else None
+        # `extra_band_edges=self.band_edges` reuses the SAME FFT to also
+        # expose a full self.n_bands-resolution split for `/status`
+        # (Section 5's "full spectrum bar visualizer" data source),
+        # independent of whichever narrower split the active mode uses for
+        # its own color logic.
+        bands = analyze_frame(conditioned, band_edges=mode_edges, extra_band_edges=self.band_edges)
+        bands = self.conditioner.apply_band_gains(bands)
+
+        self.ctx["latest_full_bands"] = {
+            "n_bands": self.n_bands,
+            "fractions": [round(f, 4) for f in bands.get("extra_fractions", bands["fractions"])],
+            "energies": [round(e, 6) for e in bands.get("extra_energies", bands["energies"])],
+        }
+
         action = _apply_mode(self.mode, bands, self.ctx)
         self.sender.queue(action)
 
@@ -1041,13 +1164,22 @@ _sessions_lock = threading.Lock()
 
 def start_session(controller, device_index, mode="band_fixed", sensitivity=1.0,
                    monochrome_hue=280.0, n_bands=3, min_dwell_ms=DEFAULT_MIN_DWELL_MS,
-                   beat_sensitivity=DEFAULT_BEAT_SENSITIVITY):
+                   beat_sensitivity=DEFAULT_BEAT_SENSITIVITY,
+                   device_key=None, agc_enabled=False, noise_gate_enabled=True,
+                   dc_removal_enabled=True, noise_gate_floor=None, agc_target_rms=None,
+                   agc_attack_ms=None, agc_release_ms=None, band_gains=None,
+                   use_saved_calibration=True):
     with _sessions_lock:
         existing = _sessions.get(controller.cfg["id"])
         if existing and existing.is_alive():
             existing.stop()
         session = AudioSession(controller, device_index, mode, sensitivity, monochrome_hue, n_bands, min_dwell_ms,
-                                beat_sensitivity)
+                                beat_sensitivity=beat_sensitivity,
+                                device_key=device_key, agc_enabled=agc_enabled,
+                                noise_gate_enabled=noise_gate_enabled, dc_removal_enabled=dc_removal_enabled,
+                                noise_gate_floor=noise_gate_floor, agc_target_rms=agc_target_rms,
+                                agc_attack_ms=agc_attack_ms, agc_release_ms=agc_release_ms,
+                                band_gains=band_gains, use_saved_calibration=use_saved_calibration)
         _sessions[controller.cfg["id"]] = session
         session.start()
         return session

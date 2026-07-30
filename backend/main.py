@@ -12,6 +12,7 @@ import bulb_manager as bm
 import schedule_engine
 import discovery
 import audio_reactive
+import audio_signal
 import remote_auth
 import analytics
 from scenes_presets import PRESET_COLORS, SCENES, EFFECTS
@@ -147,6 +148,22 @@ class AudioReactiveStartBody(BaseModel):
     n_bands: int = 3
     min_dwell_ms: int = audio_reactive.DEFAULT_MIN_DWELL_MS
     beat_sensitivity: str = audio_reactive.DEFAULT_BEAT_SENSITIVITY
+    # --- signal conditioning (Section 4) -- all optional, backward compatible ---
+    agc_enabled: bool = False
+    noise_gate_enabled: bool = True
+    dc_removal_enabled: bool = True
+    noise_gate_floor: float | None = None  # None = use saved calibration if any, else the module default
+    agc_target_rms: float | None = None
+    agc_attack_ms: float | None = None
+    agc_release_ms: float | None = None
+    band_gains: list[float] | None = None
+    use_saved_calibration: bool = True
+
+
+class AudioCalibrateBody(BaseModel):
+    device_index: int
+    duration_s: float = 3.0
+    save: bool = True
 
 
 class GroupAudioReactiveStartBody(BaseModel):
@@ -523,6 +540,20 @@ def current_effect(device_id: str):
 
 
 # --------------------------------------------------------- audio-reactive -
+def _device_key_for_index(device_index):
+    """Resolves an input device_index to a stable calibration key (its
+    name) -- device indices can shift on device reconnect/replug, but the
+    name is what a saved noise-gate calibration should actually travel
+    with. Falls back to the raw index (stringified) if the device can't be
+    found (e.g. it was unplugged since /api/audio/devices was last called)."""
+    try:
+        devices = audio_reactive.list_input_devices()
+    except Exception:
+        return str(device_index)
+    match = next((d for d in devices if d["index"] == device_index), None)
+    return match["name"] if match else str(device_index)
+
+
 @app.get("/api/audio/devices")
 def audio_devices():
     try:
@@ -539,6 +570,40 @@ def audio_devices():
         raise HTTPException(500, f"could not list audio devices: {e}")
 
 
+@app.post("/api/audio/calibrate")
+def audio_calibrate(body: AudioCalibrateBody):
+    """Samples `duration_s` seconds of room silence from `device_index` and
+    computes a recommended noise-gate floor (Section 4's "calibrate from
+    silence" flow). Saved per-device (keyed by device name) so future
+    audio-reactive/start calls on the same input device pick it up
+    automatically unless the caller overrides noise_gate_floor explicitly."""
+    if body.duration_s <= 0 or body.duration_s > 15:
+        raise HTTPException(400, "duration_s must be between 0 and 15 seconds")
+    try:
+        result = audio_signal.calibrate_from_device(body.device_index, body.duration_s)
+    except Exception as e:
+        raise HTTPException(500, f"calibration capture failed: {e}")
+    device_key = _device_key_for_index(body.device_index)
+    saved = None
+    if body.save:
+        saved = audio_signal.save_device_calibration(
+            device_key, result["noise_gate_floor"], sample_rms=result["sample_rms"])
+    return {"ok": True, "device_key": device_key, "result": result, "saved": saved}
+
+
+@app.get("/api/audio/calibration")
+def audio_calibration_list():
+    return {"devices": audio_signal.list_calibrations()}
+
+
+@app.delete("/api/audio/calibration/{device_key}")
+def audio_calibration_delete(device_key: str):
+    existed = audio_signal.delete_calibration(device_key)
+    if not existed:
+        raise HTTPException(404, "no calibration saved for that device")
+    return {"ok": True}
+
+
 @app.post("/api/devices/{device_id}/audio-reactive/start")
 def audio_reactive_start(device_id: str, body: AudioReactiveStartBody):
     c = get_controller_or_404(device_id)
@@ -549,9 +614,16 @@ def audio_reactive_start(device_id: str, body: AudioReactiveStartBody):
     if body.beat_sensitivity not in audio_reactive.BEAT_SENSITIVITY_PRESETS:
         raise HTTPException(400, f"unknown beat_sensitivity '{body.beat_sensitivity}', "
                                   f"expected one of {list(audio_reactive.BEAT_SENSITIVITY_PRESETS)}")
-    audio_reactive.start_session(c, body.device_index, body.mode, body.sensitivity,
-                                  body.monochrome_hue, body.n_bands, body.min_dwell_ms, body.beat_sensitivity)
-    return {"ok": True, "mode": body.mode, "device_index": body.device_index}
+    device_key = _device_key_for_index(body.device_index)
+    audio_reactive.start_session(
+        c, body.device_index, body.mode, body.sensitivity, body.monochrome_hue, body.n_bands, body.min_dwell_ms,
+        beat_sensitivity=body.beat_sensitivity,
+        device_key=device_key, agc_enabled=body.agc_enabled, noise_gate_enabled=body.noise_gate_enabled,
+        dc_removal_enabled=body.dc_removal_enabled, noise_gate_floor=body.noise_gate_floor,
+        agc_target_rms=body.agc_target_rms, agc_attack_ms=body.agc_attack_ms, agc_release_ms=body.agc_release_ms,
+        band_gains=body.band_gains, use_saved_calibration=body.use_saved_calibration,
+    )
+    return {"ok": True, "mode": body.mode, "device_index": body.device_index, "device_key": device_key}
 
 
 @app.post("/api/devices/{device_id}/audio-reactive/stop")
