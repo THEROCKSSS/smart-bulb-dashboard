@@ -16,50 +16,156 @@ merged PRs — see the note at the bottom of this file for the process.
 
 ## [Unreleased]
 
-**Week 1 roadmap — open as [PR #68](https://github.com/THEROCKSSS/smart-bulb-dashboard/pull/68), not yet merged.** Built as four
-parallel phases (isolated subagent worktrees, hub-verified, hand-merged),
-tracked in issues #64–#67.
+**Week 1 roadmap — open as [PR #68](https://github.com/THEROCKSSS/smart-bulb-dashboard/pull/68), not yet merged to `master`.**
 
-### Added
-- 6 new audio-reactive modes: `energy_contour`, `bass_only_pulse`,
-  `mirror_mode`, `random_walk_hue`, `silence_flash_recover`,
-  `crescendo_ramp`.
-- `TempoTracker`: BPM estimation (autocorrelation), tap-tempo, beat
-  confidence, adaptive threshold, 3 sensitivity presets. All 8 genre
-  preset bundles plus custom preset save.
-- `SignalConditioner`: AGC, noise gate, clip/overload detection, DC-offset
-  removal, per-band gain, calibrate-from-silence. Full N-band `/status`
-  exposure and a reusable synthetic-audio test harness with golden-value
-  regression tests.
-- `wave`/`mirror` group role modes, per-bulb hue-offset/brightness-scale/
-  band-assignment overrides, failover handling, orchestration presets.
-- A Zone data model (CRUD, device+group resolution), per-bulb hue-
-  calibration/brightness-cap/audio-eligible enforcement, per-device-index
-  sensitivity calibration, and an audio-input health-check endpoint.
-- Session conflict detection (solo vs. group, with a `force` override),
-  max-duration auto-stop, warmup ramp, auto-pause/resume on manual
-  command, socket-timeout + watchdog restart for stalled senders, device
-  fallback, and start/stop rate limiting.
-- Session presets (save/apply full session configs), a photosensitive-
-  safety flash-rate cap (WCAG 2.3.1 / ITU-R BT.1702), a reduced-motion
-  profile, a disable-flash-heavy toggle, lightshow capture/export/replay,
-  scheduled audio sessions, applause detection, and silence auto-off.
+Built as four parallel phases (one subagent each, in isolated git
+worktrees, hub-verified, then hand-merged), tracked in issues #64–#67 and
+mapping back to the 14 Week 1 section issues #1–#14. Backend test suite
+grew from 76 to **353 tests**, all passing.
+
+Because all four phases modified the same core classes (`AudioSession`,
+`GroupAudioSession`, `BulbSender`, and the audio routes in `main.py`),
+integration was done as real 3-way `git merge`s with every conflict
+hand-resolved to combine both sides' intent — roughly 40 conflict blocks —
+rather than by applying patches. The merge itself surfaced 5 real
+regressions, listed under Fixed.
+
+### Added — audio modes & musical intelligence (Phase A, #64 → issues #1–#3)
+- Six new color-mapping modes, bringing the total to 20: `energy_contour`,
+  `bass_only_pulse`, `mirror_mode`, `random_walk_hue`,
+  `silence_flash_recover`, `crescendo_ramp`.
+- `TempoTracker` — BPM estimation by autocorrelation over an onset-strength
+  signal, tap-tempo (`POST /api/devices/{id}/audio-reactive/tap-tempo`),
+  beat-confidence scoring, an adaptive beat threshold, and three
+  sensitivity presets (`POST .../beat-sensitivity`). Tempo state is
+  surfaced in the session status payload.
+- All eight genre preset bundles (`GET /api/audio/presets`,
+  `POST .../apply-preset`) plus custom preset save/apply. Each bundle sets
+  mode, sensitivity, hue, band count, dwell and beat-sensitivity together.
+
+### Added — signal quality & test tooling (Phase B, #65 → issues #4, #5, #10)
+- `backend/audio_signal.py` — a real `SignalConditioner`: automatic gain
+  control with configurable attack/release, a noise gate, clip/overload
+  detection, DC-offset removal, independent per-band gain, and a
+  calibrate-from-silence flow with per-device-key persisted calibration
+  (`POST /api/audio/calibrate`).
+- Full N-band spectrum exposure in the session `/status` payload, a rolling
+  latency window on `BulbSender`, and beat-flash / BPM data hooks — the
+  data layer a live visualizer needs.
+- `backend/tests/audio_fixtures.py` — a reusable synthetic-audio harness,
+  plus golden-value regression tests that lock every mode's exact
+  hue/brightness output against a fixed multi-tone input, fuzz tests, and a
+  latency-measurement harness.
+
+### Added — orchestration, per-bulb config & zones (Phase C, #66 → issues #6, #7, #11)
+- Two new group role modes — `wave` and `mirror` — alongside the existing
+  unison / phase-offset / band-split.
+- Per-bulb hue-offset, brightness-scale and band-assignment overrides
+  within a group session.
+- Failover handling for unreachable bulbs (`consecutive_failures` tracking
+  with a threshold before a bulb is marked offline) so one dead bulb no
+  longer degrades the whole group.
+- Orchestration presets — full CRUD, so a multi-bulb arrangement can be
+  saved and reapplied.
+- A **Zone** data model sitting above groups: CRUD plus
+  `zone_resolved_device_ids`, which resolves direct device membership and
+  group membership into one deduped list.
+- Per-bulb configuration enforced down in `bulb_manager.py`'s `set_hsv` /
+  `set_brightness` — hue-calibration offset, max-brightness cap, and an
+  audio-reactive-eligible flag that filters bulbs out of group audio
+  sessions. Enforcement is at the device layer, not advisory in the API, so
+  a capped bulb stays capped regardless of which route drives it.
+- Per-device-index audio-input sensitivity calibration (saved and
+  auto-applied on session start unless explicitly overridden), an
+  audio-input health-check endpoint, and `validate_device_index()` so a bad
+  index fails with a clear 400 instead of deep inside the capture thread.
+
+### Added — sessions, reliability, safety & accessibility (Phase D, #67 → issues #8, #9, #12, #13, #14)
+- Session-conflict detection — a solo session and a group session competing
+  for the same bulb is now caught, with a `force` override that stops the
+  loser instead of letting two senders fight over one device.
+- Session lifecycle controls: max-duration auto-stop, a warm-up ramp,
+  auto-pause on a manual command with auto-resume after a grace period, and
+  one-click resume-last-session.
+- Named session presets (`backend/audio_presets.py`) — snapshots of a full
+  session config, saved and reapplied.
+- Schedule-engine support for scheduled audio sessions via a new
+  `audio_reactive_preset` action type.
+- Reliability hardening: an explicit socket timeout on audio sends, a
+  watchdog thread that restarts a stalled `BulbSender`, device fallback
+  when the configured audio input disappears, graceful restart on stream
+  errors, config validation (`validate_start_config` / `AudioConfigError`),
+  and sliding-window rate limiting on the start/stop endpoints.
+- **Photosensitive-epilepsy safety** (`backend/audio_safety.py`) — a hard
+  flash-rate cap citing WCAG 2.3.1 "Three Flashes or Below Threshold" and
+  ITU-R BT.1702, enforced in the send path rather than left to the caller;
+  per-mode `flash_heavy` metadata via `GET /api/audio/modes/info`; a
+  one-click disable-flash-heavy toggle; a reduced-motion profile; and a
+  configurable max-brightness-swing.
+- Lightshow capture / export / replay (`backend/audio_lightshow.py`) —
+  records every (timestamp, hue, saturation, brightness) action a
+  `BulbSender` actually sends, exports it as JSON, and replays it later
+  with no live audio.
+- Applause/cheer detection and silence-triggered auto-off.
 
 ### Fixed
-- A mode-validation check on the solo audio-reactive start route got
-  dropped while hand-merging the four phases — restored.
-- The new rate limiter's state was module-level and leaked across test
-  runs — now reset per-test.
-- **Found by actually testing this live against a real bulb that had gone
-  unreachable on the network** (not caught by the test suite, which mocks
-  the device layer): an unreachable device hung any `/status` call for
-  minutes — timed at 3m26s — because nothing bounded tinytuya's socket
-  timeout/retry limit. Capped both; same real device now fails in ~2s.
-  Two related frontend bugs surfaced by the same hang: the status badge
-  got stuck reading "connecting…" forever once a poll had never
-  succeeded, and once that got fixed, the badge and the Control panel
-  briefly showed contradictory labels ("LIVE DATA · OFF" vs "OFFLINE")
-  for the same offline device. Both fixed.
+- A mode-validation check on the solo audio-reactive start route was
+  silently dropped while hand-merging the four phases — the group route
+  kept its check, the solo route didn't. Restored.
+- The new rate limiter's state is module-level and leaked across tests in
+  the same run, so unrelated tests started failing with 429s. Now reset by
+  an autouse fixture.
+- Three test mocks returned a bare `object()` from a mocked `start_session`,
+  which broke once the merged route began calling `.confirmation()` on the
+  returned session.
+- A genuine naming collision: Phase A's `audio_presets()` route handler
+  shadowed the `audio_presets` module that Phase D's session-preset routes
+  import. Renamed the handler to `list_audio_genre_presets()`.
+- Four subagent worktree directories were accidentally committed as
+  embedded git repositories (gitlink entries) by the merge's `git add -A`.
+  Untracked, and `.claude/worktrees/` is now gitignored.
+
+#### Fixed — found by live testing, not by the suite
+The backend suite mocks the Tuya device layer, so none of the following
+were reachable by it. All three surfaced from testing against a real
+physical bulb that had gone unreachable on the LAN:
+
+- **An unreachable device hung any `/status` call for minutes.** Timed
+  directly against the real device: **3m26s** before tinytuya gave up,
+  because nothing bounded its connection timeout (default 5s) or retry
+  limit (default 5 — and each retry cost noticeably more than the timeout
+  in practice, so it isn't a clean `timeout × retries` bound). Capped at
+  2s / 1 retry in `bulb_manager.py`; the same real device now fails in
+  **~2s**.
+- **The status badge got stuck reading "connecting…" forever.**
+  `renderStatusText()` returned early on `!state.lastStatus`, and
+  `lastStatus` was only ever set on a *successful* poll — so if a device
+  never came back, the badge's initial placeholder never updated no matter
+  how many times it polled. Fixed with an explicit `hasPolledOnce` flag
+  that's set regardless of poll outcome.
+- **The badge and the Control panel showed contradictory labels** —
+  "LIVE DATA · OFF" versus "OFFLINE" for the same device — once the fix
+  above let an `{online: false}` object populate `lastStatus`, at which
+  point the badge read `.power` off it instead of checking `.online`. Fixed
+  by checking `.online === false` explicitly.
+
+### Known gaps in this round (deliberately not claimed as done)
+- **No frontend visualizer.** Phase B shipped the spectrum/beat/latency
+  *data*, but nothing renders it yet (issue #5).
+- **Genre presets are reasoned, not tuned by ear.** The bulb has been
+  offline for every build session so far, so nobody has actually heard
+  "jazz" vs "metal" on real hardware (issue #3).
+- **Two unreconciled preset systems** ship together: genre bundles (Phase A)
+  and session-config snapshots (Phase D). Both real, both useful,
+  overlapping in name only — worth a follow-up decision.
+- **Two unreconciled calibration systems**: per-device-*key* signal
+  conditioning (Phase B) and per-device-*index* sensitivity (Phase C).
+- **Most of the music-player-adjacent section is not built** (issue #12) —
+  scope was deliberately cut to just lightshow capture/replay rather than
+  taking on media-player integration.
+- An offline device still takes ~9–13s for the page to fully settle, since
+  the status badge and the Control panel each make their own independent
+  (now ~2s-bounded) call. A shared in-flight cache would fix it; not built.
 
 ## [0.3.0] — 2026-07-29
 

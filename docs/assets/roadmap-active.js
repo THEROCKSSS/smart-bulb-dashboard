@@ -35,20 +35,30 @@
       var list = byWeek[w] || [];
       var total = list.length;
       var closed = list.filter(function (s) { return s.status === "done" || s.status === "wontfix"; }).length;
+      var started = list.filter(function (s) { return s.status === "in_progress"; }).length;
       var pct = total ? closed / total : 0;
+      // The dim outer arc spans closed + in-progress, so a week that's fully
+      // underway but nothing closed yet doesn't render as a flat, misleading
+      // empty ring. The accent arc (closed only) still sits on top of it.
+      var startedPct = total ? (closed + started) / total : 0;
       var r = 50, c = 2 * Math.PI * r;
       var offset = c * (1 - pct);
+      var startedOffset = c * (1 - startedPct);
+
+      var sub = closed + ' / ' + total + ' sections closed';
+      if (started > 0) sub += ' · ' + started + ' in progress';
 
       var card = document.createElement("div");
       card.className = "ring-card" + (w === curWeek ? " is-current" : "");
       card.innerHTML =
         '<svg class="ring-svg" viewBox="0 0 120 120">' +
           '<circle class="ring-track" cx="60" cy="60" r="' + r + '"></circle>' +
+          '<circle class="ring-progress" cx="60" cy="60" r="' + r + '" stroke-dasharray="' + c.toFixed(1) + '" stroke-dashoffset="' + startedOffset.toFixed(1) + '"></circle>' +
           '<circle class="ring-fill" cx="60" cy="60" r="' + r + '" stroke-dasharray="' + c.toFixed(1) + '" stroke-dashoffset="' + offset.toFixed(1) + '"></circle>' +
           '<text x="60" y="60">' + Math.round(pct * 100) + '%</text>' +
         '</svg>' +
         '<span class="ring-card__title">' + (w === curWeek ? "▸ " : "") + "Week " + w + '</span>' +
-        '<span class="ring-card__sub">' + closed + ' / ' + total + ' sections closed</span>';
+        '<span class="ring-card__sub">' + sub + '</span>';
       wrap.appendChild(card);
     });
   }

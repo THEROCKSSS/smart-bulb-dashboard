@@ -57,33 +57,112 @@
         <h2><span class="tag warn">Unreleased</span> — Week 1 roadmap</h2>
         <button class="copy-btn copy-changelog" data-target="cl-week1">Copy for Discord</button>
       </div>
-      <p>Open as <a href="https://github.com/THEROCKSSS/smart-bulb-dashboard/pull/68">PR #68</a>, not yet merged. Four parallel phases (isolated subagent worktrees, hub-verified, hand-merged) — new audio modes and tempo tracking, signal conditioning, multi-bulb orchestration and zones, session management and safety/accessibility.</p>
-      <h3>Added</h3>
+      <p>Open as <a href="https://github.com/THEROCKSSS/smart-bulb-dashboard/pull/68">PR #68</a>, not yet merged to <code>master</code>. Built as four parallel phases (one subagent each, in isolated git worktrees, hub-verified, then hand-merged), tracked in issues #64–#67 and mapping back to the 14 Week 1 section issues #1–#14. The backend test suite grew from 76 to <strong>353 tests</strong>, all passing.</p>
+      <p>Because all four phases modified the same core classes, integration was done as real 3-way <code>git merge</code>s with every conflict hand-resolved to combine both sides' intent — roughly 40 conflict blocks — rather than by applying patches. The merge itself surfaced 5 real regressions, listed under Fixed.</p>
+
+      <h3>Added — audio modes &amp; musical intelligence <span class="tag neutral">Phase A</span></h3>
       <ul>
-        <li>6 new audio modes (<code>energy_contour</code>, <code>bass_only_pulse</code>, <code>mirror_mode</code>, <code>random_walk_hue</code>, <code>silence_flash_recover</code>, <code>crescendo_ramp</code>) and a <code>TempoTracker</code> (BPM, tap-tempo, beat confidence, sensitivity presets).</li>
-        <li>Signal conditioning (AGC, noise gate, clip detection, DC removal, per-band gain, calibrate-from-silence) and a synthetic-audio golden-value test harness.</li>
-        <li><code>wave</code>/<code>mirror</code> group role modes, per-bulb overrides, failover handling, and a Zone data model with per-bulb calibration/brightness-cap/eligibility enforcement.</li>
-        <li>Session conflict detection, max-duration/warmup/auto-pause, watchdog-restarted senders, session presets, a photosensitive-safety flash-rate cap, lightshow capture/replay, and scheduled audio sessions.</li>
+        <li>Six new color-mapping modes, bringing the total to 20: <code>energy_contour</code>, <code>bass_only_pulse</code>, <code>mirror_mode</code>, <code>random_walk_hue</code>, <code>silence_flash_recover</code>, <code>crescendo_ramp</code>.</li>
+        <li><code>TempoTracker</code> — BPM estimation by autocorrelation over an onset-strength signal, tap-tempo, beat-confidence scoring, an adaptive beat threshold, and three sensitivity presets. Tempo state is surfaced in the session status payload.</li>
+        <li>All eight genre preset bundles plus custom preset save/apply — each bundle sets mode, sensitivity, hue, band count, dwell and beat-sensitivity together.</li>
       </ul>
+
+      <h3>Added — signal quality &amp; test tooling <span class="tag neutral">Phase B</span></h3>
+      <ul>
+        <li><code>SignalConditioner</code> — automatic gain control with configurable attack/release, a noise gate, clip/overload detection, DC-offset removal, independent per-band gain, and a calibrate-from-silence flow with persisted per-device calibration.</li>
+        <li>Full N-band spectrum exposure in the session status payload, a rolling latency window on <code>BulbSender</code>, and beat-flash / BPM data hooks — the data layer a live visualizer needs.</li>
+        <li>A reusable synthetic-audio test harness, golden-value regression tests locking every mode's exact hue/brightness output against a fixed multi-tone input, fuzz tests, and a latency-measurement harness.</li>
+      </ul>
+
+      <h3>Added — orchestration, per-bulb config &amp; zones <span class="tag neutral">Phase C</span></h3>
+      <ul>
+        <li>Two new group role modes — <code>wave</code> and <code>mirror</code> — alongside the existing unison / phase-offset / band-split.</li>
+        <li>Per-bulb hue-offset, brightness-scale and band-assignment overrides within a group session.</li>
+        <li>Failover handling for unreachable bulbs, so one dead bulb no longer degrades the whole group. Orchestration presets (full CRUD) let a multi-bulb arrangement be saved and reapplied.</li>
+        <li>A <strong>Zone</strong> data model sitting above groups, resolving direct device membership and group membership into one deduped list.</li>
+        <li>Per-bulb hue-calibration, max-brightness cap and audio-reactive-eligibility enforced down at the device layer rather than advisory in the API — a capped bulb stays capped regardless of which route drives it.</li>
+        <li>Per-device-index audio-input sensitivity calibration, an audio-input health-check endpoint, and index validation so a bad device index fails with a clear 400 instead of deep inside the capture thread.</li>
+      </ul>
+
+      <h3>Added — sessions, reliability, safety &amp; accessibility <span class="tag neutral">Phase D</span></h3>
+      <ul>
+        <li>Session-conflict detection — a solo and a group session competing for the same bulb is now caught, with a <code>force</code> override, instead of two senders fighting over one device.</li>
+        <li>Session lifecycle controls: max-duration auto-stop, a warm-up ramp, auto-pause on a manual command with auto-resume after a grace period, one-click resume-last-session, and named session presets.</li>
+        <li>Schedule-engine support for scheduled audio sessions.</li>
+        <li>Reliability hardening: an explicit socket timeout on audio sends, a watchdog thread that restarts a stalled sender, device fallback when the configured audio input disappears, graceful restart on stream errors, config validation, and sliding-window rate limiting on start/stop.</li>
+        <li><strong>Photosensitive-epilepsy safety</strong> — a hard flash-rate cap citing WCAG 2.3.1 “Three Flashes or Below Threshold” and ITU-R BT.1702, enforced in the send path rather than left to the caller; per-mode flash-heavy metadata; a one-click disable-flash-heavy toggle; a reduced-motion profile; and a configurable max-brightness-swing.</li>
+        <li>Lightshow capture / export / replay — records every action a sender actually sends, exports it as JSON, and replays it later with no live audio. Plus applause/cheer detection and silence-triggered auto-off.</li>
+      </ul>
+
       <h3>Fixed</h3>
       <ul>
-        <li>A mode-validation check dropped during the 4-way merge — restored.</li>
-        <li>A rate-limiter test-isolation gap — its state is module-level and was leaking across tests.</li>
-        <li><strong>Found via live testing against a real unreachable bulb</strong>: an offline device hung any <code>/status</code> call for minutes (timed at 3m26s) — tinytuya's socket timeout/retry limit were unbounded. Capped both; same device now fails in ~2s. Two related frontend bugs this surfaced — the status badge stuck forever on "connecting…", and a badge/panel label mismatch for offline devices — are also fixed.</li>
+        <li>A mode-validation check on the solo audio-reactive start route was silently dropped while hand-merging — the group route kept its check, the solo route didn't. Restored.</li>
+        <li>The new rate limiter's state is module-level and leaked across tests in the same run, so unrelated tests started failing with 429s. Now reset by an autouse fixture.</li>
+        <li>Three test mocks returned a bare <code>object()</code> from a mocked <code>start_session</code>, which broke once the merged route began calling <code>.confirmation()</code> on the returned session.</li>
+        <li>A genuine naming collision — Phase A's <code>audio_presets()</code> route handler shadowed the <code>audio_presets</code> module Phase D's routes import. Renamed the handler.</li>
+        <li>Four subagent worktree directories were accidentally committed as embedded git repositories by the merge's <code>git add -A</code>. Untracked, and that path is now gitignored.</li>
+      </ul>
+
+      <h3>Fixed — found by live testing, not by the suite</h3>
+      <p>The backend suite mocks the Tuya device layer, so none of these were reachable by it. All three surfaced from testing against a real physical bulb that had gone unreachable on the LAN:</p>
+      <ul>
+        <li><strong>An unreachable device hung any <code>/status</code> call for minutes.</strong> Timed directly against the real device: <strong>3m26s</strong> before tinytuya gave up, because nothing bounded its connection timeout (default 5s) or retry limit (default 5 — and each retry cost noticeably more than the timeout in practice, so it isn't a clean <code>timeout × retries</code> bound). Capped at 2s / 1 retry; the same real device now fails in <strong>~2s</strong>.</li>
+        <li><strong>The status badge got stuck reading “connecting…” forever.</strong> Its render function returned early whenever no poll had ever succeeded, and that condition was only cleared by a <em>successful</em> poll — so if a device never came back, the placeholder never updated no matter how many times it polled. Fixed with an explicit “have we polled at least once” flag.</li>
+        <li><strong>The badge and the Control panel showed contradictory labels</strong> — “LIVE DATA · OFF” versus “OFFLINE” for the same device — once the fix above let an offline status object populate the cache, at which point the badge read the power field off it instead of checking whether the device was online at all.</li>
+      </ul>
+
+      <h3>Known gaps in this round (deliberately not claimed as done)</h3>
+      <ul>
+        <li><strong>No frontend visualizer.</strong> Phase B shipped the spectrum/beat/latency <em>data</em>, but nothing renders it yet.</li>
+        <li><strong>Genre presets are reasoned, not tuned by ear.</strong> The bulb has been offline for every build session so far, so nobody has actually heard “jazz” vs “metal” on real hardware.</li>
+        <li><strong>Two unreconciled preset systems</strong> ship together — genre bundles and session-config snapshots — overlapping in name only. Likewise <strong>two unreconciled calibration systems</strong> (per-device-key signal conditioning vs. per-device-index sensitivity).</li>
+        <li><strong>Most of the music-player-adjacent section is not built</strong> — scope was deliberately cut to just lightshow capture/replay rather than taking on media-player integration.</li>
+        <li>An offline device still takes ~9–13s for the page to fully settle, since the badge and the panel each make their own independent (now ~2s-bounded) call. A shared in-flight cache would fix it; not built.</li>
       </ul>
       <template id="cl-week1">**Smart Bulb Dashboard — Week 1 roadmap (Unreleased)**
-Open as PR #68, not yet merged. Four parallel phases — new audio modes and tempo tracking, signal conditioning, multi-bulb orchestration and zones, session management and safety/accessibility.
+Open as PR #68, not yet merged to master. Four parallel phases (isolated subagent worktrees, hub-verified, hand-merged across ~40 conflict blocks), tracked in issues #64-#67. Backend suite grew 76 -> **353 tests**, all passing.
 
-**Added**
-- 6 new audio modes + TempoTracker (BPM, tap-tempo, beat confidence, sensitivity presets)
-- Signal conditioning (AGC, noise gate, clip detection, DC removal, per-band gain) + golden-value test harness
-- wave/mirror group role modes, per-bulb overrides, failover handling, Zone data model
-- Session conflict detection, max-duration/warmup/auto-pause, watchdog-restarted senders, session presets, flash-rate safety cap, lightshow capture/replay, scheduled audio sessions
+**Added — audio modes & musical intelligence (Phase A)**
+- 6 new color-mapping modes (total now 20): energy_contour, bass_only_pulse, mirror_mode, random_walk_hue, silence_flash_recover, crescendo_ramp
+- TempoTracker — BPM via autocorrelation, tap-tempo, beat confidence, adaptive threshold, 3 sensitivity presets
+- All 8 genre preset bundles + custom preset save/apply
+
+**Added — signal quality & test tooling (Phase B)**
+- SignalConditioner — AGC, noise gate, clip/overload detection, DC-offset removal, per-band gain, calibrate-from-silence
+- Full N-band spectrum in the status payload, rolling latency window, beat-flash/BPM hooks
+- Synthetic-audio test harness, golden-value regression tests, fuzz tests, latency harness
+
+**Added — orchestration, per-bulb config & zones (Phase C)**
+- wave/mirror group role modes; per-bulb hue-offset, brightness-scale and band-assignment overrides
+- Failover for unreachable bulbs; orchestration presets (CRUD)
+- Zone data model above groups; per-bulb hue-calibration/brightness-cap/audio-eligibility enforced at the device layer
+- Per-device-index sensitivity calibration, audio-input health check, index validation
+
+**Added — sessions, reliability, safety & accessibility (Phase D)**
+- Session-conflict detection (solo vs. group, with force override), max-duration auto-stop, warm-up ramp, auto-pause/resume, resume-last-session, named session presets
+- Scheduled audio sessions via the schedule engine
+- Socket timeout on sends, watchdog restart for stalled senders, device fallback, graceful stream-error restart, config validation, start/stop rate limiting
+- Photosensitive-epilepsy safety: hard flash-rate cap (WCAG 2.3.1 / ITU-R BT.1702) enforced in the send path, per-mode flash-heavy metadata, disable-flash-heavy toggle, reduced-motion profile, max-brightness-swing
+- Lightshow capture/export/replay, applause detection, silence auto-off
 
 **Fixed**
-- A mode-validation check dropped during the 4-way merge
-- A rate-limiter test-isolation gap
-- Found via live testing against a real unreachable bulb: /status hung for minutes (timed at 3m26s) with no bounded socket timeout — now ~2s. Two related frontend bugs (status badge stuck on "connecting...", badge/panel label mismatch) also fixed.
+- A mode-validation check on the solo start route silently dropped during the merge — restored
+- Rate-limiter state is module-level and leaked across tests (429s on unrelated tests) — now reset per-test
+- 3 test mocks returned a bare object() that broke once the merged route called .confirmation()
+- A naming collision: Phase A's audio_presets() route handler shadowed the audio_presets module Phase D imports
+- 4 worktree dirs accidentally committed as embedded git repos — untracked and gitignored
+
+**Fixed — found by live testing, not by the suite** (the suite mocks the device layer)
+- An unreachable device hung any /status call for **3m26s** (timed against real hardware) — tinytuya's connection timeout and retry limit were both unbounded. Capped at 2s/1 retry; same device now fails in ~2s.
+- The status badge stuck on "connecting..." forever whenever no poll had ever succeeded
+- The badge and Control panel showed contradictory labels ("LIVE DATA - OFF" vs "OFFLINE") for the same offline device
+
+**Known gaps (deliberately not claimed as done)**
+- No frontend visualizer yet — Phase B shipped the data, nothing renders it
+- Genre presets are reasoned, not tuned by ear (bulb has been offline every build session)
+- Two unreconciled preset systems, and two unreconciled calibration systems
+- Most of the music-player-adjacent section is unbuilt — scope cut to lightshow capture/replay
+- An offline device still takes ~9-13s for the page to settle (badge + panel poll independently)
 
 Full changelog: https://therocksss.github.io/smart-bulb-dashboard/changelog.html</template>
     </section>
