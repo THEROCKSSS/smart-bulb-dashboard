@@ -54,6 +54,42 @@
 
     <section class="changelog-entry">
       <div class="changelog-entry__head">
+        <h2><span class="tag warn">Unreleased</span> — Week 1 roadmap</h2>
+        <button class="copy-btn copy-changelog" data-target="cl-week1">Copy for Discord</button>
+      </div>
+      <p>Open as <a href="https://github.com/THEROCKSSS/smart-bulb-dashboard/pull/68">PR #68</a>, not yet merged. Four parallel phases (isolated subagent worktrees, hub-verified, hand-merged) — new audio modes and tempo tracking, signal conditioning, multi-bulb orchestration and zones, session management and safety/accessibility.</p>
+      <h3>Added</h3>
+      <ul>
+        <li>6 new audio modes (<code>energy_contour</code>, <code>bass_only_pulse</code>, <code>mirror_mode</code>, <code>random_walk_hue</code>, <code>silence_flash_recover</code>, <code>crescendo_ramp</code>) and a <code>TempoTracker</code> (BPM, tap-tempo, beat confidence, sensitivity presets).</li>
+        <li>Signal conditioning (AGC, noise gate, clip detection, DC removal, per-band gain, calibrate-from-silence) and a synthetic-audio golden-value test harness.</li>
+        <li><code>wave</code>/<code>mirror</code> group role modes, per-bulb overrides, failover handling, and a Zone data model with per-bulb calibration/brightness-cap/eligibility enforcement.</li>
+        <li>Session conflict detection, max-duration/warmup/auto-pause, watchdog-restarted senders, session presets, a photosensitive-safety flash-rate cap, lightshow capture/replay, and scheduled audio sessions.</li>
+      </ul>
+      <h3>Fixed</h3>
+      <ul>
+        <li>A mode-validation check dropped during the 4-way merge — restored.</li>
+        <li>A rate-limiter test-isolation gap — its state is module-level and was leaking across tests.</li>
+        <li><strong>Found via live testing against a real unreachable bulb</strong>: an offline device hung any <code>/status</code> call for minutes (timed at 3m26s) — tinytuya's socket timeout/retry limit were unbounded. Capped both; same device now fails in ~2s. Two related frontend bugs this surfaced — the status badge stuck forever on "connecting…", and a badge/panel label mismatch for offline devices — are also fixed.</li>
+      </ul>
+      <template id="cl-week1">**Smart Bulb Dashboard — Week 1 roadmap (Unreleased)**
+Open as PR #68, not yet merged. Four parallel phases — new audio modes and tempo tracking, signal conditioning, multi-bulb orchestration and zones, session management and safety/accessibility.
+
+**Added**
+- 6 new audio modes + TempoTracker (BPM, tap-tempo, beat confidence, sensitivity presets)
+- Signal conditioning (AGC, noise gate, clip detection, DC removal, per-band gain) + golden-value test harness
+- wave/mirror group role modes, per-bulb overrides, failover handling, Zone data model
+- Session conflict detection, max-duration/warmup/auto-pause, watchdog-restarted senders, session presets, flash-rate safety cap, lightshow capture/replay, scheduled audio sessions
+
+**Fixed**
+- A mode-validation check dropped during the 4-way merge
+- A rate-limiter test-isolation gap
+- Found via live testing against a real unreachable bulb: /status hung for minutes (timed at 3m26s) with no bounded socket timeout — now ~2s. Two related frontend bugs (status badge stuck on "connecting...", badge/panel label mismatch) also fixed.
+
+Full changelog: https://therocksss.github.io/smart-bulb-dashboard/changelog.html</template>
+    </section>
+
+    <section class="changelog-entry">
+      <div class="changelog-entry__head">
         <h2><span class="tag accent">v0.3.0</span> — 2026-07-29</h2>
         <button class="copy-btn copy-changelog" data-target="cl-030">Copy for Discord</button>
       </div>

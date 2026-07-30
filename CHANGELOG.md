@@ -16,7 +16,50 @@ merged PRs — see the note at the bottom of this file for the process.
 
 ## [Unreleased]
 
-Nothing queued yet — see `roadmap/` for what's planned next.
+**Week 1 roadmap — open as [PR #68](https://github.com/THEROCKSSS/smart-bulb-dashboard/pull/68), not yet merged.** Built as four
+parallel phases (isolated subagent worktrees, hub-verified, hand-merged),
+tracked in issues #64–#67.
+
+### Added
+- 6 new audio-reactive modes: `energy_contour`, `bass_only_pulse`,
+  `mirror_mode`, `random_walk_hue`, `silence_flash_recover`,
+  `crescendo_ramp`.
+- `TempoTracker`: BPM estimation (autocorrelation), tap-tempo, beat
+  confidence, adaptive threshold, 3 sensitivity presets. All 8 genre
+  preset bundles plus custom preset save.
+- `SignalConditioner`: AGC, noise gate, clip/overload detection, DC-offset
+  removal, per-band gain, calibrate-from-silence. Full N-band `/status`
+  exposure and a reusable synthetic-audio test harness with golden-value
+  regression tests.
+- `wave`/`mirror` group role modes, per-bulb hue-offset/brightness-scale/
+  band-assignment overrides, failover handling, orchestration presets.
+- A Zone data model (CRUD, device+group resolution), per-bulb hue-
+  calibration/brightness-cap/audio-eligible enforcement, per-device-index
+  sensitivity calibration, and an audio-input health-check endpoint.
+- Session conflict detection (solo vs. group, with a `force` override),
+  max-duration auto-stop, warmup ramp, auto-pause/resume on manual
+  command, socket-timeout + watchdog restart for stalled senders, device
+  fallback, and start/stop rate limiting.
+- Session presets (save/apply full session configs), a photosensitive-
+  safety flash-rate cap (WCAG 2.3.1 / ITU-R BT.1702), a reduced-motion
+  profile, a disable-flash-heavy toggle, lightshow capture/export/replay,
+  scheduled audio sessions, applause detection, and silence auto-off.
+
+### Fixed
+- A mode-validation check on the solo audio-reactive start route got
+  dropped while hand-merging the four phases — restored.
+- The new rate limiter's state was module-level and leaked across test
+  runs — now reset per-test.
+- **Found by actually testing this live against a real bulb that had gone
+  unreachable on the network** (not caught by the test suite, which mocks
+  the device layer): an unreachable device hung any `/status` call for
+  minutes — timed at 3m26s — because nothing bounded tinytuya's socket
+  timeout/retry limit. Capped both; same real device now fails in ~2s.
+  Two related frontend bugs surfaced by the same hang: the status badge
+  got stuck reading "connecting…" forever once a poll had never
+  succeeded, and once that got fixed, the badge and the Control panel
+  briefly showed contradictory labels ("LIVE DATA · OFF" vs "OFFLINE")
+  for the same offline device. Both fixed.
 
 ## [0.3.0] — 2026-07-29
 
