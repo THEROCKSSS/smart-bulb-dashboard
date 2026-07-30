@@ -1,9 +1,9 @@
 {
-  "generatedAt": "2026-07-30T20:42:08.922408+00:00",
+  "generatedAt": "2026-07-30T20:45:20.722851+00:00",
   "totalSections": 58,
   "statusCounts": {
-    "in_progress": 6,
-    "planned": 52
+    "in_progress": 7,
+    "planned": 51
   },
   "sections": [
     {
@@ -79,9 +79,9 @@
       "startNum": 96,
       "endNum": 115,
       "itemCount": 20,
-      "status": "planned",
+      "status": "in_progress",
       "url": "https://github.com/THEROCKSSS/smart-bulb-dashboard/issues/6",
-      "updatedAt": "2026-07-28T07:30:48Z",
+      "updatedAt": "2026-07-30T20:45:12Z",
       "milestone": "Week 1 — Audio & Orchestration"
     },
     {
