@@ -525,6 +525,12 @@ const AUDIO_MODE_INFO = {
   breathing_silence: { name: "Breathing Silence", desc: "Slow ambient breathing brightness during quiet passages instead of going flat/dark; wakes up smoothly when audio returns.", bands: false },
   harmonic_pairs: { name: "Harmonic Pairs", desc: "Finds the two most energetic non-adjacent bands each frame and blends between two complementary (180°-apart) hues based on which one dominates; more bands (below) sharpen the pairing.", bands: true },
   kick_snare_split: { name: "Kick/Snare Split", desc: "Bass drives brightness like a kick drum while a separate mid-band accent shifts the hue like a layered snare/hihat.", bands: false },
+  energy_contour: { name: "Energy Contour", desc: "Hue locked to your chosen color; only saturation/brightness track a smoothed energy envelope for a slow-moving contour instead of a punchy pulse.", bands: false, mono: true },
+  bass_only_pulse: { name: "Bass-Only Pulse", desc: "Brightness-only pulse driven purely by the bass band's share of the mix — hue never moves.", bands: false, mono: true },
+  mirror_mode: { name: "Mirror Mode", desc: "Hue mirrors around a fixed center point as the treble/bass balance shifts, while brightness breathes independently — a breathing color effect.", bands: false },
+  random_walk_hue: { name: "Random Walk Hue", desc: "Hue takes small bounded random steps instead of rotating at a fixed rate — feels organic rather than mechanical.", bands: false },
+  silence_flash_recover: { name: "Silence Flash Recover", desc: "Dims through any quiet passage, then fires one bright white flash the instant audio resumes after a long pause.", bands: false, mono: true },
+  crescendo_ramp: { name: "Crescendo Ramp", desc: "Detects a sustained rise in energy over a couple of seconds and ramps brightness/saturation up ahead of the peak, not just when it's already loud.", bands: false, mono: true },
 };
 
 function stopAudioPolling() {
@@ -551,6 +557,15 @@ function renderBandMeter(bands) {
     </div>
     <p class="panel-subtitle" style="margin-top:8px;">RMS ${(bands.rms || 0).toFixed(4)} <span class="beat-dot ${bands.is_beat ? "hit" : ""}"></span> beat</p>
   `;
+}
+
+function renderTempoInfo(tempo) {
+  tempo = tempo || {};
+  const bpmText = tempo.bpm != null ? `${tempo.bpm.toFixed(1)} BPM` : "no tempo lock yet";
+  const confPct = Math.round((tempo.confidence || 0) * 100);
+  const tapText = tempo.tap_bpm != null ? ` · tap tempo ${tempo.tap_bpm.toFixed(1)} BPM` : "";
+  const suggestion = tempo.suggested_preset ? ` · suggests "${tempo.suggested_preset.replace(/_/g, " ")}" preset` : "";
+  return `<p class="panel-subtitle" style="margin-top:8px;">${bpmText} <span style="color:var(--text-dim);">(confidence ${confPct}%)</span>${tapText}${suggestion}</p>`;
 }
 
 function renderSenderInfo(sender) {
@@ -580,6 +595,11 @@ async function renderAudio(main) {
   let groupStatus = { active: false };
   try { groupStatus = await get(`/api/groups/all/audio-reactive/status`); } catch (e) {}
   const groups = await get("/api/groups").catch(() => []);
+  let audioPresetsResp = { presets: [] };
+  try { audioPresetsResp = await get("/api/audio/presets"); } catch (e) {}
+  const beatPresets = devicesResp.beat_sensitivity_presets || ["subtle", "normal", "aggressive"];
+  const defaultBeatSensitivity = devicesResp.default_beat_sensitivity || "normal";
+  const tempo = sessionStatus.tempo || {};
 
   const preferredIdx = audioDevices.findIndex(d => /voicemeeter|cable/i.test(d.name));
   const defaultDeviceIndex = sessionStatus.device_index ?? (preferredIdx >= 0 ? audioDevices[preferredIdx].index : (audioDevices[0] ? audioDevices[0].index : null));
@@ -601,6 +621,11 @@ async function renderAudio(main) {
       <div class="form-grid">
         <label>Input device<select id="audio-device">${deviceOptions}</select></label>
         <label>Mode<select id="audio-mode">${modeOptions}</select></label>
+        <label>Beat sensitivity
+          <select id="audio-beat-sensitivity">
+            ${beatPresets.map(p => `<option value="${p}" ${(tempo.beat_sensitivity || defaultBeatSensitivity) === p ? "selected" : ""}>${p[0].toUpperCase() + p.slice(1)}</option>`).join("")}
+          </select>
+        </label>
       </div>
       <div class="slider-row">
         <label><span>Sensitivity</span><span id="sens-val">${(sessionStatus.sensitivity ?? 1.0).toFixed(1)}x</span></label>
@@ -629,6 +654,24 @@ async function renderAudio(main) {
     <div class="card">
       <h3>Live Input <span class="tag ${sessionStatus.active ? "on" : "off"}">${sessionStatus.active ? "LISTENING" : "IDLE"}</span></h3>
       <div id="band-meter-wrap">${renderBandMeter(sessionStatus.bands)}</div>
+      <div id="tempo-wrap">${renderTempoInfo(tempo)}</div>
+      <div class="row">
+        <button id="tap-tempo-btn" class="primary" ${sessionStatus.active ? "" : "disabled"}>Tap Tempo</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <h3>Genre &amp; Mood Presets</h3>
+      <p class="panel-subtitle">
+        Bundles mode + sensitivity + dwell + band count + beat sensitivity + a color palette under one name.
+        Applying a preset starts (or restarts) the single-bulb session above with those settings.
+      </p>
+      <div class="grid" id="audio-preset-grid"></div>
+      <h3 style="margin-top:16px;">Save Current Settings as Custom Preset</h3>
+      <div class="row">
+        <input type="text" id="custom-preset-name" placeholder="Name (e.g. Friday Mix)">
+        <button id="save-custom-preset" class="primary">Save</button>
+      </div>
     </div>
 
     <div class="card">
@@ -696,6 +739,7 @@ async function renderAudio(main) {
       monochrome_hue: parseFloat(main.querySelector("#mono-hue").value),
       n_bands: parseInt(main.querySelector("#audio-nbands").value, 10),
       min_dwell_ms: parseInt(main.querySelector("#audio-dwell").value, 10),
+      beat_sensitivity: main.querySelector("#audio-beat-sensitivity").value,
     });
     toast("Audio-reactive session started", "success");
     renderAudio(main);
@@ -717,6 +761,7 @@ async function renderAudio(main) {
       sensitivity: parseFloat(main.querySelector("#audio-sensitivity").value),
       monochrome_hue: parseFloat(main.querySelector("#mono-hue").value),
       min_dwell_ms: parseInt(main.querySelector("#audio-dwell").value, 10),
+      beat_sensitivity: main.querySelector("#audio-beat-sensitivity").value,
     });
     toast("Group audio-reactive session started", "success");
     renderAudio(main);
@@ -729,6 +774,66 @@ async function renderAudio(main) {
     renderAudio(main);
   };
 
+  main.querySelector("#tap-tempo-btn").onclick = async () => {
+    try {
+      const resp = await post(`/api/devices/${state.deviceId}/audio-reactive/tap-tempo`, {});
+      const wrap = document.getElementById("tempo-wrap");
+      if (wrap && resp.tap_bpm != null) {
+        wrap.innerHTML = renderTempoInfo({ ...tempo, tap_bpm: resp.tap_bpm });
+      }
+    } catch (e) { toast(`Tap tempo failed: ${e.message}`, "error"); }
+  };
+
+  const presetGrid = main.querySelector("#audio-preset-grid");
+  const allPresets = audioPresetsResp.presets || [];
+  allPresets.forEach(preset => {
+    const card = el(`<div class="effect-card" title="${preset.description || ""}">
+      <div class="name">${preset.name}${preset.custom ? " ★" : ""}</div>
+      <div class="desc">${preset.description || "Custom preset"}</div>
+    </div>`);
+    card.onclick = async () => {
+      if (audioDevices.length === 0) {
+        toast("No audio input devices available", "error");
+        return;
+      }
+      await post(`/api/devices/${state.deviceId}/audio-reactive/apply-preset`, {
+        preset_id: preset.id,
+        device_index: parseInt(main.querySelector("#audio-device").value, 10),
+      });
+      toast(`Preset "${preset.name}" applied`, "success");
+      renderAudio(main);
+    };
+    if (preset.custom) {
+      const delBtn = el(`<button class="danger" style="margin-top:6px;width:100%;">Delete</button>`);
+      delBtn.onclick = async (ev) => {
+        ev.stopPropagation();
+        await del(`/api/audio/presets/custom/${preset.id}`);
+        toast(`Preset "${preset.name}" deleted`);
+        renderAudio(main);
+      };
+      card.appendChild(delBtn);
+    }
+    presetGrid.appendChild(card);
+  });
+
+  main.querySelector("#save-custom-preset").onclick = async () => {
+    const name = main.querySelector("#custom-preset-name").value.trim();
+    if (!name) { toast("Enter a preset name first", "error"); return; }
+    try {
+      await post("/api/audio/presets/custom", {
+        name,
+        mode: main.querySelector("#audio-mode").value,
+        sensitivity: parseFloat(main.querySelector("#audio-sensitivity").value),
+        monochrome_hue: parseFloat(main.querySelector("#mono-hue").value),
+        n_bands: parseInt(main.querySelector("#audio-nbands").value, 10),
+        min_dwell_ms: parseInt(main.querySelector("#audio-dwell").value, 10),
+        beat_sensitivity: main.querySelector("#audio-beat-sensitivity").value,
+      });
+      toast(`Preset "${name}" saved`, "success");
+      renderAudio(main);
+    } catch (e) { toast(`Could not save preset: ${e.message}`, "error"); }
+  };
+
   if (sessionStatus.active) {
     state.audioPollHandle = setInterval(async () => {
       try {
@@ -736,6 +841,8 @@ async function renderAudio(main) {
         const wrap = document.getElementById("band-meter-wrap");
         if (!wrap) { stopAudioPolling(); return; }
         wrap.innerHTML = renderBandMeter(st.bands);
+        const tempoWrap = document.getElementById("tempo-wrap");
+        if (tempoWrap) tempoWrap.innerHTML = renderTempoInfo(st.tempo);
         if (!st.active) renderAudio(main);
       } catch (e) { /* transient poll miss, ignore */ }
     }, 300);

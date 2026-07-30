@@ -1,5 +1,8 @@
 import collections
 import math
+import random
+import re
+import statistics
 import threading
 import time
 
@@ -32,12 +35,32 @@ RIGHT_HUE = 20.0
 HARMONIC_HUE_A = 45.0    # harmonic_pairs anchors — 180 deg apart by construction
 HARMONIC_HUE_B = (HARMONIC_HUE_A + 180.0) % 360
 KICK_SNARE_BASE_HUE = 15.0  # kick_snare_split's resting hue before any snare accent
+MIRROR_CENTER_HUE = 270.0    # mirror_mode's fixed reflection point
+MIRROR_SWING_DEG = 80.0      # max degrees mirror_mode swings off-center each direction
+RANDOM_WALK_MAX_STEP_DEG = 5.0  # per-frame bound on random_walk_hue's step size
+
+# Shared "is there real audio right now" floor -- same value the session
+# loops already use inline for their own silence-timeout tracking; pulled
+# out as a named constant here because the new modes/TempoTracker below
+# need to reference the exact same threshold rather than a second magic
+# number that could drift out of sync with it.
+SILENCE_RMS_THRESHOLD = 0.0008
+SILENCE_FLASH_LONG_THRESHOLD_S = 3.0  # how long a pause counts as "a long silence" for silence_flash_recover
+
+# crescendo_ramp's trend window is frame-count-based, not wall-clock, so it
+# behaves identically in tests (which drive it frame-by-frame with no real
+# sleeping) and at real audio rates. At BLOCK_SIZE=512/44100Hz each frame is
+# ~11.6ms, so 200 frames ~= 2.3s -- "building over a couple of seconds".
+CRESCENDO_WINDOW_FRAMES = 200
+CRESCENDO_SENSITIVITY = 3.0  # scales the raw (second_half/first_half - 1) ratio into a 0..1 ramp
 
 MODES = [
     "band_fixed", "dominant_band", "weighted_blend", "vu_meter",
     "auto_rotate_hue", "monochrome_pulse", "strobe_on_drop", "palette_cycle",
     "spectrum_gradient", "band_flash_overlay", "stereo_split", "breathing_silence",
     "harmonic_pairs", "kick_snare_split",
+    "energy_contour", "bass_only_pulse", "mirror_mode", "random_walk_hue",
+    "silence_flash_recover", "crescendo_ramp",
 ]
 
 ROLE_MODES = ["unison", "phase_offset", "band_split"]
@@ -362,6 +385,104 @@ def _apply_mode(mode, bands, ctx):
         brightness = min(100, kick_brightness + (15 if is_beat else 0))
         return ("hsv", ctx["smoothed_hue"], 100, brightness)
 
+    if mode == "energy_contour":
+        # Hue is locked to the user's chosen monochrome hue; only
+        # saturation and brightness track a *smoothed* energy envelope
+        # (an EMA of rms*gain, not the instantaneous value), so this reads
+        # as a slow-moving "contour" rather than monochrome_pulse's more
+        # instantaneous beat-punchy response.
+        envelope = ctx.setdefault("energy_envelope", 0.0)
+        instant = min(1.0, rms * gain * 20)
+        envelope = envelope * 0.85 + instant * 0.15
+        ctx["energy_envelope"] = envelope
+        sat = max(0, min(100, 40 + 60 * envelope))
+        brightness = max(4, min(100, 4 + 96 * envelope))
+        return ("hsv", ctx["monochrome_hue"], sat, brightness)
+
+    if mode == "bass_only_pulse":
+        # Brightness-only pulse driven purely by the bass band's fractional
+        # share of the mix (not overall rms alone) -- hue never moves.
+        bass_frac = fractions[0] if fractions else 0.0
+        brightness = min(100, max(4, 4 + rms * gain * 4500 * bass_frac * 3))
+        return ("hsv", ctx["monochrome_hue"], 100, brightness)
+
+    if mode == "mirror_mode":
+        # Hue mirrors around a fixed center point as the treble/bass
+        # balance shifts (treble-heavy swings one way, bass-heavy swings
+        # the other, both by the same amount off MIRROR_CENTER_HUE) while
+        # brightness breathes independently -- a literal "breathing color"
+        # combination of the two ideas in the roadmap description.
+        f = fractions if len(fractions) == 3 else _resample_to_3(bands)
+        balance = f[2] - f[0]  # treble frac minus bass frac, in [-1, 1]
+        target = (MIRROR_CENTER_HUE + balance * MIRROR_SWING_DEG) % 360
+        ctx["smoothed_hue"] = _smooth_hue(ctx["smoothed_hue"], target, 0.3)
+        period_s = 3.0
+        breathing = 30 + 20 * (0.5 + 0.5 * math.sin(2 * math.pi * (now % period_s) / period_s))
+        active_boost = max(0.0, min(50.0, rms * gain * 3000))
+        brightness = min(100, breathing + active_boost)
+        return ("hsv", ctx["smoothed_hue"], 100, brightness)
+
+    if mode == "random_walk_hue":
+        # A bounded random walk instead of auto_rotate_hue's fixed-rate
+        # rotation -- each frame's step is a small, capped random nudge
+        # (never more than RANDOM_WALK_MAX_STEP_DEG regardless of how loud
+        # the input is) so the motion feels organic rather than mechanical,
+        # while still wrapping the full 0-360 circle like every other hue
+        # here. Reuses ctx["rotate_hue"] as its running position -- the
+        # same "current rotating hue" slot auto_rotate_hue uses, since the
+        # two modes are never active in the same ctx simultaneously.
+        step = random.uniform(-RANDOM_WALK_MAX_STEP_DEG, RANDOM_WALK_MAX_STEP_DEG)
+        ctx["rotate_hue"] = (ctx["rotate_hue"] + step) % 360
+        return ("hsv", ctx["rotate_hue"], 100, pulse_brightness)
+
+    if mode == "silence_flash_recover":
+        # Tracks how long the input has been near-silent; the instant real
+        # audio resumes after a *long* silence, fire exactly one bright
+        # white flash before falling back into normal band_fixed-style
+        # reactive color. A short pause (shorter than the threshold) never
+        # flashes -- this is specifically about "audio came back after a
+        # while", not every tiny gap between notes.
+        silence_since = ctx.get("silence_since")
+        if rms < SILENCE_RMS_THRESHOLD:
+            if silence_since is None:
+                ctx["silence_since"] = now
+            return ("hsv", ctx["monochrome_hue"], 60, 4)
+
+        was_long_silence = (
+            silence_since is not None
+            and (now - silence_since) > SILENCE_FLASH_LONG_THRESHOLD_S
+        )
+        ctx["silence_since"] = None
+        if was_long_silence:
+            return ("hsv", 0, 0, 100)
+        f = fractions if len(fractions) == 3 else _resample_to_3(bands)
+        target = f[0] * BASS_HUE + f[1] * MID_HUE + f[2] * TREBLE_HUE
+        ctx["smoothed_hue"] = _smooth_hue(ctx["smoothed_hue"], target, 0.4)
+        return ("hsv", ctx["smoothed_hue"], 100, pulse_brightness)
+
+    if mode == "crescendo_ramp":
+        # Detects a *sustained rising trend* in rms (not just "it's loud
+        # right now" -- that's strobe_on_drop's job) by comparing the
+        # average of the first half vs. the second half of a rolling
+        # window, then ramps brightness/saturation up ahead of the
+        # anticipated peak. A steady loud signal with no rise produces
+        # ramp ~= 0, same as silence -- only a genuine build triggers it.
+        window = ctx.setdefault("crescendo_window", collections.deque(maxlen=CRESCENDO_WINDOW_FRAMES))
+        window.append(rms)
+        ramp = 0.0
+        if len(window) >= CRESCENDO_WINDOW_FRAMES:
+            half = CRESCENDO_WINDOW_FRAMES // 2
+            snapshot = list(window)
+            first_avg = sum(snapshot[:half]) / half
+            second_avg = sum(snapshot[half:]) / (len(snapshot) - half)
+            if first_avg > 1e-9:
+                rising_ratio = max(0.0, (second_avg - first_avg) / first_avg)
+                ramp = min(1.0, rising_ratio * CRESCENDO_SENSITIVITY)
+        ctx["crescendo_ramp_level"] = ramp
+        sat = min(100, 55 + ramp * 45)
+        brightness = min(100, base_brightness + ramp * 35)
+        return ("hsv", ctx["monochrome_hue"], sat, brightness)
+
     return ("hsv", BASS_HUE, 100, pulse_brightness)
 
 
@@ -394,13 +515,329 @@ def _new_ctx(sensitivity, monochrome_hue):
     }
 
 
+# ------------------------------------------------------------- tempo/BPM ---
+BEAT_SENSITIVITY_PRESETS = {
+    # Multiplier `k` in `adaptive_threshold = mean(onset) + k*std(onset)`.
+    # Lower k pulls the threshold closer to the noise floor, so more onsets
+    # clear it -- that's "Aggressive". Higher k demands a sharper spike --
+    # "Subtle".
+    "subtle": 2.6,
+    "normal": 1.8,
+    "aggressive": 1.1,
+}
+DEFAULT_BEAT_SENSITIVITY = "normal"
+
+TEMPO_MIN_BPM = 60.0
+TEMPO_MAX_BPM = 200.0
+TEMPO_HISTORY_SECONDS = 8.0
+# Must exceed the max-lag frame count (period of TEMPO_MIN_BPM / frame_dt)
+# so the very first autocorrelation attempt already has a full lag range
+# to search, rather than silently truncating it.
+TEMPO_MIN_HISTORY_FRAMES = 120
+TEMPO_SMOOTHING_ALPHA = 0.25  # EMA applied across updates so BPM doesn't jump frame to frame
+OCTAVE_BIAS_FRACTION = 0.6  # see _estimate_bpm -- prefers the fundamental lag over a 2x/3x alias
+SILENCE_RESET_SECONDS = 4.0  # continuous near-silence longer than this drops the tempo estimate
+TAP_TEMPO_MAX_GAP_S = 2.0     # a gap longer than this between taps starts a fresh tap sequence
+TAP_TEMPO_MAX_TAPS = 8
+
+
+# ------------------------------------------------------ genre/mood presets --
+# Each bundles mode + sensitivity (gain) + dwell + band count + a
+# monochrome-hue anchor (used by mono-hue modes, ignored otherwise) +
+# beat-sensitivity preset + a palette subset (PRESET_COLORS ids) under one
+# name, so a whole audio-reactive "feel" can be applied in a single call.
+AUDIO_GENRE_PRESETS = [
+    {
+        "id": "edm_party", "name": "EDM / Party",
+        "mode": "palette_cycle", "sensitivity": 1.8, "min_dwell_ms": 45, "n_bands": 3,
+        "monochrome_hue": 300.0, "beat_sensitivity": "aggressive",
+        "palette": ["magenta", "cyan", "hot_pink", "violet", "lime"],
+        "description": "Fast dwell, high-contrast palette cycling, aggressive beat threshold for big-room energy.",
+    },
+    {
+        "id": "chill_ambient", "name": "Chill / Ambient",
+        "mode": "breathing_silence", "sensitivity": 0.6, "min_dwell_ms": 250, "n_bands": 3,
+        "monochrome_hue": 200.0, "beat_sensitivity": "subtle",
+        "palette": ["sky", "lavender", "teal", "turquoise"],
+        "description": "Slow dwell, narrow hue range, breathing baseline for quiet/ambient listening.",
+    },
+    {
+        "id": "rock_live", "name": "Rock / Live",
+        "mode": "band_fixed", "sensitivity": 1.3, "min_dwell_ms": 90, "n_bands": 3,
+        "monochrome_hue": 10.0, "beat_sensitivity": "normal",
+        "palette": ["red", "orange", "gold"],
+        "description": "Bass-forward warm palette using the fixed 3-band mapping.",
+    },
+    {
+        "id": "classical_acoustic", "name": "Classical / Acoustic",
+        "mode": "vu_meter", "sensitivity": 0.8, "min_dwell_ms": 200, "n_bands": 3,
+        "monochrome_hue": 45.0, "beat_sensitivity": "subtle",
+        "palette": ["white_warm", "gold"],
+        "description": "Brightness-only, minimal hue movement, gentle dwell for dynamic acoustic material.",
+    },
+    {
+        "id": "hip_hop_bass_heavy", "name": "Hip-Hop / Bass-Heavy",
+        "mode": "bass_only_pulse", "sensitivity": 1.6, "min_dwell_ms": 70, "n_bands": 3,
+        "monochrome_hue": 15.0, "beat_sensitivity": "normal",
+        "palette": ["red", "coral", "gold"],
+        "description": "Deep warm hue, brightness pulses purely off the bass band.",
+    },
+    {
+        "id": "jazz_improv", "name": "Jazz / Improv",
+        "mode": "dominant_band", "sensitivity": 1.0, "min_dwell_ms": 140, "n_bands": 3,
+        "monochrome_hue": 40.0, "beat_sensitivity": "subtle",
+        "palette": ["amber", "teal", "violet"],
+        "description": "Wider dynamic tolerance and slower smoothing for improvised, less-metronomic material.",
+    },
+    {
+        "id": "lofi_study", "name": "Lo-fi / Study",
+        "mode": "breathing_silence", "sensitivity": 0.5, "min_dwell_ms": 300, "n_bands": 3,
+        "monochrome_hue": 220.0, "beat_sensitivity": "subtle",
+        "palette": ["lavender", "white_cool", "sky"],
+        "description": "Very slow, desaturated breathing baseline for background study/focus listening.",
+    },
+    {
+        "id": "metal_hardcore", "name": "Metal / Hardcore",
+        "mode": "strobe_on_drop", "sensitivity": 2.2, "min_dwell_ms": 40, "n_bands": 3,
+        "monochrome_hue": 0.0, "beat_sensitivity": "aggressive",
+        "palette": ["red", "white_cool"],
+        "description": "High-contrast strobe-on-drop, fast dwell, aggressive threshold for hard/fast material.",
+    },
+]
+
+BPM_PRESET_SUGGESTIONS = [
+    # (min_bpm inclusive, max_bpm exclusive, preset_id) -- a dismissible
+    # heuristic starting point, not a musicological claim (real genres
+    # overlap heavily in BPM).
+    (0.0, 70.0, "lofi_study"),
+    (70.0, 90.0, "chill_ambient"),
+    (90.0, 105.0, "classical_acoustic"),
+    (105.0, 120.0, "jazz_improv"),
+    (120.0, 135.0, "hip_hop_bass_heavy"),
+    (135.0, 150.0, "rock_live"),
+    (150.0, 175.0, "edm_party"),
+    (175.0, 10_000.0, "metal_hardcore"),
+]
+
+
+def find_genre_preset(preset_id):
+    return next((p for p in AUDIO_GENRE_PRESETS if p["id"] == preset_id), None)
+
+
+def _slugify_preset_name(name):
+    slug = re.sub(r"[^a-z0-9]+", "_", name.strip().lower()).strip("_")
+    return slug or "custom_preset"
+
+
+def build_custom_preset(name, mode, sensitivity=1.0, min_dwell_ms=DEFAULT_MIN_DWELL_MS, n_bands=3,
+                         monochrome_hue=280.0, beat_sensitivity=DEFAULT_BEAT_SENSITIVITY,
+                         palette=None, description="", preset_id=None):
+    """Validates and builds a user-savable custom audio preset bundle, in
+    the same shape as an AUDIO_GENRE_PRESETS entry (mode + sensitivity +
+    dwell + n_bands + monochrome_hue + beat_sensitivity + palette under a
+    name). Pure/side-effect-free -- the caller (the `/api/audio/presets/
+    custom` route) owns actually persisting the returned dict. Raises
+    ValueError with a human-readable message on any invalid field, which
+    callers turn into a 400."""
+    if not name or not name.strip():
+        raise ValueError("preset name is required")
+    if mode not in MODES:
+        raise ValueError(f"unknown mode '{mode}', expected one of {MODES}")
+    if beat_sensitivity not in BEAT_SENSITIVITY_PRESETS:
+        raise ValueError(f"unknown beat_sensitivity '{beat_sensitivity}', expected one of {list(BEAT_SENSITIVITY_PRESETS)}")
+    if min_dwell_ms < MIN_DWELL_FLOOR_MS:
+        raise ValueError(f"min_dwell_ms below the safety floor of {MIN_DWELL_FLOOR_MS}ms")
+    palette = list(palette or [])
+    valid_ids = {p["id"] for p in PRESET_COLORS}
+    unknown = [pid for pid in palette if pid not in valid_ids]
+    if unknown:
+        raise ValueError(f"unknown palette color id(s): {unknown}")
+    return {
+        "id": preset_id or _slugify_preset_name(name),
+        "name": name.strip(),
+        "mode": mode,
+        "sensitivity": max(0.1, min(5.0, float(sensitivity))),
+        "min_dwell_ms": int(min_dwell_ms),
+        "n_bands": max(3, min(16, int(n_bands))),
+        "monochrome_hue": float(monochrome_hue) % 360,
+        "beat_sensitivity": beat_sensitivity,
+        "palette": palette,
+        "description": description,
+        "custom": True,
+    }
+
+
+def suggest_preset_for_bpm(bpm):
+    if bpm is None:
+        return None
+    for lo, hi, preset_id in BPM_PRESET_SUGGESTIONS:
+        if lo <= bpm < hi:
+            return preset_id
+    return None
+
+
+class TempoTracker:
+    """Real BPM estimation via autocorrelation of an onset-strength signal
+    (a spectral-flux-style positive-only frame-to-frame rise in rms), plus
+    a beat-confidence score, an adaptive beat-sensitivity threshold, manual
+    tap-tempo fallback, and silence-aware reset so a tempo estimate never
+    survives a long pause.
+
+    One instance lives per AudioSession/GroupAudioSession -- tempo is a
+    property of the audio stream itself, not of any individual bulb, so a
+    group session shares one tracker the same way it shares one
+    `analyze_frame` call per callback.
+    """
+
+    def __init__(self, frame_dt=None, beat_sensitivity=DEFAULT_BEAT_SENSITIVITY):
+        self.frame_dt = frame_dt or (BLOCK_SIZE / SAMPLE_RATE)
+        maxlen = max(TEMPO_MIN_HISTORY_FRAMES, int(TEMPO_HISTORY_SECONDS / self.frame_dt))
+        self.onset_history = collections.deque(maxlen=maxlen)
+        self._prev_energy = 0.0
+        self.bpm = None
+        self.confidence = 0.0
+        self.last_onset = 0.0
+        self.is_beat = False
+        self.beat_sensitivity = (
+            beat_sensitivity if beat_sensitivity in BEAT_SENSITIVITY_PRESETS else DEFAULT_BEAT_SENSITIVITY
+        )
+        self._silence_frames = 0
+        self._silence_reset_frames = max(1, int(SILENCE_RESET_SECONDS / self.frame_dt))
+        self.tap_times = []
+        self.tap_bpm = None
+
+    def set_sensitivity(self, preset):
+        if preset in BEAT_SENSITIVITY_PRESETS:
+            self.beat_sensitivity = preset
+            return True
+        return False
+
+    @property
+    def adaptive_threshold(self):
+        if len(self.onset_history) < 2:
+            return 0.0
+        arr = np.array(self.onset_history)
+        k = BEAT_SENSITIVITY_PRESETS[self.beat_sensitivity]
+        return float(arr.mean() + k * arr.std())
+
+    def update(self, rms):
+        """Feed one frame's rms value. Call exactly once per audio callback
+        (same cadence as `_apply_mode`)."""
+        onset = max(0.0, rms - self._prev_energy)
+        self._prev_energy = rms
+        self.onset_history.append(onset)
+        self.last_onset = onset
+        self.is_beat = onset > 0.0 and onset > self.adaptive_threshold
+
+        if rms < SILENCE_RMS_THRESHOLD:
+            self._silence_frames += 1
+        else:
+            self._silence_frames = 0
+
+        if self._silence_frames > self._silence_reset_frames:
+            # A tempo carried over from before a long pause is more likely
+            # to mislead than help (song ended, long silent intro, etc.),
+            # so drop it rather than let it go stale silently.
+            self.bpm = None
+            self.confidence = 0.0
+            self.onset_history.clear()
+            return
+
+        if len(self.onset_history) < TEMPO_MIN_HISTORY_FRAMES:
+            return
+
+        raw_bpm, confidence = self._estimate_bpm()
+        self.confidence = confidence
+        if raw_bpm is None:
+            return
+        if self.bpm is None:
+            self.bpm = raw_bpm
+        else:
+            self.bpm = self.bpm * (1 - TEMPO_SMOOTHING_ALPHA) + raw_bpm * TEMPO_SMOOTHING_ALPHA
+
+    def _estimate_bpm(self):
+        arr = np.array(self.onset_history, dtype=float)
+        arr = arr - arr.mean()
+        energy = float(np.dot(arr, arr))
+        if energy <= 1e-12:
+            return None, 0.0
+        n = len(arr)
+        corr = np.correlate(arr, arr, mode="full")
+        corr = corr[n - 1:]  # keep lag >= 0 only (length n, index i == lag i)
+        min_lag = max(1, int(60.0 / TEMPO_MAX_BPM / self.frame_dt))
+        max_lag = min(len(corr) - 1, int(60.0 / TEMPO_MIN_BPM / self.frame_dt))
+        if min_lag >= max_lag:
+            return None, 0.0
+        segment = corr[min_lag:max_lag + 1]
+        global_offset = int(np.argmax(segment))
+        global_val = float(segment[global_offset])
+        if global_val <= 0 or corr[0] <= 0:
+            return None, 0.0
+        # Octave-bias correction: a periodic pulse train's autocorrelation
+        # peaks at every integer multiple of the true period (T, 2T, 3T,
+        # ...), and discretization noise can make one of those *aliases*
+        # (usually 2T) score marginally higher than the true fundamental
+        # at T -- a well-known "half-tempo" failure mode for naive
+        # autocorrelation beat tracking. Mitigate it the standard way:
+        # scan from the smallest (fastest/highest-BPM) lag upward and take
+        # the first one that's already within OCTAVE_BIAS_FRACTION of the
+        # global peak, rather than blindly taking whichever lag happens to
+        # score highest. This doesn't attempt full half/double-time
+        # detection (that's its own separate, UI-facing feature) -- it
+        # just prefers the fundamental over its alias when both are
+        # clearly strong peaks.
+        threshold = OCTAVE_BIAS_FRACTION * global_val
+        peak_offset = global_offset
+        for i, val in enumerate(segment):
+            if val >= threshold:
+                peak_offset = i
+                break
+        peak_lag = min_lag + peak_offset
+        peak_val = float(segment[peak_offset])
+        confidence = max(0.0, min(1.0, global_val / corr[0]))
+        bpm = 60.0 / (peak_lag * self.frame_dt)
+        return bpm, confidence
+
+    def tap(self, timestamp=None):
+        """Manual tap-tempo fallback/override. Pass `timestamp` explicitly
+        for deterministic testing; defaults to wall-clock time in
+        production use."""
+        now = timestamp if timestamp is not None else time.time()
+        if self.tap_times and (now - self.tap_times[-1]) > TAP_TEMPO_MAX_GAP_S:
+            self.tap_times = []  # gap too long -- start a fresh tap sequence
+        self.tap_times.append(now)
+        self.tap_times = self.tap_times[-TAP_TEMPO_MAX_TAPS:]
+        if len(self.tap_times) >= 2:
+            intervals = [b - a for a, b in zip(self.tap_times, self.tap_times[1:]) if b > a]
+            if intervals:
+                median_interval = statistics.median(intervals)
+                self.tap_bpm = 60.0 / median_interval if median_interval > 0 else None
+        return self.tap_bpm
+
+    def reset_tap(self):
+        self.tap_times = []
+        self.tap_bpm = None
+
+    def status(self):
+        return {
+            "bpm": round(self.bpm, 1) if self.bpm is not None else None,
+            "confidence": round(self.confidence, 3),
+            "beat_sensitivity": self.beat_sensitivity,
+            "adaptive_threshold": round(self.adaptive_threshold, 6),
+            "is_beat": self.is_beat,
+            "tap_bpm": round(self.tap_bpm, 1) if self.tap_bpm is not None else None,
+            "suggested_preset": suggest_preset_for_bpm(self.bpm),
+        }
+
+
 class AudioSession:
     """Single-bulb audio-reactive session. See `_apply_mode` for what each
     mode actually computes; this class is just capture + lifecycle +
     dispatch via its own `BulbSender`."""
 
     def __init__(self, controller, device_index, mode="band_fixed", sensitivity=1.0,
-                 monochrome_hue=280.0, n_bands=3, min_dwell_ms=DEFAULT_MIN_DWELL_MS):
+                 monochrome_hue=280.0, n_bands=3, min_dwell_ms=DEFAULT_MIN_DWELL_MS,
+                 beat_sensitivity=DEFAULT_BEAT_SENSITIVITY):
         self.controller = controller
         self.device_index = device_index
         self.mode = mode if mode in MODES else "band_fixed"
@@ -408,6 +845,7 @@ class AudioSession:
         self.band_edges = log_band_edges(self.n_bands)
         self.ctx = _new_ctx(sensitivity, monochrome_hue)
         self.sender = BulbSender(controller, min_dwell_ms)
+        self.tempo = TempoTracker(beat_sensitivity=beat_sensitivity)
 
         self._stop = threading.Event()
         self._thread = None
@@ -440,6 +878,7 @@ class AudioSession:
             "n_bands": self.n_bands,
             "bands": self.ctx["latest_bands"],
             "sender": self.sender.status(),
+            "tempo": self.tempo.status(),
             "error": self._error,
         }
 
@@ -482,6 +921,7 @@ class AudioSession:
         rms_check = float(np.sqrt(np.mean(np.square(samples))))
         if rms_check > 0.0008:
             self._last_audio_at = now
+        self.tempo.update(rms_check)
 
         n_bands = self.n_bands if self.mode in ("spectrum_gradient", "band_flash_overlay", "harmonic_pairs") else 3
         bands = analyze_frame(samples, band_edges=log_band_edges(n_bands) if n_bands != 3 else None)
@@ -505,13 +945,15 @@ class GroupAudioSession:
     """
 
     def __init__(self, controllers, device_index, mode="band_fixed", role_mode="unison",
-                 sensitivity=1.0, monochrome_hue=280.0, min_dwell_ms=DEFAULT_MIN_DWELL_MS):
+                 sensitivity=1.0, monochrome_hue=280.0, min_dwell_ms=DEFAULT_MIN_DWELL_MS,
+                 beat_sensitivity=DEFAULT_BEAT_SENSITIVITY):
         self.controllers = controllers
         self.device_index = device_index
         self.mode = mode if mode in MODES else "band_fixed"
         self.role_mode = role_mode if role_mode in ROLE_MODES else "unison"
         self.senders = [BulbSender(c, min_dwell_ms) for c in controllers]
         self.ctxs = [_new_ctx(sensitivity, monochrome_hue) for _ in controllers]
+        self.tempo = TempoTracker(beat_sensitivity=beat_sensitivity)
         self._stop = threading.Event()
         self._thread = None
         self._error = None
@@ -542,6 +984,7 @@ class GroupAudioSession:
             "bulb_count": len(self.controllers),
             "bulbs": [{"bands": ctx["latest_bands"], "sender": s.status()}
                       for ctx, s in zip(self.ctxs, self.senders)],
+            "tempo": self.tempo.status(),
             "error": self._error,
         }
 
@@ -565,6 +1008,7 @@ class GroupAudioSession:
         rms_check = float(np.sqrt(np.mean(np.square(samples))))
         if rms_check > 0.0008:
             self._last_audio_at = now
+        self.tempo.update(rms_check)
 
         if self.role_mode == "band_split":
             bands = analyze_frame(samples, band_edges=log_band_edges(max(3, n)))
@@ -596,12 +1040,14 @@ _sessions_lock = threading.Lock()
 
 
 def start_session(controller, device_index, mode="band_fixed", sensitivity=1.0,
-                   monochrome_hue=280.0, n_bands=3, min_dwell_ms=DEFAULT_MIN_DWELL_MS):
+                   monochrome_hue=280.0, n_bands=3, min_dwell_ms=DEFAULT_MIN_DWELL_MS,
+                   beat_sensitivity=DEFAULT_BEAT_SENSITIVITY):
     with _sessions_lock:
         existing = _sessions.get(controller.cfg["id"])
         if existing and existing.is_alive():
             existing.stop()
-        session = AudioSession(controller, device_index, mode, sensitivity, monochrome_hue, n_bands, min_dwell_ms)
+        session = AudioSession(controller, device_index, mode, sensitivity, monochrome_hue, n_bands, min_dwell_ms,
+                                beat_sensitivity)
         _sessions[controller.cfg["id"]] = session
         session.start()
         return session
@@ -624,13 +1070,31 @@ def get_session_status(device_id):
     return session.status()
 
 
+def tap_session_tempo(device_id, timestamp=None):
+    with _sessions_lock:
+        session = _sessions.get(device_id)
+    if not session:
+        return None
+    return session.tempo.tap(timestamp)
+
+
+def set_session_beat_sensitivity(device_id, preset):
+    with _sessions_lock:
+        session = _sessions.get(device_id)
+    if not session:
+        return False
+    return session.tempo.set_sensitivity(preset)
+
+
 def start_group_session(group_id, controllers, device_index, mode="band_fixed", role_mode="unison",
-                         sensitivity=1.0, monochrome_hue=280.0, min_dwell_ms=DEFAULT_MIN_DWELL_MS):
+                         sensitivity=1.0, monochrome_hue=280.0, min_dwell_ms=DEFAULT_MIN_DWELL_MS,
+                         beat_sensitivity=DEFAULT_BEAT_SENSITIVITY):
     with _sessions_lock:
         existing = _group_sessions.get(group_id)
         if existing and existing.is_alive():
             existing.stop()
-        session = GroupAudioSession(controllers, device_index, mode, role_mode, sensitivity, monochrome_hue, min_dwell_ms)
+        session = GroupAudioSession(controllers, device_index, mode, role_mode, sensitivity, monochrome_hue,
+                                     min_dwell_ms, beat_sensitivity)
         _group_sessions[group_id] = session
         session.start()
         return session
@@ -651,3 +1115,19 @@ def get_group_session_status(group_id):
     if not session:
         return {"active": False}
     return session.status()
+
+
+def tap_group_tempo(group_id, timestamp=None):
+    with _sessions_lock:
+        session = _group_sessions.get(group_id)
+    if not session:
+        return None
+    return session.tempo.tap(timestamp)
+
+
+def set_group_beat_sensitivity(group_id, preset):
+    with _sessions_lock:
+        session = _group_sessions.get(group_id)
+    if not session:
+        return False
+    return session.tempo.set_sensitivity(preset)

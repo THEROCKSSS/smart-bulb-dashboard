@@ -146,6 +146,7 @@ class AudioReactiveStartBody(BaseModel):
     monochrome_hue: float = 280.0
     n_bands: int = 3
     min_dwell_ms: int = audio_reactive.DEFAULT_MIN_DWELL_MS
+    beat_sensitivity: str = audio_reactive.DEFAULT_BEAT_SENSITIVITY
 
 
 class GroupAudioReactiveStartBody(BaseModel):
@@ -155,6 +156,39 @@ class GroupAudioReactiveStartBody(BaseModel):
     sensitivity: float = 1.0
     monochrome_hue: float = 280.0
     min_dwell_ms: int = audio_reactive.DEFAULT_MIN_DWELL_MS
+    beat_sensitivity: str = audio_reactive.DEFAULT_BEAT_SENSITIVITY
+
+
+class TapTempoBody(BaseModel):
+    timestamp: float | None = None
+
+
+class BeatSensitivityBody(BaseModel):
+    preset: str
+
+
+class ApplyAudioPresetBody(BaseModel):
+    preset_id: str
+    device_index: int
+
+
+class GroupApplyAudioPresetBody(BaseModel):
+    preset_id: str
+    device_index: int
+    role_mode: str = "unison"
+
+
+class AudioCustomPresetBody(BaseModel):
+    id: str | None = None
+    name: str
+    mode: str
+    sensitivity: float = 1.0
+    min_dwell_ms: int = audio_reactive.DEFAULT_MIN_DWELL_MS
+    n_bands: int = 3
+    monochrome_hue: float = 280.0
+    beat_sensitivity: str = audio_reactive.DEFAULT_BEAT_SENSITIVITY
+    palette: list[str] = []
+    description: str = ""
 
 
 class PinLoginBody(BaseModel):
@@ -498,6 +532,8 @@ def audio_devices():
             "role_modes": audio_reactive.ROLE_MODES,
             "default_min_dwell_ms": audio_reactive.DEFAULT_MIN_DWELL_MS,
             "min_dwell_floor_ms": audio_reactive.MIN_DWELL_FLOOR_MS,
+            "beat_sensitivity_presets": list(audio_reactive.BEAT_SENSITIVITY_PRESETS.keys()),
+            "default_beat_sensitivity": audio_reactive.DEFAULT_BEAT_SENSITIVITY,
         }
     except Exception as e:
         raise HTTPException(500, f"could not list audio devices: {e}")
@@ -510,8 +546,11 @@ def audio_reactive_start(device_id: str, body: AudioReactiveStartBody):
         raise HTTPException(400, f"unknown mode '{body.mode}', expected one of {audio_reactive.MODES}")
     if body.min_dwell_ms < audio_reactive.MIN_DWELL_FLOOR_MS:
         raise HTTPException(400, f"min_dwell_ms below the safety floor of {audio_reactive.MIN_DWELL_FLOOR_MS}ms")
+    if body.beat_sensitivity not in audio_reactive.BEAT_SENSITIVITY_PRESETS:
+        raise HTTPException(400, f"unknown beat_sensitivity '{body.beat_sensitivity}', "
+                                  f"expected one of {list(audio_reactive.BEAT_SENSITIVITY_PRESETS)}")
     audio_reactive.start_session(c, body.device_index, body.mode, body.sensitivity,
-                                  body.monochrome_hue, body.n_bands, body.min_dwell_ms)
+                                  body.monochrome_hue, body.n_bands, body.min_dwell_ms, body.beat_sensitivity)
     return {"ok": True, "mode": body.mode, "device_index": body.device_index}
 
 
@@ -519,6 +558,84 @@ def audio_reactive_start(device_id: str, body: AudioReactiveStartBody):
 def audio_reactive_stop(device_id: str):
     audio_reactive.stop_session(device_id)
     return {"ok": True}
+
+
+@app.post("/api/devices/{device_id}/audio-reactive/tap-tempo")
+def audio_reactive_tap_tempo(device_id: str, body: TapTempoBody = TapTempoBody()):
+    tap_bpm = audio_reactive.tap_session_tempo(device_id, body.timestamp)
+    if tap_bpm is None and not audio_reactive.get_session_status(device_id).get("active"):
+        raise HTTPException(404, "no active audio-reactive session for this device")
+    return {"tap_bpm": tap_bpm}
+
+
+@app.post("/api/devices/{device_id}/audio-reactive/beat-sensitivity")
+def audio_reactive_beat_sensitivity(device_id: str, body: BeatSensitivityBody):
+    if body.preset not in audio_reactive.BEAT_SENSITIVITY_PRESETS:
+        raise HTTPException(400, f"unknown beat_sensitivity preset '{body.preset}', "
+                                  f"expected one of {list(audio_reactive.BEAT_SENSITIVITY_PRESETS)}")
+    if not audio_reactive.set_session_beat_sensitivity(device_id, body.preset):
+        raise HTTPException(404, "no active audio-reactive session for this device")
+    return {"ok": True, "beat_sensitivity": body.preset}
+
+
+@app.post("/api/devices/{device_id}/audio-reactive/apply-preset")
+def audio_reactive_apply_preset(device_id: str, body: ApplyAudioPresetBody):
+    c = get_controller_or_404(device_id)
+    preset = audio_reactive.find_genre_preset(body.preset_id)
+    if not preset:
+        cfg = cfgmod.load_config()
+        preset = next((p for p in cfg.get("audio_custom_presets", []) if p["id"] == body.preset_id), None)
+    if not preset:
+        raise HTTPException(404, f"preset '{body.preset_id}' not found")
+    audio_reactive.start_session(c, body.device_index, preset["mode"], preset["sensitivity"],
+                                  preset["monochrome_hue"], preset["n_bands"], preset["min_dwell_ms"],
+                                  preset["beat_sensitivity"])
+    return {"ok": True, "preset_id": preset["id"], "mode": preset["mode"]}
+
+
+# ----------------------------------------------------------- audio presets -
+@app.get("/api/audio/presets")
+def audio_presets():
+    cfg = cfgmod.load_config()
+    builtins = [{**p, "custom": False} for p in audio_reactive.AUDIO_GENRE_PRESETS]
+    custom = cfg.get("audio_custom_presets", [])
+    return {"presets": builtins + custom}
+
+
+@app.post("/api/audio/presets/custom")
+def audio_presets_save_custom(body: AudioCustomPresetBody):
+    try:
+        preset = audio_reactive.build_custom_preset(
+            body.name, body.mode, body.sensitivity, body.min_dwell_ms, body.n_bands,
+            body.monochrome_hue, body.beat_sensitivity, body.palette, body.description, body.id,
+        )
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    cfg = cfgmod.load_config()
+    custom = [p for p in cfg.get("audio_custom_presets", []) if p["id"] != preset["id"]]
+    custom.append(preset)
+    cfg["audio_custom_presets"] = custom
+    cfgmod.save_config(cfg)
+    return {"ok": True, "preset": preset}
+
+
+@app.delete("/api/audio/presets/custom/{preset_id}")
+def audio_presets_delete_custom(preset_id: str):
+    cfg = cfgmod.load_config()
+    custom = cfg.get("audio_custom_presets", [])
+    remaining = [p for p in custom if p["id"] != preset_id]
+    if len(remaining) == len(custom):
+        raise HTTPException(404, "custom preset not found")
+    cfg["audio_custom_presets"] = remaining
+    cfgmod.save_config(cfg)
+    return {"ok": True}
+
+
+@app.get("/api/audio/presets/suggest")
+def audio_presets_suggest(bpm: float):
+    preset_id = audio_reactive.suggest_preset_for_bpm(bpm)
+    preset = audio_reactive.find_genre_preset(preset_id) if preset_id else None
+    return {"bpm": bpm, "suggested_preset_id": preset_id, "preset": preset}
 
 
 # --------------------------------------------------- audio-reactive groups -
@@ -532,12 +649,16 @@ def group_audio_reactive_start(group_id: str, body: GroupAudioReactiveStartBody)
         raise HTTPException(400, f"unknown mode '{body.mode}', expected one of {audio_reactive.MODES}")
     if body.role_mode not in audio_reactive.ROLE_MODES:
         raise HTTPException(400, f"unknown role_mode '{body.role_mode}', expected one of {audio_reactive.ROLE_MODES}")
+    if body.beat_sensitivity not in audio_reactive.BEAT_SENSITIVITY_PRESETS:
+        raise HTTPException(400, f"unknown beat_sensitivity '{body.beat_sensitivity}', "
+                                  f"expected one of {list(audio_reactive.BEAT_SENSITIVITY_PRESETS)}")
     controllers = [bm.get_controller(d) for d in group["device_ids"]]
     controllers = [c for c in controllers if c is not None]
     if not controllers:
         raise HTTPException(400, "group has no resolvable devices")
     audio_reactive.start_group_session(group_id, controllers, body.device_index, body.mode,
-                                        body.role_mode, body.sensitivity, body.monochrome_hue, body.min_dwell_ms)
+                                        body.role_mode, body.sensitivity, body.monochrome_hue, body.min_dwell_ms,
+                                        body.beat_sensitivity)
     return {"ok": True, "mode": body.mode, "role_mode": body.role_mode, "bulb_count": len(controllers)}
 
 
@@ -545,6 +666,43 @@ def group_audio_reactive_start(group_id: str, body: GroupAudioReactiveStartBody)
 def group_audio_reactive_stop(group_id: str):
     audio_reactive.stop_group_session(group_id)
     return {"ok": True}
+
+
+@app.post("/api/groups/{group_id}/audio-reactive/tap-tempo")
+def group_audio_reactive_tap_tempo(group_id: str, body: TapTempoBody = TapTempoBody()):
+    tap_bpm = audio_reactive.tap_group_tempo(group_id, body.timestamp)
+    return {"tap_bpm": tap_bpm}
+
+
+@app.post("/api/groups/{group_id}/audio-reactive/beat-sensitivity")
+def group_audio_reactive_beat_sensitivity(group_id: str, body: BeatSensitivityBody):
+    if body.preset not in audio_reactive.BEAT_SENSITIVITY_PRESETS:
+        raise HTTPException(400, f"unknown beat_sensitivity preset '{body.preset}', "
+                                  f"expected one of {list(audio_reactive.BEAT_SENSITIVITY_PRESETS)}")
+    if not audio_reactive.set_group_beat_sensitivity(group_id, body.preset):
+        raise HTTPException(404, "no active audio-reactive session for this group")
+    return {"ok": True, "beat_sensitivity": body.preset}
+
+
+@app.post("/api/groups/{group_id}/audio-reactive/apply-preset")
+def group_audio_reactive_apply_preset(group_id: str, body: GroupApplyAudioPresetBody):
+    cfg = cfgmod.load_config()
+    group = next((g for g in cfg.get("groups", []) if g["id"] == group_id), None)
+    if not group:
+        raise HTTPException(404, "group not found")
+    preset = audio_reactive.find_genre_preset(body.preset_id)
+    if not preset:
+        preset = next((p for p in cfg.get("audio_custom_presets", []) if p["id"] == body.preset_id), None)
+    if not preset:
+        raise HTTPException(404, f"preset '{body.preset_id}' not found")
+    controllers = [bm.get_controller(d) for d in group["device_ids"]]
+    controllers = [c for c in controllers if c is not None]
+    if not controllers:
+        raise HTTPException(400, "group has no resolvable devices")
+    audio_reactive.start_group_session(group_id, controllers, body.device_index, preset["mode"], body.role_mode,
+                                        preset["sensitivity"], preset["monochrome_hue"], preset["min_dwell_ms"],
+                                        preset["beat_sensitivity"])
+    return {"ok": True, "preset_id": preset["id"], "mode": preset["mode"], "role_mode": body.role_mode}
 
 
 @app.get("/api/groups/{group_id}/audio-reactive/status")
