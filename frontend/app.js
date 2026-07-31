@@ -218,6 +218,19 @@ const LEGACY_ROUTES = {
 
 const DEFAULT_ROUTE = "light/control";
 
+// Does a stored "page/sub" (or a legacy single-panel name) still resolve to a
+// real page? Used to validate the remembered route before restoring it, so a
+// route saved by an older build can't send boot somewhere that no longer exists.
+function routeExists(key) {
+  if (!key) return false;
+  if (LEGACY_ROUTES[key]) return true;
+  const [pageId, subId] = String(key).split("/");
+  const page = PAGES[pageId];
+  if (!page) return false;
+  if (page.merged) return !subId;
+  return !subId || page.tabs.some(t => t.id === subId);
+}
+
 // Returns { page, sub, key } — `key` is the canonical "page/sub" string used
 // for localStorage and nav highlighting.
 function currentRoute() {
@@ -2007,8 +2020,15 @@ async function bootDashboard() {
   await loadDevices();
   startPolling();
   if (!location.hash) {
+    // `ROUTES` was the pre-consolidation one-panel-per-tab map and no longer
+    // exists; referencing it here threw a ReferenceError that aborted boot
+    // before router() ran, leaving a completely blank dashboard. It only fired
+    // for a *returning* visitor — with an empty localStorage `savedRoute` is
+    // falsy and `&&` short-circuits before touching the missing global, which
+    // is why a first visit looked fine and this survived review.
+    // routeExists() validates against the current PAGES map instead.
     const savedRoute = lsGet(LS_KEY_ROUTE);
-    location.hash = "#/" + (savedRoute && ROUTES[savedRoute] ? savedRoute : "control");
+    location.hash = "#/" + (savedRoute && routeExists(savedRoute) ? savedRoute : DEFAULT_ROUTE);
   }
   router();
 }
