@@ -154,7 +154,7 @@ Gaming
 149. `GET /api/analytics/usage` — real per-device on-time for a given period, derived from logged history (no fabricated wattage — this bulb has no real power-draw data)
 
 ## Developer tooling (1)
-150. A real backend pytest suite (76 tests: 54 backend + 22 CLI), mocked Tuya hardware layer — no test touches real hardware or `config.json`
+150. A real pytest suite (453 tests: 431 backend + 22 CLI), mocked Tuya hardware layer — no test touches real hardware or `config.json`
 
 ## Dashboard UX additions — v0.3.0 (9)
 151. Sleep-timer countdown ticks live, client-side, every second — no more refresh-to-see
@@ -167,13 +167,27 @@ Gaming
 158. Rounder, softer visual pass — 8px → 12px corner radius, real card elevation, smoother hover states
 159. Real mobile-friendliness fix — the sidebar was collapsing to a ~16px sliver on phones (an unreset grid-column span), plus 44px minimum tap targets throughout
 
+## PIN gate hardening & API rate limiting — Week 2 Phase A (11)
+160. Configurable lockout threshold and duration (`POST /api/system/remote-auth/lockout-policy`, and in Settings) instead of a hardcoded 5 attempts / 5 minutes
+161. Exponential lockout backoff — each repeat lockout for the same source doubles the wait up to a capped ceiling, with escalation decaying after a quiet period
+162. Enforced PIN complexity — refuses short PINs, well-known PINs, this project's own dev/test PINs, repeated characters, sequences and padded patterns, with a live strength meter in Settings (`POST /api/system/remote-auth/pin-strength`)
+163. Guest PINs — up to 5 additional PINs opening the same gate, each revocable on its own; revoking one signs out only the sessions it opened
+164. Household PIN change that revokes every existing session, rotates the signing key, and reissues the caller's own cookie in the same response
+165. Session TTL configurable from the API and the Settings UI, with bounds checking
+166. IPv6-correct per-IP tracking — /64-prefix keying plus normalization across compressed/expanded/bracketed/scope-id/IPv4-mapped spellings, shared by the lockout and the rate limiter
+167. General per-IP API rate limiting on the public HTTP surface, independent of the auth lockout, with per-endpoint tiers (poll / read / write / expensive)
+168. `429` responses carrying a real `Retry-After` header
+169. Loopback and LAN clients exempt from the general limiter by default, toggleable at runtime or by env var
+170. Rate-limit and auth metrics in the Diagnostics panel (`GET /api/system/diagnostics/rate-limit`) — requests counted/rejected, busiest clients in the live window, lockouts triggered, IPs locked out right now
+
 ---
 
-**Total: 159 working features**, verified end-to-end against a real Bytech
+**Total: 170 working features**, verified end-to-end against a real Bytech
 A19 Wi-Fi RGB+CCT bulb (Tuya protocol v3.5) and this machine's real audio
 devices (VoiceMeeter + physical microphone) — see the verification log in
 `HANDOFF.md`, and `iterations/001` through `iterations/004` for each new
-feature area's actual test results, including five real bugs found and
+feature area's actual test results, including six real bugs found and
 fixed across these rounds of testing (an IP-change log field bug, a
 brightness-floor bug, the audio/bulb-I/O blocking bug, a circular hue
-smoothing bug, and a root-page auth lockout bug).
+smoothing bug, a root-page auth lockout bug, and a non-ASCII session
+cookie crashing the signature check into a 500 instead of a 401).

@@ -76,7 +76,22 @@ actually joins the network.
 
 The PIN gate (`docs/remote-access-security.md`, `iterations/004`) is real
 and tested: brute-force lockout, server-verified session expiry, PBKDF2
-PIN hashing. Explicitly **not yet done**:
+PIN hashing.
+
+**Week 2 Phase A** (roadmap section 4, W2-051..070; section 6, W2-101..120)
+added on top of that: a configurable lockout with exponential backoff,
+enforced PIN complexity, household + separately-revocable guest PINs,
+session-token rotation on PIN change, IPv6-correct per-IP tracking, and a
+general per-IP API rate limiter (per-endpoint tiers, 429 + `Retry-After`,
+LAN/loopback exempt by default, metrics in Diagnostics). Still open in those
+sections: email/webhook notification on repeated failures (W2-053), PIN
+rotation reminders (W2-055), "remember this device" long-lived tokens
+(W2-058), TOTP 2FA (W2-059), reverse-proxy `X-Forwarded-For` handling
+(W2-112 — needs a real proxy in front to test against), IP
+allow/denylists and temporary ban escalation (W2-107/108), a persisted
+rate-limit store (W2-116), and the load-testing items (W2-118).
+
+Explicitly **not yet done**:
 
 - **A dedicated adversarial security test** — a separate agent actually
   attacking a real, exposed (DuckDNS + port forward) instance from the

@@ -41,15 +41,55 @@ curl http://localhost:8500/api/auth/status   # {"enabled": bool, "authenticated"
 curl -X POST http://localhost:8500/api/system/remote-auth/disable
 ```
 
+### Guest PINs, PIN change, policy
+```bash
+# Grade a PIN before committing to it (Settings shows this live as you type)
+curl -X POST http://localhost:8500/api/system/remote-auth/pin-strength \
+  -H "Content-Type: application/json" -d '{"pin": "<candidate>"}'
+
+# Guest PIN: same access, separately revocable (max 5 active)
+curl -b cookies.txt -X POST http://localhost:8500/api/system/remote-auth/pins \
+  -H "Content-Type: application/json" \
+  -d '{"pin": "<guest pin>", "label": "Dog sitter", "expires_in_s": 604800}'
+curl -b cookies.txt -X DELETE http://localhost:8500/api/system/remote-auth/pins/<pin_id>
+
+# Change the household PIN (signs every other device out, reissues your cookie)
+curl -b cookies.txt -c cookies.txt -X POST http://localhost:8500/api/system/remote-auth/pin \
+  -H "Content-Type: application/json" -d '{"pin": "<new pin>"}'
+
+# Session length + lockout policy
+curl -b cookies.txt -X POST http://localhost:8500/api/system/remote-auth/session-ttl \
+  -H "Content-Type: application/json" -d '{"session_ttl_s": 28800}'
+curl -b cookies.txt -X POST http://localhost:8500/api/system/remote-auth/lockout-policy \
+  -H "Content-Type: application/json" -d '{"max_attempts": 5, "base_seconds": 300}'
+```
+
+### Rate limiting
+```bash
+curl http://localhost:8500/api/system/rate-limit
+curl http://localhost:8500/api/system/diagnostics/rate-limit   # also in the Diagnostics panel
+```
+Loopback/LAN is exempt by default, so a local test will show zeros. To see
+the limiter actually work, turn the exemption off first:
+```bash
+curl -X POST http://localhost:8500/api/system/rate-limit \
+  -H "Content-Type: application/json" -d '{"exempt_local": false, "limits": {"read": 2}}'
+# third GET in the same minute -> 429 with a Retry-After header
+```
+
 ## Pitfalls
 
 1. **Don't leave a test/default PIN active** (`test1234`, `1234`, etc. were
-   used during this project's own testing — see `iterations/004`). Rotate
-   to a real PIN before actually exposing anything.
-2. **5 wrong attempts from one client locks that IP out for 5 minutes —
-   including the correct PIN afterward.** This is intentional (a lockout
-   that only blocks wrong guesses isn't a real lockout) — don't "fix" this
-   by allowing correct PINs through during lockout, that defeats the point.
+   used during this project's own testing — see `iterations/004`). The gate
+   now refuses these outright, along with anything under 6 characters,
+   sequences, and repeated patterns. There is no override flag; if you're
+   tempted to add one, that's the exact failure mode it exists to prevent.
+2. **5 wrong attempts from one client locks that IP out — including the
+   correct PIN afterward — and repeat lockouts double the wait.** This is
+   intentional (a lockout that only blocks wrong guesses isn't a real
+   lockout) — don't "fix" this by allowing correct PINs through during
+   lockout, that defeats the point. Threshold and durations are configurable
+   via `/api/system/remote-auth/lockout-policy` if 5/5min is wrong for you.
 3. **This is plaintext HTTP, not HTTPS**, once forwarded publicly. The PIN
    and session cookie are both visible to anything positioned on that
    traffic path. Don't treat the PIN gate as sufficient on its own for a
@@ -59,7 +99,16 @@ curl -X POST http://localhost:8500/api/system/remote-auth/disable
    couldn't load, a total lockout). If modifying `remote_auth.py`, don't
    remove `/` from the open list without understanding why it's there.
 5. **In-memory lockout state resets on backend restart.** Don't rely on it
-   surviving a restart as a permanent record of who's locked out.
+   surviving a restart as a permanent record of who's locked out. The same
+   is true of the general API rate limiter's counters *and* its runtime
+   config — env vars (`SBD_RATE_LIMIT_*`) are the durable way to change a
+   default.
+6. **Never call `api_rate_limit.check()` from anywhere but the HTTP
+   middleware.** The moment it's reachable from service-layer code, the
+   audio engine's internal per-bulb dispatch starts spending a budget meant
+   for external clients and a long lightshow 429s the user's own browser.
+   There's a test (`test_check_is_only_ever_called_from_the_http_middleware`)
+   that fails if a second call site appears.
 
 ## Verification
 After enabling, confirm the gate is actually enforcing, not just reporting

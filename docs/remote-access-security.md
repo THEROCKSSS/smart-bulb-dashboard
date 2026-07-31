@@ -110,15 +110,81 @@ Does:
 - **v0.3.0:** sessions can be listed (`GET /api/auth/sessions`) and revoked
   individually or all at once — a forgotten or compromised session doesn't
   have to just expire on its own.
+- **Week 2:** repeat lockouts for the same source double in length (300s,
+  600s, 1200s … capped at 24h by default), so sustained guessing gets more
+  expensive over time instead of costing a fixed price per batch. A quiet
+  source's escalation decays after 24h so one bad night doesn't brand an
+  address forever. Threshold and durations are configurable
+  (`POST /api/system/remote-auth/lockout-policy`, or Settings).
+- **Week 2:** weak PINs are refused, not warned about — under 6 characters,
+  well-known PINs, this project's own development/test PINs, repeated
+  characters, straight sequences, and short repeated patterns. There is
+  deliberately no override flag; the only thing an override ever gets used
+  for is shipping the dev PIN.
+- **Week 2:** IPv6 sources are tracked by /64 prefix and normalized across
+  spellings (compressed/expanded, bracketed, scope id, IPv4-mapped). Without
+  this, an IPv6 attacker walks out of every lockout for free by picking a
+  new address inside their own allocation — which SLAAC privacy extensions
+  do automatically, without any attacker effort.
+- **Week 2:** changing the PIN revokes every existing session and rotates
+  the signing key, so a cookie issued under the old PIN dies with it.
+- **Week 2:** guest PINs (up to 5) open the same gate and can be revoked
+  individually; revoking one signs out only the sessions it opened.
+- **Week 2:** a general per-IP API rate limit sits in front of everything —
+  see "Rate limiting" below.
 
 Doesn't:
 - Encrypt traffic on its own (see the HTTPS point above) — though Tailscale
   Serve, above, sidesteps this for the tailnet path specifically.
 - Defend against an attacker who can see your network traffic and doesn't
   need to guess the PIN because they can just read it off the wire.
-- Replace a real login/user system — there is exactly one PIN, shared by
-  anyone you give it to. The new audit log gives a trail of *what*
-  happened, not *which person* did it.
+- Replace a real login/user system. Guest PINs are a second *credential*,
+  not a second *account*: a guest has exactly the same powers as the
+  household, just a separately-revocable way in. The audit log records
+  which PIN opened a session, so you can tell "someone using the guest PIN"
+  from "someone using the household PIN" — but not which person that was.
+  Real per-user identity is Week 3's multi-user work.
+- Survive a restart with its lockout/rate-limit state intact. All per-IP
+  tracking is in-memory by design (the same accepted tradeoff since the gate
+  shipped), so restarting the backend clears every active lockout and
+  rate-limit counter. That's fine for a single-household dashboard and a
+  documented limitation, not an oversight — a persisted store is a roadmap
+  item if in-memory ever proves insufficient in practice.
+
+### Rate limiting
+
+Two separate things, easy to confuse:
+
+- **Login lockout / login rate limit** — auth-specific. Counts wrong PINs
+  and raw request volume to `/api/auth/login`.
+- **General API rate limit** — everything else. A per-IP cap on request
+  volume across the whole public HTTP surface, with different allowances by
+  endpoint sensitivity.
+
+**Loopback and LAN clients are exempt by default.** The point of the general
+limiter is unattended public exposure; throttling your own phone on your own
+Wi-Fi would be a bug, not a security win. This is why the Diagnostics
+rate-limit counters usually read zero on a local-only setup.
+
+Recommended defaults:
+
+| Setup | Suggestion |
+|---|---|
+| LAN-only (no port forward, no Tailscale) | Leave everything at defaults. The exemption means the limiter is effectively inert. |
+| Tailscale-only | Leave at defaults. Tailnet addresses (100.64.0.0/10) are private, so they're exempt too. |
+| DuckDNS + port forward | Keep the exemption on (your LAN still shouldn't be throttled) and consider lowering `write` to ~60/min. Watch Diagnostics → Rate limiting for a week before tightening further. |
+| Shared/untrusted LAN | Turn the exemption off (`SBD_RATE_LIMIT_EXEMPT_LOCAL=0`) so local clients are limited too. |
+
+Durable changes go in env vars (`SBD_RATE_LIMIT_READ`, `_WRITE`, `_POLL`,
+`_EXPENSIVE`, `SBD_RATE_LIMIT_EXEMPT_LOCAL`); `POST /api/system/rate-limit`
+is the runtime override and does not survive a restart.
+
+**Not the same as bulb pacing.** `min_dwell_ms` limits how often a *bulb* is
+written to, to protect the hardware and make colour changes visible. API
+rate limiting limits how often a *client* may call the HTTP API. They never
+interact: the audio engine's per-bulb sender dispatches from an in-process
+queue and never enters the HTTP stack, so a lightshow running at dozens of
+updates a second consumes exactly zero of the API budget.
 
 ## Still planned: a dedicated adversarial security-test phase
 

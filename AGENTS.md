@@ -9,12 +9,12 @@ points — this file is deliberately terser and more directive.
 
 A local, cloud-independent dashboard + REST API for controlling Tuya-based
 Wi-Fi smart bulbs. FastAPI backend (`backend/`), vanilla-JS frontend
-(`frontend/`, no build step). 159 working features as of the last count in
+(`frontend/`, no build step). 170 working features as of the last count in
 `FEATURES.md` — audio-reactive lighting (14 modes, multi-bulb
 orchestration), network auto-discovery, scenes/effects/schedules, a
-PIN-gated remote-access path with session management and audit logging,
-a stdlib CLI (`cli/bulbctl.py`), and a real pytest suite (`backend/tests/`,
-`cli/tests/`).
+PIN-gated remote-access path with multi-PIN support, session management,
+audit logging and per-IP rate limiting, a stdlib CLI (`cli/bulbctl.py`),
+and a real pytest suite (`backend/tests/`, `cli/tests/`).
 
 ## Do this first, in order
 
@@ -74,6 +74,12 @@ a stdlib CLI (`cli/bulbctl.py`), and a real pytest suite (`backend/tests/`,
   and had to fall back to synthetic-signal tests or mocked data instead of
   live-hardware verification — that's a legitimate, documented fallback,
   not a shortcut to feel bad about.
+- **The general API rate limiter (`api_rate_limit.check()`) must only ever
+  be called from the HTTP middleware in `main.py`.** Scoping it to the ASGI
+  layer is the only thing keeping the audio-reactive engine's internal
+  per-bulb dispatch out of a budget meant for external clients — call it
+  from service-layer code and a long lightshow starts 429-ing the user's own
+  browser. A test scans the backend source and fails on a second call site.
 - **Local `local_key` values and any real PIN must never end up in a
   commit, a log line, or a doc.** `config.json` and `backend/data/` are
   git-ignored for exactly this reason — check `.gitignore` before adding

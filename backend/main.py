@@ -17,6 +17,7 @@ import audio_presets
 import audio_safety
 import audio_lightshow
 import remote_auth
+import api_rate_limit
 import analytics
 from scenes_presets import PRESET_COLORS, SCENES, EFFECTS
 
@@ -42,6 +43,31 @@ async def pin_gate(request: Request, call_next):
         token = request.cookies.get(remote_auth.SESSION_COOKIE)
         if not remote_auth.verify_session_token(token):
             return JSONResponse({"detail": "authentication required"}, status_code=401)
+    return await call_next(request)
+
+
+# Registered AFTER pin_gate, which in Starlette means it wraps it: user
+# middleware is applied outermost-last-added, so this runs first. That
+# ordering is deliberate -- a flood should be turned away before it can
+# make the gate do PBKDF2 work or touch the state file.
+#
+# This middleware is also the ONLY place api_rate_limit.check() is called,
+# and that's the whole of the W2-111 guarantee: the audio-reactive engine's
+# internal per-bulb dispatch never enters the ASGI stack, so a running
+# lightshow cannot spend a rate-limit budget meant for HTTP clients.
+@app.middleware("http")
+async def api_rate_limiter(request: Request, call_next):
+    ip = request.client.host if request.client else "unknown"
+    allowed, retry_after, tier = api_rate_limit.check(ip, request.method, request.url.path)
+    if not allowed:
+        remote_auth.log_audit_event(
+            "api_rate_limited", "blocked", ip=ip, tier=tier, path=request.url.path,
+        )
+        return JSONResponse(
+            {"detail": f"rate limit exceeded for {tier} requests -- slow down"},
+            status_code=429,
+            headers={"Retry-After": str(int(retry_after) + 1)},
+        )
     return await call_next(request)
 
 
@@ -332,6 +358,36 @@ class LoginRateLimitBody(BaseModel):
     window_s: int
 
 
+class LockoutPolicyBody(BaseModel):
+    max_attempts: int | None = None
+    base_seconds: int | None = None
+    max_seconds: int | None = None
+
+
+class SessionTtlBody(BaseModel):
+    session_ttl_s: int
+
+
+class PinCheckBody(BaseModel):
+    pin: str
+
+
+class PinChangeBody(BaseModel):
+    pin: str
+
+
+class GuestPinBody(BaseModel):
+    pin: str
+    label: str | None = None
+    expires_in_s: int | None = None
+
+
+class ApiRateLimitBody(BaseModel):
+    enabled: bool | None = None
+    exempt_local: bool | None = None
+    limits: dict[str, int] | None = None
+
+
 # --------------------------------------------------------------- system ---
 @app.get("/api/system/health")
 def health():
@@ -349,6 +405,32 @@ def info():
     }
 
 
+@app.get("/api/system/diagnostics/rate-limit")
+def diagnostics_rate_limit():
+    """Live rate-limiting picture for the Diagnostics panel (W2-109): the
+    general per-IP limiter's counters plus the auth side's lockout/login
+    limiter counters, which are separate mechanisms and worth reading
+    together when judging whether something is being attacked. All of it is
+    in-memory and resets with the process."""
+    return {
+        "api": api_rate_limit.metrics(),
+        "auth": remote_auth.auth_metrics(),
+    }
+
+
+@app.get("/api/system/rate-limit")
+def get_api_rate_limit_config():
+    return api_rate_limit.config()
+
+
+@app.post("/api/system/rate-limit")
+def set_api_rate_limit_config(body: ApiRateLimitBody):
+    try:
+        return api_rate_limit.configure(body.enabled, body.exempt_local, body.limits)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+
 # ----------------------------------------------------------- pin auth ---
 @app.post("/api/auth/login")
 def auth_login(body: PinLoginBody, request: Request):
@@ -360,14 +442,23 @@ def auth_login(body: PinLoginBody, request: Request):
         raise HTTPException(429, "too many login attempts -- slow down",
                              headers={"Retry-After": str(int(retry_after) + 1)})
 
-    ok, detail = remote_auth.verify_pin(body.pin, ip)
+    ok, detail, pin_id = remote_auth.verify_pin(body.pin, ip)
     if not ok:
-        event = "login_lockout" if detail and "locked out" in detail else "login_failure"
-        remote_auth.log_audit_event(event, "failure", ip=ip)
+        locked = bool(detail and "locked out" in detail)
+        event = "login_lockout" if locked else "login_failure"
+        # W2-068: the API response already distinguishes these two; carry the
+        # distinction into the audit log so a reviewer can tell a fumbled
+        # PIN apart from a request that never got to try one. Field names
+        # here deliberately avoid the substring "pin" -- the audit log is
+        # asserted to be free of it, which is the cheapest possible check
+        # that no PIN value ever lands in the file.
+        remote_auth.log_audit_event(
+            event, "failure", ip=ip, reason="locked_out" if locked else "wrong_credential",
+        )
         raise HTTPException(401, detail)
 
-    token = remote_auth.create_session_token(ip=ip)
-    remote_auth.log_audit_event("login_success", "success", ip=ip)
+    token = remote_auth.create_session_token(ip=ip, pin_id=pin_id)
+    remote_auth.log_audit_event("login_success", "success", ip=ip, credential_id=pin_id)
     resp = JSONResponse({"ok": True})
     resp.set_cookie(remote_auth.SESSION_COOKIE, token, httponly=True, samesite="lax",
                      max_age=remote_auth.get_session_ttl())
@@ -424,6 +515,84 @@ def remote_auth_set_rate_limit(body: LoginRateLimitBody):
     except ValueError as e:
         raise HTTPException(400, str(e))
     return remote_auth.status()
+
+
+@app.post("/api/system/remote-auth/lockout-policy")
+def remote_auth_set_lockout_policy(body: LockoutPolicyBody):
+    try:
+        return remote_auth.set_lockout_policy(
+            body.max_attempts, body.base_seconds, body.max_seconds,
+        )
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+
+@app.post("/api/system/remote-auth/session-ttl")
+def remote_auth_set_session_ttl(body: SessionTtlBody):
+    try:
+        remote_auth.set_session_ttl(body.session_ttl_s)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    return remote_auth.status()
+
+
+@app.post("/api/system/remote-auth/pin-strength")
+def remote_auth_pin_strength(body: PinCheckBody):
+    """Grade a candidate PIN without committing to it, so the Settings UI can
+    warn before the user clicks Enable. Advisory only -- enable/change apply
+    the same rules server-side and reject regardless of what the UI did."""
+    return remote_auth.assess_pin(body.pin)
+
+
+@app.post("/api/system/remote-auth/pin")
+def remote_auth_change_pin(body: PinChangeBody, request: Request):
+    """Change the household PIN. Every existing session dies with the old
+    PIN (W2-063), including this caller's -- so a fresh cookie is issued in
+    the same response rather than bouncing the user to the login screen for
+    an action they just authenticated for."""
+    try:
+        revoked = remote_auth.change_pin(body.pin)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    ip = request.client.host if request.client else "unknown"
+    remote_auth.log_audit_event("pin_changed", "success", ip=ip, revoked_sessions=revoked)
+    token = remote_auth.create_session_token(ip=ip, pin_id=remote_auth.household_pin_id())
+    resp = JSONResponse({"ok": True, "revoked_sessions": revoked})
+    resp.set_cookie(remote_auth.SESSION_COOKIE, token, httponly=True, samesite="lax",
+                     max_age=remote_auth.get_session_ttl())
+    return resp
+
+
+@app.get("/api/system/remote-auth/pins")
+def remote_auth_list_pins():
+    return {"pins": remote_auth.list_pins()}
+
+
+@app.post("/api/system/remote-auth/pins")
+def remote_auth_add_guest_pin(body: GuestPinBody, request: Request):
+    try:
+        created = remote_auth.add_guest_pin(body.pin, body.label, body.expires_in_s)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    ip = request.client.host if request.client else "unknown"
+    remote_auth.log_audit_event("guest_pin_added", "success", ip=ip, credential_id=created["id"])
+    return created
+
+
+@app.delete("/api/system/remote-auth/pins/{pin_id}")
+def remote_auth_revoke_pin(pin_id: str, request: Request):
+    try:
+        found, sessions = remote_auth.revoke_pin(pin_id)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    ip = request.client.host if request.client else "unknown"
+    remote_auth.log_audit_event(
+        "guest_pin_revoked", "success" if found else "not_found",
+        ip=ip, credential_id=pin_id, revoked_sessions=sessions,
+    )
+    if not found:
+        raise HTTPException(404, "PIN not found")
+    return {"ok": True, "revoked_sessions": sessions}
 
 
 # ------------------------------------------------------- session mgmt ---

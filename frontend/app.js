@@ -1432,6 +1432,16 @@ async function renderDiagnostics(main) {
       <h3>System Info</h3>
       <div id="sys-info">Loading…</div>
     </div>
+    <div class="card">
+      <h3>Rate limiting <span class="tag on">LIVE DATA</span></h3>
+      <p class="panel-subtitle">
+        Per-IP limits on the public API, and the PIN gate's own lockout counters.
+        Two separate mechanisms. Counters are in-memory and reset when the
+        backend restarts. LAN and loopback clients are exempt by default, so
+        these usually read zero on a local-only setup — that's correct, not broken.
+      </p>
+      <div id="rate-limit-info">Loading…</div>
+    </div>
   `;
   main.querySelector("#test-conn").onclick = async () => {
     main.querySelector("#diag-result").innerHTML = "Testing…";
@@ -1464,11 +1474,61 @@ async function renderDiagnostics(main) {
       <tr><td>Scenes</td><td>${info.scenes_count}</td></tr>
       <tr><td>Effects</td><td>${info.effects_count}</td></tr>
     </tbody></table>`;
+
+  const rl = await get("/api/system/diagnostics/rate-limit");
+  const limits = rl.api.config.limits;
+  const busiest = rl.api.current_window_usage;
+  main.querySelector("#rate-limit-info").innerHTML = `
+    <table><tbody>
+      <tr><td>Enforcement</td><td><span class="tag ${rl.api.config.enabled ? "on" : "off"}">${rl.api.config.enabled ? "ON" : "OFF"}</span></td></tr>
+      <tr><td>LAN/loopback exempt</td><td>${rl.api.config.exempt_local ? "yes" : "no"}</td></tr>
+      <tr><td>Per-minute allowance</td><td>poll ${limits.poll} · read ${limits.read} · write ${limits.write} · expensive ${limits.expensive}</td></tr>
+      <tr><td>Requests counted / exempted</td><td>${rl.api.allowed} / ${rl.api.exempt}</td></tr>
+      <tr><td>Requests rejected (429)</td><td><span class="tag ${rl.api.blocked ? "error" : "on"}">${rl.api.blocked}</span></td></tr>
+      <tr><td>Last rejection</td><td>${rl.api.last_blocked_at ? `${new Date(rl.api.last_blocked_at * 1000).toLocaleString()} — <code class="inline">${escHtml(rl.api.last_blocked_path || "")}</code>` : "never"}</td></tr>
+      <tr><td>Failed logins</td><td>${rl.auth.login_failure}</td></tr>
+      <tr><td>PIN lockouts triggered</td><td><span class="tag ${rl.auth.lockouts_triggered ? "error" : "on"}">${rl.auth.lockouts_triggered}</span></td></tr>
+      <tr><td>IPs locked out right now</td><td>${rl.auth.locked_out_now}</td></tr>
+      <tr><td>Login endpoint throttles</td><td>${rl.auth.login_rate_limit_blocks}</td></tr>
+    </tbody></table>
+    ${busiest.length ? `
+      <p class="panel-subtitle" style="margin-top:14px;">Busiest clients in the current 60s window</p>
+      <table>
+        <thead><tr><th>Client / tier</th><th>Requests</th></tr></thead>
+        <tbody>${busiest.map(u => `<tr><td><code class="inline">${escHtml(u.client)}</code></td><td>${u.requests}</td></tr>`).join("")}</tbody>
+      </table>` : `<p class="panel-subtitle" style="margin-top:14px;">No non-exempt clients have made a request in the last 60 seconds.</p>`}
+  `;
+}
+
+// Grades the PIN the user is typing against the backend's own rules, so the
+// Settings form says why a PIN will be refused before the request is sent.
+// Debounced because it fires per keystroke; the server applies the same
+// rules regardless of what this said, so it is advisory only.
+function wirePinStrengthMeter(input, output) {
+  if (!input || !output) return;
+  let timer = null;
+  input.addEventListener("input", () => {
+    const pin = input.value;
+    clearTimeout(timer);
+    if (!pin) { output.innerHTML = ""; return; }
+    timer = setTimeout(async () => {
+      let verdict;
+      try {
+        verdict = await post("/api/system/remote-auth/pin-strength", { pin });
+      } catch (e) { return; }
+      if (input.value !== pin) return;  // typed on while in flight
+      const notes = verdict.issues.length ? verdict.issues : verdict.hints;
+      output.innerHTML =
+        `<span class="tag ${verdict.ok ? "on" : "error"}">${verdict.ok ? verdict.strength.toUpperCase() : "REJECTED"}</span>` +
+        (notes.length ? ` ${escHtml(notes.map(n => (verdict.ok ? n : "PIN " + n)).join("; "))}` : "");
+    }, 250);
+  });
 }
 
 async function renderSettings(main) {
   const disco = await get("/api/system/discovery");
   const remoteAuth = await get("/api/system/remote-auth/status");
+  const guestPins = remoteAuth.enabled ? (await get("/api/system/remote-auth/pins")).pins : [];
 
   main.innerHTML = `
     <h1 class="panel-title">Settings</h1>
@@ -1554,17 +1614,89 @@ async function renderSettings(main) {
       <p class="panel-subtitle">
         Required if you expose this dashboard beyond your LAN (DuckDNS, port
         forwarding, etc.) — see <code class="inline">docs/remote-access-security.md</code>.
-        Local-only setups can safely leave this disabled. Locks out an IP for
-        5 minutes after 5 wrong PIN attempts.
+        Local-only setups can safely leave this disabled. After
+        ${remoteAuth.lockout_max_attempts} wrong attempts an IP is locked out for
+        ${Math.round(remoteAuth.lockout_base_s / 60)} minutes, doubling on each
+        repeat lockout up to ${Math.round(remoteAuth.lockout_max_s / 3600)}h.
       </p>
       ${remoteAuth.enabled ? `
-        <button id="remote-auth-disable" class="danger">Disable PIN Gate</button>
+        <div class="form-grid">
+          <label>Change household PIN<input type="password" id="remote-auth-new-pin" autocomplete="new-password"></label>
+        </div>
+        <p class="panel-subtitle" id="remote-auth-new-pin-strength" style="min-height:20px;"></p>
+        <p class="panel-subtitle">Changing the PIN signs every device out, including this one — you stay signed in here, everything else re-authenticates.</p>
+        <button id="remote-auth-change-pin" class="primary">Change PIN</button>
+        <button id="remote-auth-disable" class="danger" style="margin-left:8px;">Disable PIN Gate</button>
       ` : `
         <div class="form-grid">
-          <label>New PIN (min. 4 characters)<input type="password" id="remote-auth-pin" autocomplete="off"></label>
+          <label>New PIN (6+ characters, not a common or test PIN)<input type="password" id="remote-auth-pin" autocomplete="new-password"></label>
         </div>
+        <p class="panel-subtitle" id="remote-auth-pin-strength" style="min-height:20px;"></p>
         <button id="remote-auth-enable" class="primary" style="margin-top:10px;">Enable PIN Gate</button>
       `}
+    </div>
+
+    ${remoteAuth.enabled ? `
+    <div class="card">
+      <h3>Guest PINs</h3>
+      <p class="panel-subtitle">
+        A second way into the same dashboard that you can take back on its own.
+        Revoking one signs out only the devices that used it — the household PIN
+        and its sessions are untouched. Up to 5 active at a time.
+      </p>
+      ${guestPins.filter(p => p.kind === "guest").length === 0 ? `
+        <p class="panel-subtitle">No guest PINs issued.</p>
+      ` : `
+        <table>
+          <thead><tr><th>Label</th><th>Issued</th><th>Expires</th><th>Last used</th><th></th></tr></thead>
+          <tbody>${guestPins.filter(p => p.kind === "guest").map(p => `
+            <tr>
+              <td>${escHtml(p.label || "Guest")}</td>
+              <td>${p.created_at ? new Date(p.created_at * 1000).toLocaleDateString() : "—"}</td>
+              <td>${p.expires_at ? new Date(p.expires_at * 1000).toLocaleString() : "never"}</td>
+              <td>${p.last_used_at ? new Date(p.last_used_at * 1000).toLocaleString() : "never"}</td>
+              <td><button data-id="${escAttr(p.id)}" class="danger revoke-guest-pin">Revoke</button></td>
+            </tr>`).join("")}
+          </tbody>
+        </table>
+      `}
+      <div class="form-grid" style="margin-top:14px;">
+        <label>Guest PIN<input type="password" id="guest-pin" autocomplete="new-password"></label>
+        <label>Label<input type="text" id="guest-pin-label" placeholder="Dog sitter"></label>
+        <label>Expires after
+          <select id="guest-pin-expiry">
+            <option value="">Never</option>
+            <option value="86400">1 day</option>
+            <option value="604800">1 week</option>
+            <option value="2592000">30 days</option>
+          </select>
+        </label>
+      </div>
+      <p class="panel-subtitle" id="guest-pin-strength" style="min-height:20px;"></p>
+      <button id="add-guest-pin" class="primary">Issue Guest PIN</button>
+    </div>
+    ` : ""}
+
+    <div class="card">
+      <h3>Session &amp; Lockout Policy</h3>
+      <p class="panel-subtitle">
+        Applies to the PIN gate. A shorter session means more PIN prompts but a
+        smaller window for a stolen cookie. Changing the session length affects
+        new sign-ins only — use Sign Out All Devices to cut existing ones short.
+      </p>
+      <div class="form-grid">
+        <label>Session length
+          <select id="session-ttl">
+            ${[["3600", "1 hour"], ["28800", "8 hours"], ["86400", "1 day"], ["604800", "1 week"], ["2592000", "30 days"]].map(([v, l]) =>
+              `<option value="${v}" ${String(remoteAuth.session_ttl_s) === v ? "selected" : ""}>${l}</option>`).join("")}
+          </select>
+        </label>
+        <label>Wrong attempts before lockout<input type="number" id="lockout-attempts" min="1" value="${remoteAuth.lockout_max_attempts}"></label>
+        <label>First lockout (seconds)<input type="number" id="lockout-base" min="1" value="${remoteAuth.lockout_base_s}"></label>
+        <label>Longest lockout (seconds)<input type="number" id="lockout-max" min="1" value="${remoteAuth.lockout_max_s}"></label>
+      </div>
+      <button id="save-lockout-policy" class="primary" style="margin-top:10px;">Save Policy</button>
+      <button id="revoke-all-sessions" class="danger" style="margin-left:8px;">Sign Out All Devices</button>
     </div>
   `;
 
@@ -1639,11 +1771,20 @@ async function renderSettings(main) {
     };
   });
 
+  wirePinStrengthMeter(
+    main.querySelector("#remote-auth-pin"), main.querySelector("#remote-auth-pin-strength"));
+  wirePinStrengthMeter(
+    main.querySelector("#remote-auth-new-pin"), main.querySelector("#remote-auth-new-pin-strength"));
+  wirePinStrengthMeter(
+    main.querySelector("#guest-pin"), main.querySelector("#guest-pin-strength"));
+
   const enableBtn = main.querySelector("#remote-auth-enable");
   if (enableBtn) {
     enableBtn.onclick = async () => {
       const pin = main.querySelector("#remote-auth-pin").value;
-      if (pin.length < 4) { toast("PIN must be at least 4 characters", "error"); return; }
+      // The server enforces the real rules; this only avoids a pointless
+      // round-trip on an obviously-empty field.
+      if (!pin) { toast("Enter a PIN first", "error"); return; }
       await post("/api/system/remote-auth/enable", { pin });
       toast("PIN gate enabled — you'll need it on your next visit", "success");
       renderSettings(main);
@@ -1657,6 +1798,61 @@ async function renderSettings(main) {
       renderSettings(main);
     };
   }
+
+  const changePinBtn = main.querySelector("#remote-auth-change-pin");
+  if (changePinBtn) {
+    changePinBtn.onclick = async () => {
+      const pin = main.querySelector("#remote-auth-new-pin").value;
+      if (!pin) { toast("Enter a new PIN first", "error"); return; }
+      const result = await post("/api/system/remote-auth/pin", { pin });
+      toast(`PIN changed — ${result.revoked_sessions} other session(s) signed out`, "success");
+      renderSettings(main);
+    };
+  }
+
+  const addGuestBtn = main.querySelector("#add-guest-pin");
+  if (addGuestBtn) {
+    addGuestBtn.onclick = async () => {
+      const pin = main.querySelector("#guest-pin").value;
+      if (!pin) { toast("Enter a guest PIN first", "error"); return; }
+      const expiry = main.querySelector("#guest-pin-expiry").value;
+      await post("/api/system/remote-auth/pins", {
+        pin,
+        label: main.querySelector("#guest-pin-label").value.trim() || null,
+        expires_in_s: expiry ? parseInt(expiry, 10) : null,
+      });
+      toast("Guest PIN issued", "success");
+      renderSettings(main);
+    };
+  }
+
+  main.querySelectorAll(".revoke-guest-pin").forEach(b => {
+    b.onclick = async () => {
+      const result = await del(`/api/system/remote-auth/pins/${b.dataset.id}`);
+      toast(`Guest PIN revoked — ${result.revoked_sessions} session(s) signed out`);
+      renderSettings(main);
+    };
+  });
+
+  main.querySelector("#session-ttl").onchange = async (e) => {
+    await post("/api/system/remote-auth/session-ttl", { session_ttl_s: parseInt(e.target.value, 10) });
+    toast("Session length updated — applies to new sign-ins", "success");
+  };
+
+  main.querySelector("#save-lockout-policy").onclick = async () => {
+    await post("/api/system/remote-auth/lockout-policy", {
+      max_attempts: parseInt(main.querySelector("#lockout-attempts").value, 10),
+      base_seconds: parseInt(main.querySelector("#lockout-base").value, 10),
+      max_seconds: parseInt(main.querySelector("#lockout-max").value, 10),
+    });
+    toast("Lockout policy saved", "success");
+    renderSettings(main);
+  };
+
+  main.querySelector("#revoke-all-sessions").onclick = async () => {
+    const result = await post("/api/auth/sessions/revoke-all");
+    toast(`${result.revoked} session(s) signed out — every device must re-enter the PIN`, "success");
+  };
 }
 
 // ------------------------------------------------ always-visible control --

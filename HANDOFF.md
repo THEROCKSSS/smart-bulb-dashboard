@@ -410,6 +410,71 @@ suite stayed green (353/353) throughout.
   yet, pending Owen's input on whether it's worth it.
 - PR #68 has not been merged to `master`.
 
+## Round 6 — Week 2 Phase A: PIN gate hardening + API rate limiting (issue #69)
+
+### Current state
+
+Built in an isolated worktree branched from `master`. **431/431 backend
+tests pass** (353 before this round), 22/22 CLI tests unchanged. Verified
+against a real `uvicorn` server on `127.0.0.1:8577` over real HTTP, not just
+the test client — full transcript in
+`iterations/005-pin-hardening-and-rate-limiting/README.md`.
+
+### What was done
+
+Covers `roadmap/week-2-remote-access-and-security.md` section 4
+(W2-051..070) and section 6 (W2-101..120):
+
+- **Lockout is configurable and escalates.** Threshold/base/ceiling live in
+  persisted state with env-var defaults; repeat lockouts for one source
+  double the wait, decaying after a quiet day.
+- **Weak PINs are refused, not warned about** — including this project's own
+  `test1234`-style dev PINs. No override flag, on purpose.
+- **Household + up to 5 guest PINs.** Revoking a guest PIN signs out only
+  the sessions it opened. The household PIN can't be revoked (that would be
+  a self-inflicted lockout); it's changed instead, which revokes every
+  session and rotates the signing key.
+- **New `backend/net_utils.py`** — shared client-IP normalization, so an
+  IPv6 attacker can't walk out of a lockout by picking a new address inside
+  their own /64.
+- **New `backend/api_rate_limit.py`** — per-IP sliding-window limiter with
+  four tiers (poll/read/write/expensive), 429 + `Retry-After`, LAN/loopback
+  exempt by default, metrics in Diagnostics.
+- Settings UI gained a live PIN strength meter, guest-PIN management,
+  session length, lockout policy, and a Sign Out All Devices button;
+  Diagnostics gained a rate-limiting card.
+
+### One real pre-existing bug found and fixed
+
+A session cookie containing any non-ASCII byte produced a **500 instead of a
+401**: `hmac.compare_digest`'s `str` form raises `TypeError` on non-ASCII,
+and Starlette decodes the `Cookie` header as latin-1. Present since the
+session allowlist shipped, in both `verify_session_token()` and
+`get_token_jti()`. Fixed by comparing UTF-8 bytes (`remote_auth._compare`).
+Reproduced against the real app with the old comparison restored before
+fixing — see the iteration entry.
+
+### Watch for
+
+- **`api_rate_limit.check()` must stay callable from the HTTP middleware
+  only.** That single call site is the entire W2-111 guarantee that a
+  running lightshow can't spend an HTTP budget. There's a test that fails if
+  a second call site appears.
+- Rate-limit **config** is in-memory like its counters — `SBD_RATE_LIMIT_*`
+  env vars are the durable path; the API is a runtime override that a
+  restart discards. This is documented but is a plausible surprise.
+
+### What's NOT done
+
+- Anything needing a reverse proxy in front: `X-Forwarded-For` handling
+  (W2-038/W2-112) can't be verified without one, so it wasn't guessed at.
+- Notifications on repeated failures (W2-053/W2-113), PIN rotation reminders
+  (W2-055), "remember this device" (W2-058), TOTP (W2-059), IP
+  allow/denylists and ban escalation (W2-107/108), abuse-pattern detection
+  (W2-105), a persisted rate-limit store (W2-116), load testing (W2-118).
+- The adversarial security-test phase (section 5) is still untouched and
+  still needs a real deployed target.
+
 ## Repo
 
 Pushed to Forgejo: `agentsoul/smart-bulb-dashboard` (see commit log for
