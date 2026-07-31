@@ -29,14 +29,19 @@ a { color: var(--accent); }
 
 .app-shell {
   display: grid;
-  grid-template-columns: 220px 1fr;
+  /* Icon rail · content · always-visible quick control.
+     The rail stays 64px and overlays its expanded width on hover rather than
+     widening the track, so hovering the nav never reflows the page. Quick
+     control sits on the RIGHT specifically so the expanding rail can never
+     cover it — it only ever overlays scrollable content. */
+  grid-template-columns: 64px 1fr 248px;
   grid-template-rows: 56px 1fr;
   height: 100vh;
   width: 100%;
 }
 
 .topbar {
-  grid-column: 1 / 3;
+  grid-column: 1 / 4;
   display: flex;
   align-items: center;
   gap: 16px;
@@ -118,31 +123,179 @@ button:disabled { opacity: 0.45; cursor: not-allowed; }
 button:disabled:hover { transform: none; }
 
 .sidebar {
+  /* Explicit row/column placement for all three shell children. With only some
+     of them explicitly placed, grid auto-placement pushed .main into an
+     implicit THIRD row, which squeezed the 1fr row down to ~32px and clipped
+     both the rail and the quick-control panel. */
+  grid-column: 1;
+  grid-row: 2;
   border-right: 1px solid var(--border);
   background: var(--bg-elevated);
   padding: 12px 8px;
   overflow-y: auto;
+  overflow-x: hidden;
+  /* Overlays the content when expanded instead of widening its grid track, so
+     the page never reflows just because the pointer crossed the rail. */
+  width: 64px;
+  transition: width .16s ease-out;
+  z-index: 20;
+}
+
+.sidebar:hover,
+.sidebar:focus-within {
+  width: 212px;
+  box-shadow: 6px 0 22px rgba(0,0,0,0.45);
 }
 
 .nav-item {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 12px;
   padding: 9px 12px;
   border-radius: var(--radius);
   color: var(--text-dim);
   cursor: pointer;
   font-weight: 500;
-  transition: background-color .15s, color .15s, transform .15s ease-out;
+  transition: background-color .15s, color .15s;
   user-select: none;
+  white-space: nowrap;
+  overflow: hidden;
 }
 
-.nav-item:hover { background: var(--bg-card); color: var(--text); transform: translateX(2px); }
+.nav-ic {
+  flex: 0 0 24px;
+  font-size: 17px;
+  line-height: 1;
+  text-align: center;
+}
+
+/* The label is hidden by clipping, not display:none — it stays in the
+   accessibility tree so the rail is still readable collapsed. */
+.nav-lb {
+  opacity: 0;
+  transition: opacity .16s ease-out;
+}
+
+.sidebar:hover .nav-lb,
+.sidebar:focus-within .nav-lb { opacity: 1; }
+
+.nav-item:hover { background: var(--bg-card); color: var(--text); }
 .nav-item.active { background: rgba(124,156,255,0.14); color: var(--accent); }
 
+/* -------------------------------------------- always-visible quick control */
+.quickctl {
+  grid-column: 3;
+  grid-row: 2;
+  border-left: 1px solid var(--border);
+  background: var(--bg-elevated);
+  padding: 16px 14px;
+  overflow-y: auto;
+}
+
+.quickctl h4 {
+  margin: 0 0 10px;
+  font-size: 11px;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+  font-weight: 600;
+}
+
+.quickctl .qc-device {
+  font-size: 13px;
+  font-weight: 600;
+  margin-bottom: 2px;
+}
+
+.quickctl .qc-power {
+  width: 100%;
+  padding: 14px;
+  font-weight: 700;
+  margin-bottom: 14px;
+}
+
+.quickctl .qc-swatch {
+  height: 42px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  margin-bottom: 14px;
+}
+
+.quickctl .qc-row {
+  display: flex;
+  justify-content: space-between;
+  font-size: 12px;
+  color: var(--text-dim);
+  margin-bottom: 6px;
+}
+
+.quickctl input[type="range"] { width: 100%; }
+
+.quickctl .qc-offline {
+  font-size: 12px;
+  color: var(--text-dim);
+  line-height: 1.5;
+}
+
 .main {
+  grid-column: 2;
+  grid-row: 2;
   overflow-y: auto;
   padding: 24px 28px 60px;
+}
+
+/* Sub-tabs — the second level of nav, used only on pages whose sections are
+   each big enough to deserve their own view. Pages whose sections genuinely
+   fit together (Automation, Rooms) render them stacked instead, with no bar. */
+.subtabs {
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
+  margin: 0 0 20px;
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 10px;
+}
+
+.subtab {
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--radius);
+  color: var(--text-dim);
+  cursor: pointer;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 500;
+  padding: 7px 13px;
+  /* 44px min target so these stay comfortably tappable on a phone, matching
+     the tap-target pass done for the rest of the mobile layout. */
+  min-height: 44px;
+  transition: background-color .15s, color .15s, border-color .15s;
+}
+
+.subtab:hover { background: var(--bg-card); color: var(--text); }
+.subtab.active {
+  background: rgba(124,156,255,0.14);
+  border-color: var(--accent-dim);
+  color: var(--accent);
+}
+
+/* Stacked sections on a merged page, separated by a rule so two panels on one
+   page still read as two distinct things rather than one long scroll. */
+.panel-section + .panel-section {
+  margin-top: 28px;
+  padding-top: 24px;
+  border-top: 1px solid var(--border);
+}
+
+/* Each panel renderer writes its own <h1 class="panel-title">, which is correct
+   when that panel owns the page but too loud when it's one section of a merged
+   page. Demote visually in CSS rather than rewriting the DOM: several of these
+   panels re-render themselves into their own container (renderTimers,
+   renderEffects, ...), which would undo any node swap on every refresh. */
+.panel-section .panel-title {
+  font-size: 15px;
+  color: var(--text);
+  margin-bottom: 2px;
 }
 
 .panel-title {
@@ -404,8 +557,44 @@ code.inline {
 @media (max-width: 800px) {
   .app-shell {
     grid-template-columns: 1fr;
-    grid-template-rows: 56px auto 1fr;
+    /* topbar · nav strip · quick control · content */
+    grid-template-rows: 56px auto auto 1fr;
   }
+
+  /* The rail can't overlay-on-hover on touch (there is no hover), so it
+     becomes a normal full-width horizontal strip with labels always shown. */
+  .sidebar,
+  .sidebar:hover,
+  .sidebar:focus-within {
+    width: auto;
+    box-shadow: none;
+  }
+  .nav-lb,
+  .sidebar:hover .nav-lb { opacity: 1; }
+  /* The desktop rail clips labels so they can fade in behind the 64px edge.
+     In the horizontal mobile strip that clipping truncated every label
+     ("Lig", "Au", "Roo") — the strip scrolls, so let them size naturally. */
+  .nav-item { overflow: visible; flex: 0 0 auto; }
+
+  /* Quick control stops being a column and becomes a compact band above the
+     content — still always visible, without eating horizontal space. */
+  .quickctl {
+    grid-column: 1;
+    border-right: none;
+    border-bottom: 1px solid var(--border);
+    padding: 12px 16px;
+  }
+  .quickctl h4 { display: none; }
+  .quickctl .qc-power { margin-bottom: 10px; }
+  .quickctl .qc-swatch { height: 26px; margin-bottom: 10px; }
+
+  /* Same class of bug as issue #62 below: .main carries `grid-column: 2` on
+     desktop for the three-column shell. Left unreset, a single-column mobile
+     grid fabricates an implicit second track to satisfy it and the layout
+     collapses again. Pin it back to the one real column. */
+  .main { grid-column: 1; grid-row: auto; }
+  .sidebar { grid-row: auto; }
+  .quickctl { grid-row: auto; }
   /* Bug (issue #62): .topbar's desktop `grid-column: 1 / 3` was never reset here.
      With only ONE explicit column on mobile, a request to span "to line 3" makes
      the grid fabricate an implicit second column sized by content (auto), which

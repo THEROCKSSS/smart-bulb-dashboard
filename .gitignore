@@ -28,3 +28,7 @@ graphify-out/
 # Throwaway roadmap-visualization prototype (50 variants) — explicitly local-only,
 # per the prototype skill's own convention. See roadmap/prototypes/README.md.
 roadmap/prototypes/
+
+# Scratch worktrees created by the phase-delegation-loop skill — never meant
+# to land as committed content (or as embedded gitlinks) in the main tree.
+.claude/worktrees/

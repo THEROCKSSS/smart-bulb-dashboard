@@ -318,6 +318,98 @@ tailscale serve --bg --https=8502 http://127.0.0.1:8502    # re-create if missin
   comments unless explicitly asked — this was an explicit standing
   instruction from this session.
 
+## Round 5 — Week 1 roadmap, built via 4 parallel phases (open as PR #68, not yet merged)
+
+### Current state
+
+Working on branch `week1-integration`, pushed to GitHub, open as
+[PR #68](https://github.com/THEROCKSSS/smart-bulb-dashboard/pull/68) —
+**not merged to `master` yet**, pending Owen's own testing. Tracked in
+issues #64–#67 (one per phase). 353/353 backend tests pass. A real backend
+server is running locally against this branch's code:
+`127.0.0.1:8502` (also reachable over the tailnet at
+`https://owens-pc-vpn.tailff2683.ts.net:8502`, PIN `143490`).
+
+### What was done this round
+
+1. **Four roadmap phases, built in parallel** (one subagent each, isolated
+   git worktrees, hub-verified via real `git merge` rather than patch
+   application since all four phases modified the same core classes):
+   - **Phase A** — 6 new audio modes (`energy_contour`, `bass_only_pulse`,
+     `mirror_mode`, `random_walk_hue`, `silence_flash_recover`,
+     `crescendo_ramp`), a `TempoTracker` (BPM autocorrelation, tap-tempo,
+     beat confidence, sensitivity presets), all 8 genre presets.
+   - **Phase B** — `SignalConditioner` (AGC, noise gate, clip detection, DC
+     removal, per-band gain, calibrate-from-silence), full N-band status
+     exposure, a reusable synthetic-audio test harness with golden-value
+     regression tests.
+   - **Phase C** — `wave`/`mirror` group role modes, per-bulb overrides,
+     failover handling, orchestration presets, a Zone data model, and
+     per-device-index sensitivity calibration.
+   - **Phase D** — session conflict detection, max-duration/warmup/
+     auto-pause, socket-timeout + watchdog restart, session presets, a
+     photosensitive-safety flash-rate cap (WCAG 2.3.1), lightshow capture/
+     replay, scheduled audio sessions.
+2. **Merging four phases that all touched the same core classes** required
+   real hand-resolved `git merge`s (not patch application) across ~40
+   conflict blocks total, always combining both sides' intent rather than
+   picking one — full detail is in the git history on `week1-integration`,
+   not repeated here.
+3. **5 real post-merge test failures, found and fixed** (all previously
+   passing in each phase's own isolated worktree, broken only once merged
+   together): a mode-validation check silently dropped during the merge,
+   a rate-limiter's module-level state leaking across tests, 3 test mocks
+   that predated the merged `.confirmation()` contract, plus a genuine
+   naming collision where Phase A's `audio_presets()` route handler
+   shadowed the `audio_presets` module Phase D's routes needed to import.
+4. **3 more real bugs found by actually testing this live** against a real
+   physical bulb (that turned out to be unreachable on the network at
+   the time) — see the "Bugs found via live testing" note below.
+5. **Git hygiene fix**: the merge commit's `git add -A` had accidentally
+   committed the 4 subagent worktree directories as embedded git repos
+   (gitlink entries) — untracked them and added `.claude/worktrees/` to
+   `.gitignore`.
+
+### Bugs found via live testing (not caught by the test suite — it mocks the device layer)
+
+Testing this over Tailscale surfaced a real physical bulb that had gone
+unreachable on the LAN, which exposed three genuine bugs:
+
+1. **An unreachable device hung `/status` for minutes.** Timed directly
+   against the real bulb: **3m26s** before tinytuya gave up, because
+   nothing bounded its socket timeout (default 5s) or retry limit
+   (default 5, and each retry cost noticeably more than that in
+   practice — not a clean `timeout × retries` relationship). Fixed in
+   `bulb_manager.py`'s `_get_device()`: capped at a 2s timeout / 1 retry.
+   Same real device now fails in **~2s**.
+2. **The status badge got stuck reading "connecting…" forever** once a
+   poll never succeeded even once. `renderStatusText()` returned early
+   on `!state.lastStatus`, and `lastStatus` only ever got set on a
+   *successful* poll — so the badge's placeholder text never updated, no
+   matter how many times it polled. Fixed with an explicit
+   `state.hasPolledOnce` flag that's set regardless of outcome.
+3. **The badge and the Control panel briefly showed contradictory
+   labels** ("LIVE DATA · OFF" vs "OFFLINE" for the same device) once fix
+   #2 let `renderControl()`'s existing unconditional status-caching
+   populate `lastStatus` with an `{online: false}` object — the badge
+   logic then read `.power` off it instead of checking `.online`
+   explicitly. Fixed by checking `.online === false` directly.
+
+Verified all three with real timing tests and Playwright screenshots
+against the actual unreachable device, not just unit tests: full backend
+suite stayed green (353/353) throughout.
+
+### What's NOT done (the gap)
+
+- Owen has not yet tested/approved this round — do not start Week 2
+  until he has.
+- A short shared cache/de-dupe layer for concurrent `/status` polls to
+  the same device was flagged as a possible follow-up (an offline device
+  still takes ~9-13s to fully settle across the badge + panel's
+  independent poll calls, each bound by the new ~2s timeout) — not built
+  yet, pending Owen's input on whether it's worth it.
+- PR #68 has not been merged to `master`.
+
 ## Repo
 
 Pushed to Forgejo: `agentsoul/smart-bulb-dashboard` (see commit log for

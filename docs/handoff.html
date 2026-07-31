@@ -75,6 +75,16 @@
     </ul>
     <p>Tailscale Serve was set up and verified end-to-end as the actual off-LAN access path (tailnet-only HTTPS, PIN gate enabled alongside it) — 21/21 live security checks passed.</p>
 
+    <h2>Round 5 — Week 1 roadmap (open as PR #68, not yet merged)</h2>
+    <p>Four roadmap phases built in parallel via isolated subagent worktrees, hub-verified through real hand-resolved <code>git merge</code>s (not patch application, since all four phases touched the same core classes) across roughly 40 conflict blocks: new audio modes + a tempo tracker (Phase A), signal conditioning + a golden-value test harness (Phase B), multi-bulb orchestration + zones (Phase C), and session management + safety/accessibility (Phase D). This is currently open as <a href="https://github.com/THEROCKSSS/smart-bulb-dashboard/pull/68">PR #68</a>, tracked in issues #64–#67, <strong>not yet merged to master</strong> — pending Owen's own testing.</p>
+    <p>5 real post-merge test failures were found and fixed (a dropped mode-validation check, a rate-limiter state leak across tests, stale test mocks, and a route-vs-module naming collision). Live-testing this over Tailscale then surfaced 3 more real bugs, this time via a physical bulb that had gone unreachable on the network:</p>
+    <ul>
+      <li>An unreachable device hung any <code>/status</code> call for minutes — timed at <strong>3m26s</strong> against the real bulb — because tinytuya's socket timeout and retry limit were unbounded. Capped both; same device now fails in <strong>~2s</strong>.</li>
+      <li>The status badge got stuck reading “connecting…” forever once a poll had never succeeded even once — a stale early-return condition that never cleared.</li>
+      <li>The badge and the Control panel briefly showed contradictory labels (“LIVE DATA · OFF” vs “OFFLINE”) for the same offline device, once the first fix exposed a spot where the badge read <code>.power</code> instead of checking <code>.online</code> directly.</li>
+    </ul>
+    <p>All verified with real timing tests and Playwright screenshots against the actual unreachable device — full backend suite stayed green (353/353) throughout.</p>
+
     <h2>Known-fragile / watch for</h2>
     <ul>
       <li>The physical bulb genuinely drops off Wi-Fi periodically — observed multiple times across every build session, unprompted. This is bulb/router behavior, not a dashboard bug.</li>

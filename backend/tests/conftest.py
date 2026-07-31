@@ -121,7 +121,13 @@ class FakeTuyaBulbDevice:
 
 @pytest.fixture
 def fake_config(monkeypatch):
-    state = {"devices": [dict(d) for d in FAKE_DEVICES], "groups": [dict(g) for g in FAKE_GROUPS]}
+    state = {
+        "devices": [dict(d) for d in FAKE_DEVICES],
+        "groups": [dict(g) for g in FAKE_GROUPS],
+        "zones": [],
+        "orchestration_presets": [],
+        "audio_input_calibrations": [],
+    }
 
     def load_config():
         return state
@@ -139,10 +145,97 @@ def fake_config(monkeypatch):
     def delete_device(device_id):
         state["devices"] = [d for d in state["devices"] if d["id"] != device_id]
 
+    # -- zones (Section 7) -- same in-memory-only pattern as devices above,
+    # so no test ever touches the real backend/config.json on disk.
+    def get_zone(zone_id):
+        return next((z for z in state["zones"] if z["id"] == zone_id), None)
+
+    def upsert_zone(zone):
+        for i, z in enumerate(state["zones"]):
+            if z["id"] == zone["id"]:
+                state["zones"][i] = zone
+                return
+        state["zones"].append(zone)
+
+    def delete_zone(zone_id):
+        state["zones"] = [z for z in state["zones"] if z["id"] != zone_id]
+
+    def zone_resolved_device_ids(zone):
+        groups_by_id = {g["id"]: g for g in state["groups"]}
+        seen = []
+        for d in zone.get("device_ids", []):
+            if d not in seen:
+                seen.append(d)
+        for gid in zone.get("group_ids", []):
+            g = groups_by_id.get(gid)
+            if not g:
+                continue
+            for d in g.get("device_ids", []):
+                if d not in seen:
+                    seen.append(d)
+        return seen
+
+    # -- orchestration presets (Section 6) --
+    def list_orchestration_presets():
+        return state["orchestration_presets"]
+
+    def get_orchestration_preset(preset_id):
+        return next((p for p in state["orchestration_presets"] if p["id"] == preset_id), None)
+
+    def upsert_orchestration_preset(preset):
+        for i, p in enumerate(state["orchestration_presets"]):
+            if p["id"] == preset["id"]:
+                state["orchestration_presets"][i] = preset
+                return
+        state["orchestration_presets"].append(preset)
+
+    def delete_orchestration_preset(preset_id):
+        state["orchestration_presets"] = [p for p in state["orchestration_presets"] if p["id"] != preset_id]
+
+    # -- audio input calibration (Section 11) --
+    def list_audio_input_calibrations():
+        return state["audio_input_calibrations"]
+
+    def get_audio_input_calibration(device_index):
+        for c in state["audio_input_calibrations"]:
+            if c["device_index"] == device_index:
+                return c["sensitivity"]
+        return None
+
+    def set_audio_input_calibration(device_index, sensitivity, name=None):
+        for c in state["audio_input_calibrations"]:
+            if c["device_index"] == device_index:
+                c["sensitivity"] = sensitivity
+                if name is not None:
+                    c["name"] = name
+                return c
+        entry = {"device_index": device_index, "sensitivity": sensitivity}
+        if name is not None:
+            entry["name"] = name
+        state["audio_input_calibrations"].append(entry)
+        return entry
+
+    def delete_audio_input_calibration(device_index):
+        state["audio_input_calibrations"] = [
+            c for c in state["audio_input_calibrations"] if c["device_index"] != device_index
+        ]
+
     monkeypatch.setattr(cfgmod, "load_config", load_config)
     monkeypatch.setattr(cfgmod, "get_device", get_device)
     monkeypatch.setattr(cfgmod, "upsert_device", upsert_device)
     monkeypatch.setattr(cfgmod, "delete_device", delete_device)
+    monkeypatch.setattr(cfgmod, "get_zone", get_zone)
+    monkeypatch.setattr(cfgmod, "upsert_zone", upsert_zone)
+    monkeypatch.setattr(cfgmod, "delete_zone", delete_zone)
+    monkeypatch.setattr(cfgmod, "zone_resolved_device_ids", zone_resolved_device_ids)
+    monkeypatch.setattr(cfgmod, "list_orchestration_presets", list_orchestration_presets)
+    monkeypatch.setattr(cfgmod, "get_orchestration_preset", get_orchestration_preset)
+    monkeypatch.setattr(cfgmod, "upsert_orchestration_preset", upsert_orchestration_preset)
+    monkeypatch.setattr(cfgmod, "delete_orchestration_preset", delete_orchestration_preset)
+    monkeypatch.setattr(cfgmod, "list_audio_input_calibrations", list_audio_input_calibrations)
+    monkeypatch.setattr(cfgmod, "get_audio_input_calibration", get_audio_input_calibration)
+    monkeypatch.setattr(cfgmod, "set_audio_input_calibration", set_audio_input_calibration)
+    monkeypatch.setattr(cfgmod, "delete_audio_input_calibration", delete_audio_input_calibration)
     return state
 
 
@@ -153,6 +246,21 @@ def reset_controllers():
     yield
     with bm._controllers_lock:
         bm._controllers.clear()
+
+
+@pytest.fixture(autouse=True)
+def reset_audio_rate_limit():
+    # Real bug, found by actually running the full suite after merging Week 1
+    # Phase D's per-endpoint rate limiter: audio_reactive._rate_limit_hits is
+    # module-level global state, so tests in the same file hitting the same
+    # group/device repeatedly (well within a real 10s window) tripped a 429
+    # that had nothing to do with what that test was actually checking.
+    import audio_reactive as ar_module
+    with ar_module._rate_limit_lock:
+        ar_module._rate_limit_hits.clear()
+    yield
+    with ar_module._rate_limit_lock:
+        ar_module._rate_limit_hits.clear()
 
 
 @pytest.fixture

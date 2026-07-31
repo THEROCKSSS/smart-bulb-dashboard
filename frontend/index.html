@@ -18,19 +18,18 @@
     </div>
   </div>
 
+  <!-- Icon rail: collapsed to glyphs, widens on hover (and on keyboard focus,
+       so it isn't pointer-only). Labels stay in the DOM for screen readers. -->
   <div class="sidebar" id="sidebar">
-    <div class="nav-item" data-route="control">Control</div>
-    <div class="nav-item" data-route="scenes">Scenes</div>
-    <div class="nav-item" data-route="effects">Effects</div>
-    <div class="nav-item" data-route="audio">Audio Reactive</div>
-    <div class="nav-item" data-route="presets">Presets &amp; Favorites</div>
-    <div class="nav-item" data-route="timers">Timers</div>
-    <div class="nav-item" data-route="schedule">Schedule</div>
-    <div class="nav-item" data-route="groups">Groups</div>
-    <div class="nav-item" data-route="history">History</div>
-    <div class="nav-item" data-route="diagnostics">Diagnostics</div>
-    <div class="nav-item" data-route="settings">Settings</div>
+    <div class="nav-item" data-route="light"><span class="nav-ic" aria-hidden="true">◐</span><span class="nav-lb">Light</span></div>
+    <div class="nav-item" data-route="audio"><span class="nav-ic" aria-hidden="true">◎</span><span class="nav-lb">Audio</span></div>
+    <div class="nav-item" data-route="automation"><span class="nav-ic" aria-hidden="true">◷</span><span class="nav-lb">Automation</span></div>
+    <div class="nav-item" data-route="rooms"><span class="nav-ic" aria-hidden="true">▦</span><span class="nav-lb">Rooms</span></div>
+    <div class="nav-item" data-route="system"><span class="nav-ic" aria-hidden="true">⚙</span><span class="nav-lb">System</span></div>
   </div>
+
+  <!-- Always-visible quick control, independent of which page is open. -->
+  <aside class="quickctl" id="quickctl"></aside>
 
   <div class="main" id="main"></div>
 </div>

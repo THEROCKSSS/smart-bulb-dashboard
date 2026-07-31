@@ -12,6 +12,19 @@ import tinytuya
 import config as cfgmod
 from scenes_presets import PRESET_COLORS, SCENES, find_preset, find_scene
 
+# Real bug found while testing Week 1 live: tinytuya's default connection
+# timeout (5s) x its default retry limit (5) meant a bulb that's gone
+# unreachable (powered off, DHCP moved it, wrong local network) hung a
+# status() call for MINUTES instead of seconds -- confirmed by timing it
+# directly against a real unreachable device: 3m26s before this fix, ~2s
+# after. That hang is what left the dashboard stuck on "Loading..."/
+# "connecting..." forever. Also cut the retry limit to 1 -- empirically,
+# each extra retry added several more seconds (not just 2s), likely from
+# ARP/route re-resolution on a truly-unreachable host, so it isn't safe to
+# assume "retries * timeout" bounds the total wait.
+DEFAULT_SOCKET_TIMEOUT_S = 2.0
+DEFAULT_SOCKET_RETRY_LIMIT = 1
+
 DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
 os.makedirs(DATA_DIR, exist_ok=True)
 FAVORITES_PATH = os.path.join(DATA_DIR, "favorites.json")
@@ -66,11 +79,27 @@ class BulbController:
                 version=self.cfg.get("version", 3.3),
             )
             self._dev.set_socketPersistent(True)
+            if hasattr(self._dev, "set_socketTimeout"):
+                self._dev.set_socketTimeout(DEFAULT_SOCKET_TIMEOUT_S)
+            if hasattr(self._dev, "set_socketRetryLimit"):
+                self._dev.set_socketRetryLimit(DEFAULT_SOCKET_RETRY_LIMIT)
         return self._dev
 
     def reset_connection(self):
         with self._device_lock:
             self._dev = None
+
+    def set_socket_timeout(self, seconds):
+        """Used by audio_reactive.BulbSender to apply a short, explicit
+        socket timeout specifically for audio-reactive sends (and restore
+        the normal default when a session stops) — see
+        AUDIO_SEND_SOCKET_TIMEOUT_S in audio_reactive.py for why. Guarded
+        with hasattr since older tinytuya versions (and the pytest fake
+        device) may not implement set_socketTimeout."""
+        with self._device_lock:
+            dev = self._get_device()
+            if hasattr(dev, "set_socketTimeout"):
+                dev.set_socketTimeout(seconds)
 
     # -- history ----------------------------------------------------------
     def _log(self, action, params=None, ok=True, error=None):
@@ -141,12 +170,17 @@ class BulbController:
         st = self.status()
         return self.power(not st.get("power", False))
 
+    def _max_brightness_cap(self):
+        """Per-bulb safety cap (e.g. a bulb near a bed you never want at
+        full 100%). 100 (no cap) when the device config doesn't set one."""
+        return max(1, min(100, self.cfg.get("max_brightness_pct", 100)))
+
     def set_brightness(self, pct):
         """Mode-aware brightness: dp22 (bright_value) only applies in white
         mode. In colour mode the brightness lives in the V component of the
         HSV colour_data (dp24), so writing dp22 there silently flips the
         bulb into white mode instead of just dimming the current color."""
-        pct = max(1, min(100, pct))
+        pct = max(1, min(100, pct, self._max_brightness_cap()))
         gamma = self.cfg.get("gamma", 1.0)
         adjusted = pct ** gamma / (100 ** (gamma - 1)) if gamma != 1.0 else pct
 
@@ -172,6 +206,19 @@ class BulbController:
             return result
 
     def set_hsv(self, h, s_pct, v_pct):
+        """Applies two per-bulb config overrides before ever touching the
+        network:
+          - `hue_calibration_offset`: some bulbs render hue slightly warm/
+            cool of the requested value, so a correction in degrees can be
+            baked in per-bulb (matters most for group audio-reactive modes
+            like `unison`, where every bulb is asked for the same hue and
+            should actually *look* the same).
+          - `max_brightness_pct`: this call bypasses set_brightness (the
+            usual choke point for that cap) since HSV brightness lives in
+            the V component, not dp22 -- so the cap is re-applied here too.
+        """
+        h = (h + self.cfg.get("hue_calibration_offset", 0.0)) % 360
+        v_pct = min(v_pct, self._max_brightness_cap())
         r, g, b = hsv_to_rgb_hue_deg(h, s_pct / 100.0, v_pct / 100.0)
         return self.set_rgb(r, g, b)
 

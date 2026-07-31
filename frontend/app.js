@@ -7,6 +7,7 @@ const state = {
   scenes: [],
   effects: [],
   lastStatus: null,
+  hasPolledOnce: false,
   statusPollHandle: null,
   consecutiveOfflinePolls: 0,
   audioPollHandle: null,
@@ -21,6 +22,10 @@ const state = {
 // so it can be removed the moment another panel is routed to. Kept outside
 // `state` since it's a DOM wiring detail, not app data.
 let controlKeyHandler = null;
+// Pending debounced brightness commit from the Control panel's arrow-key
+// shortcuts. Cleared alongside the listener in router(), so navigating away
+// mid-debounce can't fire a POST against a slider that's no longer mounted.
+let controlKeyCommitTimer = null;
 
 // ------------------------------------------------------------ local storage --
 // Remembers the last device + panel across reloads. Wrapped in try/catch
@@ -119,6 +124,17 @@ function post(path, body) { return api(path, { method: "POST", body: JSON.string
 function patch(path, body) { return api(path, { method: "PATCH", body: JSON.stringify(body || {}) }); }
 function del(path) { return api(path, { method: "DELETE" }); }
 
+// Zone names, session-preset names and device names are user-supplied and get
+// interpolated into innerHTML, so escape them. `escAttr` additionally escapes
+// quotes because those values also land inside data-* attributes.
+function escHtml(s) {
+  return String(s == null ? "" : s)
+    .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+function escAttr(s) {
+  return escHtml(s).replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+}
+
 function rgbToHex(r, g, b) {
   return "#" + [r, g, b].map(v => Math.max(0, Math.min(255, Math.round(v))).toString(16).padStart(2, "0")).join("");
 }
@@ -145,31 +161,89 @@ function el(html) {
 }
 
 // -------------------------------------------------------------- routing --
-const ROUTES = {
-  control: renderControl,
-  scenes: renderScenes,
-  effects: renderEffects,
-  audio: renderAudio,
-  presets: renderPresets,
-  timers: renderTimers,
-  schedule: renderSchedule,
-  groups: renderGroups,
-  history: renderHistory,
-  diagnostics: renderDiagnostics,
-  settings: renderSettings,
+// Five top-level pages instead of eleven sidebar entries. Two shapes here,
+// deliberately:
+//   - `tabs`   : the page's sections are each large enough to deserve their own
+//                view, so they get an in-page sub-tab bar (and their own
+//                bookmarkable `#/page/sub` hash).
+//   - `merged` : the sections are small enough to genuinely live on ONE
+//                scrolling page, stacked. No sub-tabs at all.
+// Scenes+Effects and Timers+Schedule were the specific merges asked for; both
+// are pairs that answer the same user question, so splitting them was noise.
+const PAGES = {
+  light: {
+    label: "Light",
+    tabs: [
+      { id: "control", label: "Control", render: renderControl },
+      { id: "looks", label: "Scenes & Effects", render: renderLooks },
+      { id: "presets", label: "Presets & Favorites", render: renderPresets },
+    ],
+  },
+  audio: {
+    label: "Audio",
+    tabs: [
+      { id: "session", label: "Live Session", render: renderAudio },
+      { id: "presets", label: "Session Presets", render: renderSessionPresets },
+    ],
+  },
+  automation: { label: "Automation", merged: renderAutomation },
+  rooms: { label: "Rooms", merged: renderRooms },
+  system: {
+    label: "System",
+    tabs: [
+      { id: "history", label: "History", render: renderHistory },
+      { id: "diagnostics", label: "Diagnostics", render: renderDiagnostics },
+      { id: "settings", label: "Settings", render: renderSettings },
+    ],
+  },
 };
 
+// Old one-tab-per-panel hashes still work — bookmarks, the remembered
+// last-route in localStorage, and any link written before the consolidation
+// all resolve to wherever that panel lives now.
+const LEGACY_ROUTES = {
+  control: "light/control",
+  scenes: "light/looks",
+  effects: "light/looks",
+  presets: "light/presets",
+  audio: "audio/session",
+  timers: "automation",
+  schedule: "automation",
+  groups: "rooms",
+  zones: "rooms",
+  history: "system/history",
+  diagnostics: "system/diagnostics",
+  settings: "system/settings",
+};
+
+const DEFAULT_ROUTE = "light/control";
+
+// Returns { page, sub, key } — `key` is the canonical "page/sub" string used
+// for localStorage and nav highlighting.
 function currentRoute() {
-  const hash = location.hash.replace(/^#\/?/, "");
-  return ROUTES[hash] ? hash : "control";
+  let hash = location.hash.replace(/^#\/?/, "");
+  if (LEGACY_ROUTES[hash]) hash = LEGACY_ROUTES[hash];
+  const [pageId, subId] = hash.split("/");
+  const page = PAGES[pageId];
+  if (!page) {
+    const [dp, ds] = DEFAULT_ROUTE.split("/");
+    return { page: dp, sub: ds, key: DEFAULT_ROUTE };
+  }
+  if (page.merged) return { page: pageId, sub: null, key: pageId };
+  const tab = page.tabs.find(t => t.id === subId) || page.tabs[0];
+  return { page: pageId, sub: tab.id, key: pageId + "/" + tab.id };
 }
 
 async function router() {
   const route = currentRoute();
-  lsSet(LS_KEY_ROUTE, route);
+  lsSet(LS_KEY_ROUTE, route.key);
   if (controlKeyHandler) {
     document.removeEventListener("keydown", controlKeyHandler);
     controlKeyHandler = null;
+  }
+  if (controlKeyCommitTimer) {
+    clearTimeout(controlKeyCommitTimer);
+    controlKeyCommitTimer = null;
   }
   if (state.audioPollHandle) {
     clearInterval(state.audioPollHandle);
@@ -188,14 +262,31 @@ async function router() {
     state.timersResyncHandle = null;
   }
   document.querySelectorAll(".nav-item").forEach(n => {
-    n.classList.toggle("active", n.dataset.route === route);
+    n.classList.toggle("active", n.dataset.route === route.page);
   });
   const main = document.getElementById("main");
   main.innerHTML = `<div class="empty-state loading">Loading…</div>`;
+  const page = PAGES[route.page];
   try {
-    await ROUTES[route](main);
+    if (page.merged) {
+      await page.merged(main);
+    } else {
+      // Sub-tab bar, then the active tab's own panel rendered into a container
+      // below it. Each tab keeps its own hash so it stays bookmarkable.
+      main.innerHTML =
+        `<div class="subtabs" role="tablist">` +
+        page.tabs.map(t =>
+          `<button type="button" role="tab" class="subtab${t.id === route.sub ? " active" : ""}"` +
+          ` aria-selected="${t.id === route.sub}" data-subtab="${t.id}">${t.label}</button>`
+        ).join("") +
+        `</div><div id="subtab-panel"><div class="empty-state loading">Loading…</div></div>`;
+      const panel = main.querySelector("#subtab-panel");
+      const tab = page.tabs.find(t => t.id === route.sub);
+      await tab.render(panel);
+    }
   } catch (e) {
-    main.innerHTML = `<div class="empty-state">Failed to load this panel: ${e.message}</div>`;
+    const target = main.querySelector("#subtab-panel") || main;
+    target.innerHTML = `<div class="empty-state">Failed to load this panel: ${e.message}</div>`;
   }
 }
 
@@ -203,6 +294,10 @@ window.addEventListener("hashchange", router);
 document.getElementById("sidebar").addEventListener("click", (e) => {
   const item = e.target.closest(".nav-item");
   if (item) location.hash = "#/" + item.dataset.route;
+});
+document.getElementById("main").addEventListener("click", (e) => {
+  const tab = e.target.closest(".subtab");
+  if (tab) location.hash = "#/" + currentRoute().page + "/" + tab.dataset.subtab;
 });
 
 // -------------------------------------------------------------- devices --
@@ -256,9 +351,19 @@ function formatAgo(ms) {
 // counting up between real poll cycles, without issuing any extra network requests.
 function renderStatusText() {
   const text = document.getElementById("status-text");
-  if (!text || !state.lastStatus) return; // still on the initial "connecting…" text
+  if (!text || !state.hasPolledOnce) return; // still on the initial "connecting…" text, first poll in flight
   const agoPart = state.lastSeenAt ? ` · last seen ${formatAgo(Date.now() - state.lastSeenAt)}` : "";
-  if (state.consecutiveOfflinePolls >= OFFLINE_CONFIRM_THRESHOLD) {
+  // `renderControl()` (below) caches whatever /status returns into
+  // state.lastStatus unconditionally, including a definitive {online: false}
+  // response -- so `!state.lastStatus` alone no longer distinguishes "never
+  // polled" from "polled and confirmed offline". Check `.online === false`
+  // explicitly too, and skip the consecutive-miss grace period in that case:
+  // an explicit "not online" answer doesn't need debouncing the way a
+  // transient network blip does. Without this, a confirmed-offline device
+  // could still flash "LIVE DATA · OFF" (reading `.power` off stale/absent
+  // data) until enough consecutive misses piled up.
+  const knownOffline = !state.lastStatus || state.lastStatus.online === false;
+  if (knownOffline || state.consecutiveOfflinePolls >= OFFLINE_CONFIRM_THRESHOLD) {
     text.textContent = `OFFLINE${agoPart}`;
   } else {
     text.textContent = `LIVE DATA · ${state.lastStatus.power ? "ON" : "OFF"}${agoPart}`;
@@ -287,7 +392,9 @@ async function pollStatus(quiet) {
       badge.classList.remove("live");
     }
   }
+  state.hasPolledOnce = true;
   renderStatusText();
+  renderQuickControl();
 }
 
 function startPolling() {
@@ -429,6 +536,12 @@ async function renderControl(main) {
   // cleanup there), and skipped while any input/select/textarea has focus so this
   // never hijacks typing or a slider's own native arrow-key handling elsewhere in the app.
   const BRIGHTNESS_KEY_STEP = 5; // percent per Up/Down press
+  // Arrow keys fire one keydown per press — and repeat rapidly while held — so
+  // committing on every one sent a POST to the bulb per keypress AND stacked a
+  // "Brightness updated" toast per keypress. The slider UI still updates on
+  // every press (that's just a local `input` event, no network), but the actual
+  // commit is debounced so a burst of presses lands as one request and one toast.
+  const KEY_COMMIT_DEBOUNCE_MS = 400;
   function handleControlKeydown(e) {
     const active = document.activeElement;
     const tag = active && active.tagName;
@@ -445,7 +558,11 @@ async function renderControl(main) {
       const next = Math.max(1, Math.min(100, parseInt(slider.value, 10) + delta));
       slider.value = String(next);
       slider.dispatchEvent(new Event("input"));
-      slider.dispatchEvent(new Event("change"));
+      clearTimeout(controlKeyCommitTimer);
+      controlKeyCommitTimer = setTimeout(function () {
+        controlKeyCommitTimer = null;
+        slider.dispatchEvent(new Event("change"));
+      }, KEY_COMMIT_DEBOUNCE_MS);
     }
   }
   document.addEventListener("keydown", handleControlKeydown);
@@ -525,6 +642,12 @@ const AUDIO_MODE_INFO = {
   breathing_silence: { name: "Breathing Silence", desc: "Slow ambient breathing brightness during quiet passages instead of going flat/dark; wakes up smoothly when audio returns.", bands: false },
   harmonic_pairs: { name: "Harmonic Pairs", desc: "Finds the two most energetic non-adjacent bands each frame and blends between two complementary (180°-apart) hues based on which one dominates; more bands (below) sharpen the pairing.", bands: true },
   kick_snare_split: { name: "Kick/Snare Split", desc: "Bass drives brightness like a kick drum while a separate mid-band accent shifts the hue like a layered snare/hihat.", bands: false },
+  energy_contour: { name: "Energy Contour", desc: "Hue locked to your chosen color; only saturation/brightness track a smoothed energy envelope for a slow-moving contour instead of a punchy pulse.", bands: false, mono: true },
+  bass_only_pulse: { name: "Bass-Only Pulse", desc: "Brightness-only pulse driven purely by the bass band's share of the mix — hue never moves.", bands: false, mono: true },
+  mirror_mode: { name: "Mirror Mode", desc: "Hue mirrors around a fixed center point as the treble/bass balance shifts, while brightness breathes independently — a breathing color effect.", bands: false },
+  random_walk_hue: { name: "Random Walk Hue", desc: "Hue takes small bounded random steps instead of rotating at a fixed rate — feels organic rather than mechanical.", bands: false },
+  silence_flash_recover: { name: "Silence Flash Recover", desc: "Dims through any quiet passage, then fires one bright white flash the instant audio resumes after a long pause.", bands: false, mono: true },
+  crescendo_ramp: { name: "Crescendo Ramp", desc: "Detects a sustained rise in energy over a couple of seconds and ramps brightness/saturation up ahead of the peak, not just when it's already loud.", bands: false, mono: true },
 };
 
 function stopAudioPolling() {
@@ -551,6 +674,15 @@ function renderBandMeter(bands) {
     </div>
     <p class="panel-subtitle" style="margin-top:8px;">RMS ${(bands.rms || 0).toFixed(4)} <span class="beat-dot ${bands.is_beat ? "hit" : ""}"></span> beat</p>
   `;
+}
+
+function renderTempoInfo(tempo) {
+  tempo = tempo || {};
+  const bpmText = tempo.bpm != null ? `${tempo.bpm.toFixed(1)} BPM` : "no tempo lock yet";
+  const confPct = Math.round((tempo.confidence || 0) * 100);
+  const tapText = tempo.tap_bpm != null ? ` · tap tempo ${tempo.tap_bpm.toFixed(1)} BPM` : "";
+  const suggestion = tempo.suggested_preset ? ` · suggests "${tempo.suggested_preset.replace(/_/g, " ")}" preset` : "";
+  return `<p class="panel-subtitle" style="margin-top:8px;">${bpmText} <span style="color:var(--text-dim);">(confidence ${confPct}%)</span>${tapText}${suggestion}</p>`;
 }
 
 function renderSenderInfo(sender) {
@@ -580,6 +712,11 @@ async function renderAudio(main) {
   let groupStatus = { active: false };
   try { groupStatus = await get(`/api/groups/all/audio-reactive/status`); } catch (e) {}
   const groups = await get("/api/groups").catch(() => []);
+  let audioPresetsResp = { presets: [] };
+  try { audioPresetsResp = await get("/api/audio/presets"); } catch (e) {}
+  const beatPresets = devicesResp.beat_sensitivity_presets || ["subtle", "normal", "aggressive"];
+  const defaultBeatSensitivity = devicesResp.default_beat_sensitivity || "normal";
+  const tempo = sessionStatus.tempo || {};
 
   const preferredIdx = audioDevices.findIndex(d => /voicemeeter|cable/i.test(d.name));
   const defaultDeviceIndex = sessionStatus.device_index ?? (preferredIdx >= 0 ? audioDevices[preferredIdx].index : (audioDevices[0] ? audioDevices[0].index : null));
@@ -601,6 +738,11 @@ async function renderAudio(main) {
       <div class="form-grid">
         <label>Input device<select id="audio-device">${deviceOptions}</select></label>
         <label>Mode<select id="audio-mode">${modeOptions}</select></label>
+        <label>Beat sensitivity
+          <select id="audio-beat-sensitivity">
+            ${beatPresets.map(p => `<option value="${p}" ${(tempo.beat_sensitivity || defaultBeatSensitivity) === p ? "selected" : ""}>${p[0].toUpperCase() + p.slice(1)}</option>`).join("")}
+          </select>
+        </label>
       </div>
       <div class="slider-row">
         <label><span>Sensitivity</span><span id="sens-val">${(sessionStatus.sensitivity ?? 1.0).toFixed(1)}x</span></label>
@@ -629,6 +771,24 @@ async function renderAudio(main) {
     <div class="card">
       <h3>Live Input <span class="tag ${sessionStatus.active ? "on" : "off"}">${sessionStatus.active ? "LISTENING" : "IDLE"}</span></h3>
       <div id="band-meter-wrap">${renderBandMeter(sessionStatus.bands)}</div>
+      <div id="tempo-wrap">${renderTempoInfo(tempo)}</div>
+      <div class="row">
+        <button id="tap-tempo-btn" class="primary" ${sessionStatus.active ? "" : "disabled"}>Tap Tempo</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <h3>Genre &amp; Mood Presets</h3>
+      <p class="panel-subtitle">
+        Bundles mode + sensitivity + dwell + band count + beat sensitivity + a color palette under one name.
+        Applying a preset starts (or restarts) the single-bulb session above with those settings.
+      </p>
+      <div class="grid" id="audio-preset-grid"></div>
+      <h3 style="margin-top:16px;">Save Current Settings as Custom Preset</h3>
+      <div class="row">
+        <input type="text" id="custom-preset-name" placeholder="Name (e.g. Friday Mix)">
+        <button id="save-custom-preset" class="primary">Save</button>
+      </div>
     </div>
 
     <div class="card">
@@ -647,6 +807,8 @@ async function renderAudio(main) {
             <option value="unison">Unison — all identical</option>
             <option value="phase_offset">Phase Offset — chase effect</option>
             <option value="band_split">Band Split — one bulb per band</option>
+            <option value="wave">Wave — hue sweeps across the group</option>
+            <option value="mirror">Mirror — bulbs mirror around a center hue</option>
           </select>
         </label>
       </div>
@@ -696,6 +858,7 @@ async function renderAudio(main) {
       monochrome_hue: parseFloat(main.querySelector("#mono-hue").value),
       n_bands: parseInt(main.querySelector("#audio-nbands").value, 10),
       min_dwell_ms: parseInt(main.querySelector("#audio-dwell").value, 10),
+      beat_sensitivity: main.querySelector("#audio-beat-sensitivity").value,
     });
     toast("Audio-reactive session started", "success");
     renderAudio(main);
@@ -717,6 +880,7 @@ async function renderAudio(main) {
       sensitivity: parseFloat(main.querySelector("#audio-sensitivity").value),
       monochrome_hue: parseFloat(main.querySelector("#mono-hue").value),
       min_dwell_ms: parseInt(main.querySelector("#audio-dwell").value, 10),
+      beat_sensitivity: main.querySelector("#audio-beat-sensitivity").value,
     });
     toast("Group audio-reactive session started", "success");
     renderAudio(main);
@@ -729,6 +893,66 @@ async function renderAudio(main) {
     renderAudio(main);
   };
 
+  main.querySelector("#tap-tempo-btn").onclick = async () => {
+    try {
+      const resp = await post(`/api/devices/${state.deviceId}/audio-reactive/tap-tempo`, {});
+      const wrap = document.getElementById("tempo-wrap");
+      if (wrap && resp.tap_bpm != null) {
+        wrap.innerHTML = renderTempoInfo({ ...tempo, tap_bpm: resp.tap_bpm });
+      }
+    } catch (e) { toast(`Tap tempo failed: ${e.message}`, "error"); }
+  };
+
+  const presetGrid = main.querySelector("#audio-preset-grid");
+  const allPresets = audioPresetsResp.presets || [];
+  allPresets.forEach(preset => {
+    const card = el(`<div class="effect-card" title="${preset.description || ""}">
+      <div class="name">${preset.name}${preset.custom ? " ★" : ""}</div>
+      <div class="desc">${preset.description || "Custom preset"}</div>
+    </div>`);
+    card.onclick = async () => {
+      if (audioDevices.length === 0) {
+        toast("No audio input devices available", "error");
+        return;
+      }
+      await post(`/api/devices/${state.deviceId}/audio-reactive/apply-preset`, {
+        preset_id: preset.id,
+        device_index: parseInt(main.querySelector("#audio-device").value, 10),
+      });
+      toast(`Preset "${preset.name}" applied`, "success");
+      renderAudio(main);
+    };
+    if (preset.custom) {
+      const delBtn = el(`<button class="danger" style="margin-top:6px;width:100%;">Delete</button>`);
+      delBtn.onclick = async (ev) => {
+        ev.stopPropagation();
+        await del(`/api/audio/presets/custom/${preset.id}`);
+        toast(`Preset "${preset.name}" deleted`);
+        renderAudio(main);
+      };
+      card.appendChild(delBtn);
+    }
+    presetGrid.appendChild(card);
+  });
+
+  main.querySelector("#save-custom-preset").onclick = async () => {
+    const name = main.querySelector("#custom-preset-name").value.trim();
+    if (!name) { toast("Enter a preset name first", "error"); return; }
+    try {
+      await post("/api/audio/presets/custom", {
+        name,
+        mode: main.querySelector("#audio-mode").value,
+        sensitivity: parseFloat(main.querySelector("#audio-sensitivity").value),
+        monochrome_hue: parseFloat(main.querySelector("#mono-hue").value),
+        n_bands: parseInt(main.querySelector("#audio-nbands").value, 10),
+        min_dwell_ms: parseInt(main.querySelector("#audio-dwell").value, 10),
+        beat_sensitivity: main.querySelector("#audio-beat-sensitivity").value,
+      });
+      toast(`Preset "${name}" saved`, "success");
+      renderAudio(main);
+    } catch (e) { toast(`Could not save preset: ${e.message}`, "error"); }
+  };
+
   if (sessionStatus.active) {
     state.audioPollHandle = setInterval(async () => {
       try {
@@ -736,6 +960,8 @@ async function renderAudio(main) {
         const wrap = document.getElementById("band-meter-wrap");
         if (!wrap) { stopAudioPolling(); return; }
         wrap.innerHTML = renderBandMeter(st.bands);
+        const tempoWrap = document.getElementById("tempo-wrap");
+        if (tempoWrap) tempoWrap.innerHTML = renderTempoInfo(st.tempo);
         if (!st.active) renderAudio(main);
       } catch (e) { /* transient poll miss, ignore */ }
     }, 300);
@@ -1418,6 +1644,309 @@ async function renderSettings(main) {
       renderSettings(main);
     };
   }
+}
+
+// ------------------------------------------------ always-visible control --
+// Rendered once per status poll rather than per route, so it survives page
+// navigation — the whole point is that power/brightness are reachable no
+// matter which page you're on.
+let quickCtlBusy = false;
+
+function renderQuickControl() {
+  const el = document.getElementById("quickctl");
+  if (!el) return;
+  const st = state.lastStatus;
+  const dev = state.devices.find(d => d.id === state.deviceId);
+  const name = dev ? dev.name : "No device";
+
+  if (!st || st.online === false) {
+    el.innerHTML =
+      `<h4>Quick control</h4>` +
+      `<div class="qc-device">${escHtml(name)}</div>` +
+      `<p class="qc-offline">Offline — controls hidden until the bulb answers again.</p>`;
+    return;
+  }
+
+  // Don't stomp the slider the user is currently dragging.
+  if (quickCtlBusy) return;
+
+  const pct = st.mode === "colour" ? (st.value_pct ?? 100) : (st.brightness_pct ?? 100);
+  const rgb = st.hue != null ? hsvToRgb(st.hue, st.saturation_pct ?? 100, st.value_pct ?? 100) : [255, 255, 255];
+
+  el.innerHTML = `
+    <h4>Quick control</h4>
+    <div class="qc-device">${escHtml(name)}</div>
+    <div class="qc-swatch" style="background:${rgbToHex(...rgb)}"></div>
+    <button id="qc-power" class="qc-power ${st.power ? "primary" : ""}">${st.power ? "TURN OFF" : "TURN ON"}</button>
+    <div class="qc-row"><span>Brightness</span><span id="qc-bval">${pct}%</span></div>
+    <input type="range" id="qc-bright" min="1" max="100" value="${pct}">
+  `;
+
+  el.querySelector("#qc-power").onclick = async () => {
+    await post(`/api/devices/${state.deviceId}/power`, { on: !st.power });
+    state.lastStatus = null;
+    pollStatus();
+    // The Control panel mirrors this state, so re-render it if it's on screen.
+    if (currentRoute().key === "light/control") router();
+  };
+
+  const slider = el.querySelector("#qc-bright");
+  slider.oninput = () => {
+    quickCtlBusy = true;
+    el.querySelector("#qc-bval").textContent = slider.value + "%";
+  };
+  slider.onchange = async () => {
+    await post(`/api/devices/${state.deviceId}/brightness`, { value: parseInt(slider.value, 10) });
+    quickCtlBusy = false;
+    toast("Brightness updated", "success");
+    state.lastStatus = null;
+    pollStatus();
+  };
+}
+
+// ------------------------------------------------------- merged panels --
+// Each of these composes existing panel renderers into one page rather than
+// reimplementing them. The sub-renderers already scope their DOM lookups to
+// the container they're handed, so handing each a section <div> instead of
+// #main works unchanged — and any future fix to (say) renderTimers applies
+// here automatically.
+
+function panelSection(id) {
+  return `<section class="panel-section"><div class="panel-section__body" id="${id}"></div></section>`;
+}
+
+async function renderLooks(main) {
+  main.innerHTML =
+    `<h1 class="panel-title">Scenes &amp; Effects</h1>` +
+    `<p class="panel-subtitle">Both ways to put a look on the bulb, together — scenes are fixed multi-color moods, effects animate until you stop them.</p>` +
+    panelSection("sec-scenes") + panelSection("sec-effects");
+  await renderScenes(main.querySelector("#sec-scenes"));
+  await renderEffects(main.querySelector("#sec-effects"));
+}
+
+async function renderAutomation(main) {
+  main.innerHTML =
+    `<h1 class="panel-title">Automation</h1>` +
+    `<p class="panel-subtitle">Everything that happens on a clock — one-off sleep/wake timers, and the recurring weekly schedule.</p>` +
+    panelSection("sec-timers") + panelSection("sec-schedule");
+  await renderTimers(main.querySelector("#sec-timers"));
+  await renderSchedule(main.querySelector("#sec-schedule"));
+}
+
+async function renderRooms(main) {
+  main.innerHTML =
+    `<h1 class="panel-title">Rooms</h1>` +
+    `<p class="panel-subtitle">Groups are a flat set of bulbs you control together. Zones sit above them — a zone can contain bulbs, whole groups, or both.</p>` +
+    panelSection("sec-groups") + panelSection("sec-zones");
+  await renderGroups(main.querySelector("#sec-groups"));
+  await renderZones(main.querySelector("#sec-zones"));
+}
+
+// ------------------------------------------------------------- zones --
+async function renderZones(main) {
+  let zones = [];
+  try { zones = await get("/api/zones"); } catch (e) { zones = []; }
+  const groups = await get("/api/groups").catch(() => []);
+  const devices = state.devices || [];
+
+  // A zone's real membership is bulbs + every bulb inside its groups, deduped.
+  // Resolve it client-side for the list so this doesn't fire N extra requests;
+  // the server does the same resolution on GET /api/zones/{id}.
+  const resolveCount = (z) => {
+    const seen = new Set(z.device_ids || []);
+    (z.group_ids || []).forEach(gid => {
+      const g = groups.find(x => x.id === gid);
+      if (g) (g.device_ids || []).forEach(d => seen.add(d));
+    });
+    return seen.size;
+  };
+
+  main.innerHTML = `
+    <h1 class="panel-title">Zones</h1>
+    <p class="panel-subtitle">A zone sits above groups — it can hold individual bulbs, whole groups, or a mix of both.</p>
+    <div class="card">
+      <h3>Create a zone</h3>
+      <div class="form-grid">
+        <label>Zone ID<input id="zone-new-id" placeholder="upstairs"></label>
+        <label>Display name<input id="zone-new-name" placeholder="Upstairs"></label>
+      </div>
+      <div class="row" style="margin-top:8px;">
+        <button id="zone-create" class="primary">Create Zone</button>
+      </div>
+    </div>
+    ${zones.length === 0
+      ? `<div class="empty-state">No zones yet. A zone is a higher-level room — it can hold individual bulbs, whole groups, or a mix of both.</div>`
+      : zones.map(z => `
+        <div class="card" data-zone="${escAttr(z.id)}">
+          <div class="row" style="justify-content:space-between;align-items:center;">
+            <h3 style="margin:0;">${escHtml(z.name || z.id)} <span class="tag">${resolveCount(z)} bulb(s)</span></h3>
+            <button class="zone-delete danger" data-zone-id="${escAttr(z.id)}">Delete</button>
+          </div>
+          <p class="panel-subtitle" style="margin-top:4px;">ID <code>${escHtml(z.id)}</code></p>
+          <div class="slider-row">
+            <label><span>Bulbs in this zone</span></label>
+            <div class="row" style="flex-wrap:wrap;gap:6px;">
+              ${(z.device_ids || []).length === 0
+                ? `<span class="panel-subtitle">none directly assigned</span>`
+                : (z.device_ids || []).map(did => {
+                    const d = devices.find(x => x.id === did);
+                    return `<span class="tag">${escHtml(d ? d.name : did)}
+                      <button class="zone-remove-device" data-zone-id="${escAttr(z.id)}" data-device-id="${escAttr(did)}" title="Remove from zone">×</button></span>`;
+                  }).join("")}
+            </div>
+          </div>
+          <div class="row" style="margin-top:8px;">
+            <select class="zone-add-select" data-zone-id="${escAttr(z.id)}">
+              ${devices.filter(d => !(z.device_ids || []).includes(d.id))
+                .map(d => `<option value="${escAttr(d.id)}">${escHtml(d.name)}</option>`).join("")
+                || `<option value="">(every bulb already in this zone)</option>`}
+            </select>
+            <button class="zone-add-device" data-zone-id="${escAttr(z.id)}">Add bulb</button>
+          </div>
+          <div class="slider-row" style="margin-top:8px;">
+            <label><span>Groups in this zone</span></label>
+            <div class="row" style="flex-wrap:wrap;gap:6px;">
+              ${(z.group_ids || []).length === 0
+                ? `<span class="panel-subtitle">none</span>`
+                : (z.group_ids || []).map(gid => {
+                    const g = groups.find(x => x.id === gid);
+                    return `<span class="tag">${escHtml(g ? g.name : gid)}</span>`;
+                  }).join("")}
+            </div>
+          </div>
+        </div>`).join("")}
+  `;
+
+  main.querySelector("#zone-create").onclick = async () => {
+    const id = main.querySelector("#zone-new-id").value.trim();
+    const name = main.querySelector("#zone-new-name").value.trim();
+    if (!id || !name) { toast("Zone needs both an ID and a name", "error"); return; }
+    try {
+      await post("/api/zones", { id, name, device_ids: [], group_ids: [] });
+      toast(`Zone "${name}" created`, "success");
+      renderZones(main);
+    } catch (e) { toast(e.message || "Could not create zone", "error"); }
+  };
+
+  main.querySelectorAll(".zone-delete").forEach(btn => {
+    btn.onclick = async () => {
+      await del(`/api/zones/${btn.dataset.zoneId}`);
+      toast("Zone deleted");
+      renderZones(main);
+    };
+  });
+
+  main.querySelectorAll(".zone-add-device").forEach(btn => {
+    btn.onclick = async () => {
+      const sel = main.querySelector(`.zone-add-select[data-zone-id="${btn.dataset.zoneId}"]`);
+      if (!sel || !sel.value) return;
+      await post(`/api/zones/${btn.dataset.zoneId}/devices`, { device_id: sel.value });
+      toast("Bulb added to zone", "success");
+      renderZones(main);
+    };
+  });
+
+  main.querySelectorAll(".zone-remove-device").forEach(btn => {
+    btn.onclick = async () => {
+      await del(`/api/zones/${btn.dataset.zoneId}/devices/${btn.dataset.deviceId}`);
+      toast("Bulb removed from zone");
+      renderZones(main);
+    };
+  });
+}
+
+// --------------------------------------------------- audio session presets --
+async function renderSessionPresets(main) {
+  let presets = [];
+  try { presets = await get("/api/audio/session-presets"); } catch (e) { presets = []; }
+  let live = { active: false };
+  try { live = await get(`/api/devices/${state.deviceId}/audio-reactive/status`); } catch (e) {}
+
+  main.innerHTML = `
+    <h1 class="panel-title">Session Presets</h1>
+    <p class="panel-subtitle">A snapshot of a whole audio-reactive session — mode, sensitivity, band count, dwell, capture device and safety limits — saved under a name so you can drop straight back into it. Distinct from the genre presets on the Live Session tab, which are curated starting points rather than saved state.</p>
+
+    <div class="card">
+      <h3>Save the running session</h3>
+      ${live.active
+        ? `<p class="panel-subtitle">Currently running: <span class="tag on">${escHtml(live.mode)}</span>
+             sensitivity ${live.sensitivity}, ${live.n_bands} band(s), input #${live.device_index}</p>
+           <div class="row">
+             <input id="sp-name" placeholder="e.g. Evening chill" style="flex:1;">
+             <button id="sp-save" class="primary">Save as preset</button>
+           </div>`
+        : `<div class="empty-state">No audio-reactive session is running on this bulb right now. Start one on the <a href="#/audio/session">Live Session</a> tab, get it sounding right, then come back here to save it.</div>`}
+    </div>
+
+    <h3>Saved presets</h3>
+    ${presets.length === 0
+      ? `<div class="empty-state">Nothing saved yet.</div>`
+      : presets.map(p => {
+          const c = p.config || {};
+          return `
+          <div class="card">
+            <div class="row" style="justify-content:space-between;align-items:center;">
+              <h3 style="margin:0;">${escHtml(p.name)}</h3>
+              <div class="row">
+                <button class="sp-apply primary" data-preset-id="${escAttr(p.id)}">Apply</button>
+                <button class="sp-delete danger" data-preset-id="${escAttr(p.id)}">Delete</button>
+              </div>
+            </div>
+            <p class="panel-subtitle" style="margin-top:6px;">
+              <span class="tag">${escHtml(c.mode || "?")}</span>
+              sensitivity ${c.sensitivity ?? "?"} ·
+              ${c.n_bands ?? "?"} band(s) ·
+              dwell ${c.min_dwell_ms ?? "?"}ms ·
+              input #${c.device_index ?? "?"}
+              ${c.max_duration_s ? ` · stops after ${c.max_duration_s}s` : ""}
+              ${c.max_flash_rate_hz ? ` · flash cap ${c.max_flash_rate_hz}Hz` : ""}
+            </p>
+          </div>`;
+        }).join("")}
+  `;
+
+  const saveBtn = main.querySelector("#sp-save");
+  if (saveBtn) {
+    saveBtn.onclick = async () => {
+      const name = main.querySelector("#sp-name").value.trim();
+      if (!name) { toast("Give the preset a name first", "error"); return; }
+      try {
+        await post(`/api/devices/${state.deviceId}/audio-reactive/session-presets`, {
+          name,
+          device_index: live.device_index,
+          mode: live.mode,
+          sensitivity: live.sensitivity,
+          n_bands: live.n_bands,
+          min_dwell_ms: (live.sender && live.sender.min_dwell_ms) || undefined,
+          max_duration_s: live.max_duration_s,
+          warmup_s: live.warmup_s,
+          max_flash_rate_hz: live.max_flash_rate_hz,
+        });
+        toast(`Saved "${name}"`, "success");
+        renderSessionPresets(main);
+      } catch (e) { toast(e.message || "Could not save preset", "error"); }
+    };
+  }
+
+  main.querySelectorAll(".sp-apply").forEach(btn => {
+    btn.onclick = async () => {
+      try {
+        await post(`/api/devices/${state.deviceId}/audio-reactive/session-presets/apply`, {
+          preset_id: btn.dataset.presetId,
+        });
+        toast("Session started from preset", "success");
+        renderSessionPresets(main);
+      } catch (e) { toast(e.message || "Could not apply preset", "error"); }
+    };
+  });
+
+  main.querySelectorAll(".sp-delete").forEach(btn => {
+    btn.onclick = async () => {
+      await del(`/api/audio/session-presets/${btn.dataset.presetId}`);
+      toast("Preset deleted");
+      renderSessionPresets(main);
+    };
+  });
 }
 
 // ------------------------------------------------------------ pin gate --

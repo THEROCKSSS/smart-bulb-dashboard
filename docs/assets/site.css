@@ -271,6 +271,11 @@ hr { border: none; border-top: 1px solid var(--color-rule); margin: var(--space-
 .ring-svg { width: 7rem; height: 7rem; }
 .ring-svg circle { fill: none; stroke-width: 8; }
 .ring-svg .ring-track { stroke: var(--color-paper-3); }
+/* Drawn UNDER .ring-fill (earlier in the SVG), spanning closed + in-progress
+   combined — so the accent arc reads as "closed" sitting on top of a dimmer
+   "started" arc, rather than the ring reading a flat 0% while a whole week
+   is genuinely underway. */
+.ring-svg .ring-progress { stroke: var(--color-warn); opacity: 0.45; stroke-linecap: round; transform: rotate(-90deg); transform-origin: 50% 50%; transition: stroke-dashoffset var(--dur-long) var(--ease-out); }
 .ring-svg .ring-fill { stroke: var(--color-accent); stroke-linecap: round; transform: rotate(-90deg); transform-origin: 50% 50%; transition: stroke-dashoffset var(--dur-long) var(--ease-out); }
 .ring-svg text { font-family: var(--font-display); font-weight: 600; fill: var(--color-ink); font-size: 1.3rem; text-anchor: middle; dominant-baseline: middle; }
 .ring-card__title { font-family: var(--font-mono); font-size: var(--text-xs); text-transform: uppercase; letter-spacing: 0.06em; color: var(--color-muted); }
