@@ -18,13 +18,18 @@
     </div>
   </div>
 
+  <!-- Icon rail: collapsed to glyphs, widens on hover (and on keyboard focus,
+       so it isn't pointer-only). Labels stay in the DOM for screen readers. -->
   <div class="sidebar" id="sidebar">
-    <div class="nav-item" data-route="light">Light</div>
-    <div class="nav-item" data-route="audio">Audio</div>
-    <div class="nav-item" data-route="automation">Automation</div>
-    <div class="nav-item" data-route="rooms">Rooms</div>
-    <div class="nav-item" data-route="system">System</div>
+    <div class="nav-item" data-route="light"><span class="nav-ic" aria-hidden="true">◐</span><span class="nav-lb">Light</span></div>
+    <div class="nav-item" data-route="audio"><span class="nav-ic" aria-hidden="true">◎</span><span class="nav-lb">Audio</span></div>
+    <div class="nav-item" data-route="automation"><span class="nav-ic" aria-hidden="true">◷</span><span class="nav-lb">Automation</span></div>
+    <div class="nav-item" data-route="rooms"><span class="nav-ic" aria-hidden="true">▦</span><span class="nav-lb">Rooms</span></div>
+    <div class="nav-item" data-route="system"><span class="nav-ic" aria-hidden="true">⚙</span><span class="nav-lb">System</span></div>
   </div>
+
+  <!-- Always-visible quick control, independent of which page is open. -->
+  <aside class="quickctl" id="quickctl"></aside>
 
   <div class="main" id="main"></div>
 </div>

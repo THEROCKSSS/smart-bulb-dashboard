@@ -394,6 +394,7 @@ async function pollStatus(quiet) {
   }
   state.hasPolledOnce = true;
   renderStatusText();
+  renderQuickControl();
 }
 
 function startPolling() {
@@ -1643,6 +1644,64 @@ async function renderSettings(main) {
       renderSettings(main);
     };
   }
+}
+
+// ------------------------------------------------ always-visible control --
+// Rendered once per status poll rather than per route, so it survives page
+// navigation — the whole point is that power/brightness are reachable no
+// matter which page you're on.
+let quickCtlBusy = false;
+
+function renderQuickControl() {
+  const el = document.getElementById("quickctl");
+  if (!el) return;
+  const st = state.lastStatus;
+  const dev = state.devices.find(d => d.id === state.deviceId);
+  const name = dev ? dev.name : "No device";
+
+  if (!st || st.online === false) {
+    el.innerHTML =
+      `<h4>Quick control</h4>` +
+      `<div class="qc-device">${escHtml(name)}</div>` +
+      `<p class="qc-offline">Offline — controls hidden until the bulb answers again.</p>`;
+    return;
+  }
+
+  // Don't stomp the slider the user is currently dragging.
+  if (quickCtlBusy) return;
+
+  const pct = st.mode === "colour" ? (st.value_pct ?? 100) : (st.brightness_pct ?? 100);
+  const rgb = st.hue != null ? hsvToRgb(st.hue, st.saturation_pct ?? 100, st.value_pct ?? 100) : [255, 255, 255];
+
+  el.innerHTML = `
+    <h4>Quick control</h4>
+    <div class="qc-device">${escHtml(name)}</div>
+    <div class="qc-swatch" style="background:${rgbToHex(...rgb)}"></div>
+    <button id="qc-power" class="qc-power ${st.power ? "primary" : ""}">${st.power ? "TURN OFF" : "TURN ON"}</button>
+    <div class="qc-row"><span>Brightness</span><span id="qc-bval">${pct}%</span></div>
+    <input type="range" id="qc-bright" min="1" max="100" value="${pct}">
+  `;
+
+  el.querySelector("#qc-power").onclick = async () => {
+    await post(`/api/devices/${state.deviceId}/power`, { on: !st.power });
+    state.lastStatus = null;
+    pollStatus();
+    // The Control panel mirrors this state, so re-render it if it's on screen.
+    if (currentRoute().key === "light/control") router();
+  };
+
+  const slider = el.querySelector("#qc-bright");
+  slider.oninput = () => {
+    quickCtlBusy = true;
+    el.querySelector("#qc-bval").textContent = slider.value + "%";
+  };
+  slider.onchange = async () => {
+    await post(`/api/devices/${state.deviceId}/brightness`, { value: parseInt(slider.value, 10) });
+    quickCtlBusy = false;
+    toast("Brightness updated", "success");
+    state.lastStatus = null;
+    pollStatus();
+  };
 }
 
 // ------------------------------------------------------- merged panels --
