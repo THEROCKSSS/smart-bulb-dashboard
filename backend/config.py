@@ -1,6 +1,10 @@
+import hashlib
 import json
 import os
 import threading
+
+import secrets_env
+import security_audit
 
 CONFIG_DIR = os.path.dirname(os.path.abspath(__file__))
 CONFIG_PATH = os.path.join(CONFIG_DIR, "config.json")
@@ -16,6 +20,17 @@ def _default_config():
     }
 
 
+def _write(data):
+    """Raw write. Split out from save_config() because load_config() needs
+    to write the bootstrap default while it already holds `_lock` -- calling
+    save_config() from in there deadlocks on a non-reentrant Lock. (Latent:
+    that path only runs when BOTH config.json and config.example.json are
+    missing, which never happens in a checkout, since the example is
+    committed.)"""
+    with open(CONFIG_PATH, "w") as f:
+        json.dump(secrets_env.strip_env_sourced(data), f, indent=2)
+
+
 def load_config():
     with _lock:
         if not os.path.exists(CONFIG_PATH):
@@ -25,16 +40,37 @@ def load_config():
                     "and fill in your device_id/local_key/ip. See SETUP.md."
                 )
             data = _default_config()
-            save_config(data)
+            _write(data)
             return data
         with open(CONFIG_PATH, "r") as f:
-            return json.load(f)
+            data = json.load(f)
+    # Applied after the file read, outside the lock: an env-provided
+    # local_key overrides whatever (possibly empty) value is on disk, and
+    # tags the device so _write() never persists it back. See secrets_env.
+    return secrets_env.apply_env_overrides(data)
+
+
+def _config_fingerprint():
+    """SHA-256 of the on-disk config, for change-tracking (W2-147). A hash,
+    not a diff: it proves *that* the file changed and lets two points in
+    time be compared, without a single byte of device credentials reaching
+    the audit log."""
+    try:
+        with open(CONFIG_PATH, "rb") as f:
+            return hashlib.sha256(f.read()).hexdigest()
+    except OSError:
+        return None
 
 
 def save_config(data):
     with _lock:
-        with open(CONFIG_PATH, "w") as f:
-            json.dump(data, f, indent=2)
+        _write(data)
+        fingerprint = _config_fingerprint()
+    # Every write to the sensitive config file leaves a record. Info-level
+    # by default, so routine edits never raise an alert -- the alert-worthy
+    # case (a device appearing) is logged separately by upsert_device().
+    security_audit.log_event("config_changed", "success", source="config",
+                             file="config.json", sha256=fingerprint)
 
 
 def get_device(device_id):
@@ -54,18 +90,36 @@ def upsert_device(device):
             return
     cfg["devices"].append(device)
     save_config(cfg)
+    # W2-146: a device appearing in config.json is the shape unauthorized
+    # access takes here -- someone who reached the API can point the
+    # dashboard at a bulb of their own, or re-add one you removed. Logged
+    # at `warning` (see security_audit.DEFAULT_SEVERITIES) so it actually
+    # raises an alert under the default alert threshold, unlike a rename.
+    security_audit.log_event("device_added", "success", source="config",
+                             device=device.get("id"), name=device.get("name"),
+                             ip=device.get("ip"))
 
 
 def delete_device(device_id):
     cfg = load_config()
+    existed = any(d["id"] == device_id for d in cfg["devices"])
     cfg["devices"] = [d for d in cfg["devices"] if d["id"] != device_id]
     save_config(cfg)
+    if existed:
+        security_audit.log_event("device_removed", "success", source="config",
+                                 device=device_id)
 
 
 def redact(device):
+    """Mask a device's local_key before it leaves the server. Also drops the
+    internal env-source tag and replaces it with a plain `local_key_source`
+    string, so the UI can say where the key came from without the tag's
+    leading underscore leaking into the public API shape."""
     d = dict(device)
+    from_env = d.pop("_local_key_from_env", False)
     if "local_key" in d:
         d["local_key"] = "•" * len(d["local_key"])
+    d["local_key_source"] = "environment" if from_env else "config.json"
     return d
 
 

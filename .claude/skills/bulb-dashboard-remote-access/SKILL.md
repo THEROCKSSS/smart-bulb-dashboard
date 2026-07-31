@@ -60,6 +60,33 @@ curl -X POST http://localhost:8500/api/system/remote-auth/disable
    remove `/` from the open list without understanding why it's there.
 5. **In-memory lockout state resets on backend restart.** Don't rely on it
    surviving a restart as a permanent record of who's locked out.
+6. **Once the gate is enabled, `/api/system/remote-auth/disable` is itself
+   gated** — you need a valid session to turn the gate off. That's correct,
+   but it surprises people mid-script: log in first.
+
+## After enabling: the security log
+
+Enabling/disabling the gate, every login, every lockout and every rate-limit
+trip is recorded in `backend/data/security_events.log` (dashboard: System →
+Security Log), on top of the existing `data/auth_audit.log`. Disabling the
+gate is logged `critical` and raises an alert, since it takes a
+remotely-exposed dashboard from PIN-protected to wide open.
+
+```bash
+curl "http://localhost:8500/api/security/events?min_severity=warning"
+curl http://localhost:8500/api/security/verify   # tamper check on the log itself
+curl http://localhost:8500/api/security/alerts
+```
+
+If the tamper check ever fails, **don't clear the log** — the broken chain
+is the evidence. `docs/security-secrets.md` has the incident-response
+checklist and the secret-by-secret rotation table.
+
+**A restore never changes remote-access state** — not "shouldn't": nothing
+in `backup_restore.py` writes `remote_auth.json`, so a restored config
+cannot silently turn the gate on or off. The corollary is that a
+migrated/restored install has **no PIN set** and needs one set explicitly.
+See `docs/backup-restore.md`.
 
 ## Verification
 After enabling, confirm the gate is actually enforcing, not just reporting

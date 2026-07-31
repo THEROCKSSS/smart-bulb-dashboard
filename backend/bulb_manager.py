@@ -10,6 +10,7 @@ from datetime import datetime
 import tinytuya
 
 import config as cfgmod
+import secrets_env
 from scenes_presets import PRESET_COLORS, SCENES, find_preset, find_scene
 
 # Real bug found while testing Week 1 live: tinytuya's default connection
@@ -102,13 +103,37 @@ class BulbController:
                 dev.set_socketTimeout(seconds)
 
     # -- history ----------------------------------------------------------
+    def _safe_error(self, err):
+        """Every exception string that leaves this class goes through here.
+
+        tinytuya (and the socket layer under it) constructs its own error
+        text, and this code has no say in what ends up in it -- a future
+        version echoing the key it was constructed with would put a
+        local_key straight into an API response and into the history log,
+        with nothing else in the app to catch it. Redaction audit W2-214.
+        Passes the device's own key explicitly and skips the config read,
+        so this stays cheap enough for the per-frame error paths.
+        """
+        return secrets_env.redact_secrets(
+            err, extra=[self.cfg.get("local_key")], include_config=False)
+
+    def _safe_raw(self, raw):
+        """Same treatment for a raw tinytuya payload before it's returned
+        to a client. Only used on the error path, where the payload is a
+        diagnostic dump rather than a plain dps map, so the JSON round-trip
+        cost never lands on a healthy call."""
+        try:
+            return json.loads(self._safe_error(json.dumps(raw, default=str)))
+        except (TypeError, ValueError):
+            return {"redacted": True}
+
     def _log(self, action, params=None, ok=True, error=None):
         self._history.appendleft({
             "timestamp": datetime.utcnow().isoformat() + "Z",
             "action": action,
             "params": params or {},
             "ok": ok,
-            "error": error,
+            "error": self._safe_error(error) if error else error,
         })
 
     def history(self):
@@ -121,18 +146,18 @@ class BulbController:
                 dev = self._get_device()
                 raw = dev.status()
                 if isinstance(raw, dict) and raw.get("Error"):
-                    self._last_error = raw.get("Error")
+                    self._last_error = self._safe_error(raw.get("Error"))
                     self._log("status", ok=False, error=raw.get("Error"))
-                    return {"online": False, "error": raw.get("Error"), "raw": raw}
+                    return {"online": False, "error": self._last_error, "raw": self._safe_raw(raw)}
                 dps = raw.get("dps", {})
                 self._last_dps.update(dps)
                 parsed = self._parse_dps(self._last_dps)
                 self._last_error = None
                 return {"online": True, "raw": raw, **parsed}
             except Exception as e:
-                self._last_error = str(e)
+                self._last_error = self._safe_error(str(e))
                 self._log("status", ok=False, error=str(e))
-                return {"online": False, "error": str(e)}
+                return {"online": False, "error": self._last_error}
 
     def _parse_dps(self, dps):
         power = dps.get("20")
@@ -513,7 +538,7 @@ class BulbController:
             result["tcp_6668_reachable"] = True
         except Exception as e:
             result["tcp_6668_reachable"] = False
-            result["tcp_error"] = str(e)
+            result["tcp_error"] = self._safe_error(str(e))
         result["tcp_latency_ms"] = round((time.time() - start) * 1000, 1)
 
         start = time.time()

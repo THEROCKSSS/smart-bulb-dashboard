@@ -193,6 +193,11 @@ const PAGES = {
     tabs: [
       { id: "history", label: "History", render: renderHistory },
       { id: "diagnostics", label: "Diagnostics", render: renderDiagnostics },
+      // Security sits next to History deliberately: History is "what did the
+      // bulbs do", Security is "what happened to this install". Same page,
+      // two different questions, never merged into one noisy feed.
+      { id: "security", label: "Security Log", render: renderSecurity },
+      { id: "backup", label: "Backup", render: renderBackup },
       { id: "settings", label: "Settings", render: renderSettings },
     ],
   },
@@ -214,6 +219,8 @@ const LEGACY_ROUTES = {
   history: "system/history",
   diagnostics: "system/diagnostics",
   settings: "system/settings",
+  security: "system/security",
+  backup: "system/backup",
 };
 
 const DEFAULT_ROUTE = "light/control";
@@ -1451,6 +1458,583 @@ async function renderDiagnostics(main) {
       <tr><td>Scenes</td><td>${info.scenes_count}</td></tr>
       <tr><td>Effects</td><td>${info.effects_count}</td></tr>
     </tbody></table>`;
+}
+
+// ---------------------------------------------------------- security log --
+// Distinct from History (per-device actions). This is the install's own
+// security record: auth events, config changes, backups, tamper checks.
+
+const SEVERITY_ORDER = ["info", "notice", "warning", "critical"];
+
+// Remembered across re-renders so a filter survives hitting Refresh — the
+// whole point of a search UI is iterating on the query.
+const securityFilters = { q: "", event: "", min_severity: "", limit: 100, include_rotated: false };
+
+function severityTag(sev) {
+  const cls = { info: "off", notice: "on", warning: "warn", critical: "error" }[sev] || "off";
+  return `<span class="tag ${cls}">${escHtml(sev)}</span>`;
+}
+
+function fmtTs(ts) {
+  return ts ? new Date(ts * 1000).toLocaleString() : "—";
+}
+
+async function renderSecurity(main) {
+  const [cfg, verification, alertsBody] = await Promise.all([
+    get("/api/security/config"),
+    get("/api/security/verify"),
+    get("/api/security/alerts?limit=20"),
+  ]);
+  const params = new URLSearchParams({
+    limit: String(securityFilters.limit),
+    include_rotated: String(securityFilters.include_rotated),
+  });
+  if (securityFilters.q) params.set("q", securityFilters.q);
+  if (securityFilters.event) params.set("event", securityFilters.event);
+  if (securityFilters.min_severity) params.set("min_severity", securityFilters.min_severity);
+  const body = await get(`/api/security/events?${params.toString()}`);
+  const alerts = alertsBody.alerts || [];
+
+  // Three states, not two: a chain that verifies but can't reach the start
+  // (because retention pruned an old segment) is normal housekeeping, and
+  // showing it as a failure would train you to ignore a real one.
+  const chainState = !verification.ok ? "error" : (verification.complete ? "on" : "off");
+  const chainLabel = !verification.ok ? "TAMPERING DETECTED"
+    : (verification.complete ? "VERIFIED" : "VERIFIED (PARTIAL)");
+
+  main.innerHTML = `
+    <h1 class="panel-title">Security Log</h1>
+    <p class="panel-subtitle">
+      Security-relevant events for this install — logins, lockouts, config changes,
+      devices appearing, backups and restores. Separate from the per-device
+      <b>History</b> tab, which records what the bulbs did.
+    </p>
+
+    ${!verification.ok ? `
+      <div class="callout danger">
+        <b>The security log failed its integrity check.</b>
+        ${escHtml(verification.reason || "")}
+        <br>Treat this as an incident: see <code class="inline">docs/security-secrets.md</code>
+        for the response checklist. Do not "fix" it by clearing the log — the
+        broken chain is the evidence.
+      </div>` : ""}
+
+    <div class="card">
+      <h3>Tamper Check <span class="tag ${chainState}">${chainLabel}</span></h3>
+      <p class="panel-subtitle">
+        Every entry is HMAC-chained to the one before it, and the head is
+        recorded separately — so an edited, removed or truncated entry shows up
+        here. Checked ${verification.entries} entr${verification.entries === 1 ? "y" : "ies"}.
+        ${verification.reason && verification.ok ? escHtml(verification.reason) : ""}
+      </p>
+      <div class="row">
+        <button id="sec-verify" class="primary">Re-verify Now</button>
+        <button id="sec-selftest">Run Self-Test</button>
+        <button id="sec-rotate">Rotate &amp; Apply Retention</button>
+        <button id="sec-export-json">Export JSON</button>
+        <button id="sec-export-csv">Export CSV</button>
+      </div>
+      <div id="sec-selftest-result" style="margin-top:12px;"></div>
+    </div>
+
+    <div class="card">
+      <h3>Alerts ${alerts.length ? `<span class="tag warn">${alerts.length}</span>` : `<span class="tag off">none</span>`}</h3>
+      <p class="panel-subtitle">
+        Raised at <b>${escHtml(cfg.alert_min_severity)}</b> and above. Ordinary daily
+        use (logging in, changing a colour, taking a backup) is below that line on
+        purpose — an alert you see every day is an alert you stop reading.
+      </p>
+      ${alerts.length === 0 ? `<div class="empty-state">No alerts. Nothing has crossed the threshold.</div>` : `
+        <table>
+          <thead><tr><th>When</th><th>Severity</th><th>Event</th><th>Detail</th><th></th></tr></thead>
+          <tbody>${alerts.map(a => `
+            <tr>
+              <td>${fmtTs(a.ts)}</td>
+              <td>${severityTag(a.severity)}</td>
+              <td>${escHtml(a.event)}</td>
+              <td>${escHtml(a.message || "")}</td>
+              <td>${a.acknowledged ? `<span class="tag off">seen</span>` : `<span class="tag warn">new</span>`}</td>
+            </tr>`).join("")}
+          </tbody>
+        </table>
+        <div class="row" style="margin-top:12px;">
+          <button id="sec-ack">Mark All Seen</button>
+          <button id="sec-notify">Enable Browser Notifications</button>
+        </div>
+      `}
+    </div>
+
+    <div class="card">
+      <h3>Search</h3>
+      <div class="form-grid">
+        <label>Text search
+          <input type="text" id="sec-q" value="${escAttr(securityFilters.q)}" placeholder="an IP, a device id, anything">
+        </label>
+        <label>Event type
+          <select id="sec-event">
+            <option value="">All events</option>
+            ${body.known_events.map(e => `
+              <option value="${escAttr(e)}" ${securityFilters.event === e ? "selected" : ""}>${escHtml(e)}</option>
+            `).join("")}
+          </select>
+        </label>
+        <label>Minimum severity
+          <select id="sec-sev">
+            <option value="">Any</option>
+            ${SEVERITY_ORDER.map(s => `
+              <option value="${s}" ${securityFilters.min_severity === s ? "selected" : ""}>${s}</option>
+            `).join("")}
+          </select>
+        </label>
+        <label>Show
+          <select id="sec-limit">
+            ${[50, 100, 250, 1000].map(n => `
+              <option value="${n}" ${securityFilters.limit === n ? "selected" : ""}>last ${n}</option>
+            `).join("")}
+          </select>
+        </label>
+      </div>
+      <div class="row" style="margin-top:10px;">
+        <label style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--text-dim);">
+          <input type="checkbox" id="sec-rotated" ${securityFilters.include_rotated ? "checked" : ""}>
+          include rotated (older) segments
+        </label>
+        <button id="sec-search" class="primary">Search</button>
+        <button id="sec-clear">Clear Filters</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <h3>Events <span class="tag on">LIVE DATA</span></h3>
+      <p class="panel-subtitle">${body.count} matching entr${body.count === 1 ? "y" : "ies"}, newest first. Rows marked <b>action</b> are the ones worth looking at.</p>
+      ${body.count === 0 ? `<div class="empty-state">No events match these filters.</div>` : `
+        <table>
+          <thead><tr><th>#</th><th>When</th><th>Severity</th><th>Event</th><th>Outcome</th><th>Source</th><th>Detail</th></tr></thead>
+          <tbody>${body.events.map(e => `
+            <tr class="${e.actionable ? "sec-actionable" : ""}">
+              <td>${e.seq}</td>
+              <td>${fmtTs(e.ts)}</td>
+              <td>${severityTag(e.severity)} ${e.actionable ? `<span class="tag warn">action</span>` : ""}</td>
+              <td>${escHtml(e.event)}</td>
+              <td>${escHtml(e.outcome || "")}</td>
+              <td>${escHtml(e.source || "")}</td>
+              <td><code class="inline">${escHtml(JSON.stringify(e.detail || {}))}</code></td>
+            </tr>`).join("")}
+          </tbody>
+        </table>`}
+    </div>
+
+    <div class="card">
+      <h3>Alerting &amp; Retention</h3>
+      <p class="panel-subtitle">
+        A webhook is the only way anything leaves this machine, and it is off by
+        default. Local alerts need no external service at all.
+      </p>
+      <div class="form-grid">
+        <label>Log everything at or above
+          <select id="cfg-min-sev">
+            ${SEVERITY_ORDER.map(s => `<option value="${s}" ${cfg.min_severity === s ? "selected" : ""}>${s}</option>`).join("")}
+          </select>
+        </label>
+        <label>Raise an alert at or above
+          <select id="cfg-alert-sev">
+            ${SEVERITY_ORDER.map(s => `<option value="${s}" ${cfg.alert_min_severity === s ? "selected" : ""}>${s}</option>`).join("")}
+          </select>
+        </label>
+        <label>Webhook URL (optional)
+          <input type="text" id="cfg-webhook-url" value="${escAttr(cfg.webhook_url || "")}" placeholder="https://…">
+        </label>
+        <label>Keep rotated segments
+          <input type="number" id="cfg-rotate-keep" min="1" value="${cfg.rotate_keep}">
+        </label>
+        <label>Rotate at (bytes)
+          <input type="number" id="cfg-max-bytes" min="1024" value="${cfg.max_log_bytes}">
+        </label>
+        <label>Retention (days)
+          <input type="number" id="cfg-retention" min="1" value="${cfg.retention_days}">
+        </label>
+      </div>
+      <div class="row" style="margin-top:10px;">
+        <label style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--text-dim);">
+          <input type="checkbox" id="cfg-webhook-enabled" ${cfg.webhook_enabled ? "checked" : ""}>
+          send alerts to the webhook
+        </label>
+        <label style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--text-dim);">
+          <input type="checkbox" id="cfg-local-alerts" ${cfg.local_alerts_enabled ? "checked" : ""}>
+          keep alerts locally (no external service)
+        </label>
+        <button id="cfg-save" class="primary">Save</button>
+      </div>
+    </div>
+  `;
+
+  const applyFilters = () => {
+    securityFilters.q = main.querySelector("#sec-q").value.trim();
+    securityFilters.event = main.querySelector("#sec-event").value;
+    securityFilters.min_severity = main.querySelector("#sec-sev").value;
+    securityFilters.limit = parseInt(main.querySelector("#sec-limit").value, 10);
+    securityFilters.include_rotated = main.querySelector("#sec-rotated").checked;
+    renderSecurity(main);
+  };
+  main.querySelector("#sec-search").onclick = applyFilters;
+  main.querySelector("#sec-q").onkeydown = (e) => { if (e.key === "Enter") applyFilters(); };
+  main.querySelector("#sec-clear").onclick = () => {
+    Object.assign(securityFilters,
+      { q: "", event: "", min_severity: "", limit: 100, include_rotated: false });
+    renderSecurity(main);
+  };
+
+  main.querySelector("#sec-verify").onclick = async () => {
+    const r = await get("/api/security/verify");
+    toast(r.ok ? (r.complete ? "Chain verified — no tampering" : "Chain verified (older segments pruned)")
+               : `Integrity check FAILED: ${r.reason}`, r.ok ? "success" : "error");
+    renderSecurity(main);
+  };
+  main.querySelector("#sec-selftest").onclick = async () => {
+    const r = await post("/api/security/self-test");
+    main.querySelector("#sec-selftest-result").innerHTML = `
+      <table><tbody>
+        <tr><td>Wrote canary event</td><td><span class="tag ${r.wrote_event ? "on" : "error"}">${r.wrote_event}</span></td></tr>
+        <tr><td>Chain verified</td><td><span class="tag ${r.verification.ok ? "on" : "error"}">${r.verification.ok}</span></td></tr>
+        <tr><td>Local alerts</td><td><span class="tag ${r.alerting.local_alerts_enabled ? "on" : "off"}">${r.alerting.local_alerts_enabled}</span></td></tr>
+        <tr><td>Webhook</td><td><span class="tag ${r.alerting.webhook_enabled ? "on" : "off"}">${r.alerting.webhook_enabled ? (r.alerting.webhook_configured ? "enabled" : "enabled but no URL set") : "off"}</span></td></tr>
+      </tbody></table>`;
+  };
+  main.querySelector("#sec-rotate").onclick = async () => {
+    const r = await post("/api/security/events/rotate");
+    toast(`Rotated. Removed ${r.removed.length} old segment(s).`, "success");
+    renderSecurity(main);
+  };
+  const exportUrl = (fmt) => {
+    const p = new URLSearchParams({ format: fmt, include_rotated: "true", limit: "0" });
+    if (securityFilters.q) p.set("q", securityFilters.q);
+    if (securityFilters.event) p.set("event", securityFilters.event);
+    if (securityFilters.min_severity) p.set("min_severity", securityFilters.min_severity);
+    return `${API}/api/security/events/export?${p.toString()}`;
+  };
+  main.querySelector("#sec-export-json").onclick = () => { window.location = exportUrl("json"); };
+  main.querySelector("#sec-export-csv").onclick = () => { window.location = exportUrl("csv"); };
+
+  const ackBtn = main.querySelector("#sec-ack");
+  if (ackBtn) {
+    ackBtn.onclick = async () => {
+      const r = await post("/api/security/alerts/ack");
+      toast(`${r.acknowledged} alert(s) marked seen`);
+      renderSecurity(main);
+    };
+  }
+  const notifyBtn = main.querySelector("#sec-notify");
+  if (notifyBtn) {
+    // W2-149: browser notifications, so alerting works for someone who
+    // wants nothing leaving the machine. Permission is only ever requested
+    // from this explicit click — never on page load.
+    notifyBtn.onclick = async () => {
+      if (!("Notification" in window)) { toast("This browser has no notification API", "error"); return; }
+      const permission = await Notification.requestPermission();
+      if (permission !== "granted") { toast("Notifications not permitted", "error"); return; }
+      const unseen = alerts.filter(a => !a.acknowledged);
+      new Notification("Smart Bulb Dashboard — security", {
+        body: unseen.length
+          ? `${unseen.length} unseen alert(s). Most recent: ${unseen[0].message}`
+          : "Notifications enabled. Nothing outstanding.",
+      });
+      toast("Browser notifications enabled", "success");
+    };
+  }
+
+  main.querySelector("#cfg-save").onclick = async () => {
+    await post("/api/security/config", {
+      min_severity: main.querySelector("#cfg-min-sev").value,
+      alert_min_severity: main.querySelector("#cfg-alert-sev").value,
+      webhook_enabled: main.querySelector("#cfg-webhook-enabled").checked,
+      webhook_url: main.querySelector("#cfg-webhook-url").value.trim() || null,
+      local_alerts_enabled: main.querySelector("#cfg-local-alerts").checked,
+      rotate_keep: parseInt(main.querySelector("#cfg-rotate-keep").value, 10),
+      max_log_bytes: parseInt(main.querySelector("#cfg-max-bytes").value, 10),
+      retention_days: parseInt(main.querySelector("#cfg-retention").value, 10),
+    });
+    toast("Security settings saved", "success");
+    renderSecurity(main);
+  };
+}
+
+// ------------------------------------------------------- backup & restore --
+async function renderBackup(main) {
+  const [listing, options] = await Promise.all([
+    get("/api/backups"),
+    get("/api/backups/options"),
+  ]);
+  const backups = listing.backups || [];
+
+  main.innerHTML = `
+    <h1 class="panel-title">Backup &amp; Restore</h1>
+    <p class="panel-subtitle">
+      One archive holding <code class="inline">config.json</code> and everything under
+      <code class="inline">data/</code> — favourites, schedules, lightshows, audio
+      presets, discovery state.
+    </p>
+
+    <div class="callout danger">
+      <b>A backup contains every bulb's <code class="inline">local_key</code>.</b>
+      That key is permanent local control of the bulb for anyone on your network,
+      and it cannot be revoked without re-pairing the bulb. Encrypt the archive
+      unless you are certain of where it is going to live.
+    </div>
+
+    <div class="card">
+      <h3>Create a Backup</h3>
+      <div class="form-grid">
+        <label>Encryption
+          <select id="bk-mode">
+            <option value="encrypted">Encrypt with a password (recommended)</option>
+            <option value="plain">No encryption</option>
+          </select>
+        </label>
+        <label id="bk-pass-wrap">Password
+          <input type="password" id="bk-password" autocomplete="new-password" placeholder="you cannot recover this later">
+        </label>
+        <label>Note (optional)
+          <input type="text" id="bk-note" placeholder="before moving to the new NUC">
+        </label>
+      </div>
+
+      <div id="bk-plain-warning" style="display:none;">
+        <div class="callout danger" style="margin-top:12px;">
+          <b>Unencrypted archive.</b> Anyone who gets this file can control your bulbs
+          from your LAN — indefinitely. Only reasonable if it stays on an
+          encrypted disk you control.
+          <label style="display:flex;align-items:center;gap:8px;margin-top:10px;color:var(--text);">
+            <input type="checkbox" id="bk-ack">
+            I understand this file will contain my device keys in plaintext.
+          </label>
+        </div>
+      </div>
+
+      <p class="panel-subtitle" style="margin-top:14px;">Leave out (optional, keeps the archive small):</p>
+      <div class="row">
+        ${options.exclusions.map(e => `
+          <label style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--text-dim);">
+            <input type="checkbox" class="bk-exclude" value="${escAttr(e.name)}">
+            ${escHtml(e.name)} <span class="tag off">${Math.round(e.bytes / 1024)} KB</span>
+          </label>`).join("")}
+      </div>
+
+      <p class="panel-subtitle" style="margin-top:14px;">
+        Never included, whatever you pick:
+        ${options.never_included.map(n => `<code class="inline">${escHtml(n)}</code>`).join(" ")}
+        — the PIN hash and session signing key, and the security log's own
+        tamper-evidence chain. Restoring those would let a restore rewrite your
+        access controls and erase the audit trail.
+      </p>
+
+      <button id="bk-create" class="primary" style="margin-top:10px;">Create Backup</button>
+    </div>
+
+    <div class="card">
+      <h3>Backups <span class="tag on">${backups.length}</span></h3>
+      <p class="panel-subtitle">
+        Keeping the newest <b>${listing.settings.keep}</b>; older ones are deleted
+        automatically. A restore never changes whether the PIN gate is on or off.
+      </p>
+      ${backups.length === 0 ? `<div class="empty-state">No backups yet.</div>` : `
+        <table>
+          <thead><tr><th>Name</th><th>When</th><th>Size</th><th>Encrypted</th><th>Note</th><th></th></tr></thead>
+          <tbody>${backups.map(b => `
+            <tr>
+              <td><code class="inline">${escHtml(b.name)}</code></td>
+              <td>${new Date(b.modified_at * 1000).toLocaleString()}</td>
+              <td>${Math.round(b.bytes / 1024)} KB</td>
+              <td><span class="tag ${b.encrypted ? "on" : "error"}">${b.encrypted ? "yes" : "NO — plaintext keys"}</span></td>
+              <td>${escHtml((b.manifest && b.manifest.note) || "—")}</td>
+              <td>
+                <button class="bk-download" data-name="${escAttr(b.name)}">Download</button>
+                <button class="bk-restore" data-name="${escAttr(b.name)}" data-enc="${b.encrypted}">Restore…</button>
+                <button class="danger bk-delete" data-name="${escAttr(b.name)}">Delete</button>
+              </td>
+            </tr>`).join("")}
+          </tbody>
+        </table>`}
+      <div class="form-grid" style="margin-top:14px;">
+        <label>Keep this many backups
+          <input type="number" id="bk-keep" min="1" value="${listing.settings.keep}">
+        </label>
+      </div>
+      <button id="bk-save-settings" style="margin-top:10px;">Save</button>
+    </div>
+
+    <div class="card" id="bk-restore-panel" style="display:none;">
+      <h3>Restore — <span id="bk-restore-name"></span></h3>
+      <div id="bk-restore-body"></div>
+    </div>
+  `;
+
+  const modeSelect = main.querySelector("#bk-mode");
+  const syncMode = () => {
+    const plain = modeSelect.value === "plain";
+    main.querySelector("#bk-plain-warning").style.display = plain ? "" : "none";
+    main.querySelector("#bk-pass-wrap").style.display = plain ? "none" : "";
+  };
+  modeSelect.onchange = syncMode;
+  syncMode();
+
+  main.querySelector("#bk-create").onclick = async () => {
+    const plain = modeSelect.value === "plain";
+    const password = main.querySelector("#bk-password").value;
+    if (plain && !main.querySelector("#bk-ack").checked) {
+      toast("Tick the acknowledgement, or choose an encrypted backup", "error");
+      return;
+    }
+    if (!plain && password.length < 8) {
+      toast("Use a password of at least 8 characters", "error");
+      return;
+    }
+    const exclude = [...main.querySelectorAll(".bk-exclude:checked")].map(c => c.value);
+    const result = await post("/api/backups", {
+      password: plain ? null : password,
+      exclude,
+      note: main.querySelector("#bk-note").value.trim() || null,
+    });
+    toast(result.warning ? "Backup created — UNENCRYPTED, contains device keys"
+                         : "Encrypted backup created", result.warning ? "error" : "success");
+    renderBackup(main);
+  };
+
+  main.querySelector("#bk-save-settings").onclick = async () => {
+    await post("/api/backups/settings", { keep: parseInt(main.querySelector("#bk-keep").value, 10) });
+    toast("Retention updated", "success");
+    renderBackup(main);
+  };
+
+  main.querySelectorAll(".bk-download").forEach(b => {
+    b.onclick = () => { window.location = `${API}/api/backups/${encodeURIComponent(b.dataset.name)}/download`; };
+  });
+
+  main.querySelectorAll(".bk-delete").forEach(b => {
+    b.onclick = async () => {
+      if (!window.confirm(`Delete ${b.dataset.name}? The file is overwritten before removal.`)) return;
+      await del(`/api/backups/${encodeURIComponent(b.dataset.name)}`);
+      toast("Backup deleted");
+      renderBackup(main);
+    };
+  });
+
+  main.querySelectorAll(".bk-restore").forEach(b => {
+    b.onclick = () => showRestorePanel(main, b.dataset.name, b.dataset.enc === "true", options);
+  });
+}
+
+// Restore is a two-step flow on purpose: nothing is written until the
+// archive has passed its integrity check, you've seen what would change, and
+// you've explicitly ticked the overwrite box.
+async function showRestorePanel(main, name, encrypted, options) {
+  const panel = main.querySelector("#bk-restore-panel");
+  const bodyEl = main.querySelector("#bk-restore-body");
+  main.querySelector("#bk-restore-name").textContent = name;
+  panel.style.display = "";
+  panel.scrollIntoView({ behavior: "smooth", block: "start" });
+
+  let password = null;
+  if (encrypted) {
+    password = window.prompt(`"${name}" is encrypted. Enter its password:`);
+    if (password === null) { panel.style.display = "none"; return; }
+  }
+
+  bodyEl.innerHTML = `<div class="empty-state loading">Checking integrity…</div>`;
+  const pre = await post(`/api/backups/${encodeURIComponent(name)}/preflight`, { password });
+
+  if (!pre.verification.ok) {
+    bodyEl.innerHTML = `
+      <div class="callout danger">
+        <b>This backup did not pass its integrity check, so it will not be offered
+        for restore.</b><br>${escHtml(pre.verification.reason || "")}
+      </div>`;
+    return;
+  }
+
+  const diff = pre.diff || {};
+  const devices = diff.devices || { added: [], removed: [], changed: [] };
+  bodyEl.innerHTML = `
+    <p class="panel-subtitle">
+      Integrity check passed (${pre.verification.files_checked} files).
+      Taken ${pre.verification.manifest ? new Date(pre.verification.manifest.created_at * 1000).toLocaleString() : "—"}.
+    </p>
+
+    <h3>What would change</h3>
+    ${!diff.config_in_backup ? `<div class="empty-state">This archive has no config.json.</div>` : `
+      <table>
+        <tbody>
+          <tr><td>Devices added by this restore</td><td>${devices.added.length ? escHtml(devices.added.join(", ")) : "—"}</td></tr>
+          <tr><td>Devices removed by this restore</td><td>${devices.removed.length ? escHtml(devices.removed.join(", ")) : "—"}</td></tr>
+          <tr><td>Devices changed</td><td>${devices.changed.length ? devices.changed.map(c =>
+            `${escHtml(c.id)}${c.local_key_changed ? " <span class=\"tag warn\">key differs</span>" : ""}`).join(", ") : "—"}</td></tr>
+          <tr><td>Groups added / removed</td><td>${escHtml((diff.groups.added.join(", ") || "—") + " / " + (diff.groups.removed.join(", ") || "—"))}</td></tr>
+          <tr><td>Remote access (PIN gate)</td><td><span class="tag on">unchanged by any restore</span></td></tr>
+        </tbody>
+      </table>
+      <p class="panel-subtitle">Key values are never shown here — only whether they differ.</p>`}
+
+    <h3 style="margin-top:18px;">What to restore</h3>
+    <div class="row">
+      <label style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--text-dim);">
+        <input type="radio" name="bk-scope" value="all" checked> Everything
+      </label>
+      <label style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--text-dim);">
+        <input type="radio" name="bk-scope" value="some"> Only what I pick
+      </label>
+    </div>
+    <div id="bk-sections" style="display:none;margin-top:10px;">
+      ${pre.sections.map(s => `
+        <label style="display:flex;align-items:center;gap:8px;font-size:12px;color:var(--text-dim);padding:3px 0;">
+          <input type="checkbox" class="bk-section" value="${escAttr(s.id)}">
+          ${escHtml(s.label)}
+          ${s.touches_credentials ? `<span class="tag error">overwrites device keys</span>` : ""}
+        </label>`).join("")}
+    </div>
+
+    <div class="callout danger" style="margin-top:16px;">
+      <b>This overwrites your current configuration and data.</b>
+      A safety backup of the current state is taken automatically first, so this
+      is undoable — but only if you can find that file afterwards.
+      <label style="display:flex;align-items:center;gap:8px;margin-top:10px;color:var(--text);">
+        <input type="checkbox" id="bk-confirm">
+        Yes, overwrite the current configuration with this backup.
+      </label>
+    </div>
+    <div class="row" style="margin-top:12px;">
+      <button id="bk-do-restore" class="danger">Restore Now</button>
+      <button id="bk-cancel-restore">Cancel</button>
+    </div>
+    <div id="bk-restore-result" style="margin-top:14px;"></div>
+  `;
+
+  const sectionsBox = bodyEl.querySelector("#bk-sections");
+  bodyEl.querySelectorAll('input[name="bk-scope"]').forEach(r => {
+    r.onchange = () => { sectionsBox.style.display = r.value === "some" && r.checked ? "" : "none"; };
+  });
+  bodyEl.querySelector("#bk-cancel-restore").onclick = () => { panel.style.display = "none"; };
+
+  bodyEl.querySelector("#bk-do-restore").onclick = async () => {
+    if (!bodyEl.querySelector("#bk-confirm").checked) {
+      toast("Tick the overwrite confirmation first", "error");
+      return;
+    }
+    const scoped = bodyEl.querySelector('input[name="bk-scope"]:checked').value === "some";
+    const sections = [...bodyEl.querySelectorAll(".bk-section:checked")].map(c => c.value);
+    if (scoped && sections.length === 0) { toast("Pick at least one section", "error"); return; }
+
+    const result = await post(`/api/backups/${encodeURIComponent(name)}/restore`, {
+      password, confirm: true, sections: scoped ? sections : null,
+    });
+    bodyEl.querySelector("#bk-restore-result").innerHTML = `
+      <table><tbody>
+        <tr><td>Files restored</td><td>${result.restored_files.length}</td></tr>
+        <tr><td>Device credentials touched</td><td><span class="tag ${result.touched_device_credentials ? "warn" : "on"}">${result.touched_device_credentials}</span></td></tr>
+        <tr><td>Safety backup taken first</td><td><code class="inline">${escHtml(result.safety_backup || "—")}</code></td></tr>
+        <tr><td>Remote access changed</td><td><span class="tag ${result.remote_access.changed ? "error" : "on"}">${result.remote_access.changed}</span></td></tr>
+      </tbody></table>`;
+    toast("Restore complete — reload to pick up the restored devices", "success");
+    await loadDevices();
+  };
 }
 
 async function renderSettings(main) {

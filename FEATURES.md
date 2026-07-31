@@ -154,7 +154,7 @@ Gaming
 149. `GET /api/analytics/usage` — real per-device on-time for a given period, derived from logged history (no fabricated wattage — this bulb has no real power-draw data)
 
 ## Developer tooling (1)
-150. A real backend pytest suite (76 tests: 54 backend + 22 CLI), mocked Tuya hardware layer — no test touches real hardware or `config.json`
+150. A real backend pytest suite (503 tests: 481 backend + 22 CLI), mocked Tuya hardware layer — no test touches real hardware or `config.json`
 
 ## Dashboard UX additions — v0.3.0 (9)
 151. Sleep-timer countdown ticks live, client-side, every second — no more refresh-to-see
@@ -167,9 +167,37 @@ Gaming
 158. Rounder, softer visual pass — 8px → 12px corner radius, real card elevation, smoother hover states
 159. Real mobile-friendliness fix — the sidebar was collapsing to a ~16px sliver on phones (an unreset grid-column span), plus 44px minimum tap targets throughout
 
+## Security audit log & alerting — Week 2 Phase C (10)
+160. Dedicated security-events log, separate from both the per-device action history and the existing auth-only audit trail (which is unchanged and now forwards into it)
+161. Four configurable severity levels with per-event overrides, defaulted so ordinary daily use never crosses the alert threshold
+162. Tamper-evident HMAC chain + separately-recorded head — detects an edited entry, a removed entry, a truncated tail, and a deleted log file (all four exercised against a running server)
+163. Size-based rotation that keeps the chain continuous, plus age- and count-based retention that can never delete the current segment
+164. Audit log search/filter UI in the dashboard (text, event type, minimum severity, rotated segments), with actionable entries visually distinguished from informational ones
+165. Export to JSON or CSV, JSON keeping the chain fields so an export stays independently verifiable
+166. Real-time alert when the PIN gate is disabled (`critical`) and when a new device appears in `config.json` (`warning`)
+167. Rate-based alert thresholds (default: 3 failed logins in 5 minutes) that aggregate a burst into one alert rather than N
+168. Local-only alert queue with browser notifications, and an optional outbound webhook that is off by default
+169. Change-tracking for `config.json` — every write logged by SHA-256 fingerprint, so a change is provable without any credential reaching the log
+
+## Backup & restore — Week 2 Phase C (7)
+170. One-click full backup of config + runtime data, downloadable, with a per-file SHA-256 manifest
+171. AES-256-GCM encrypted backup option, with the plaintext-`local_key` tradeoff surfaced in the UI as a required acknowledgement rather than buried in the docs
+172. Integrity check before any restore is offered (zip CRCs plus every file's checksum against the manifest)
+173. Restore behind an explicit overwrite confirmation, with an automatic pre-restore safety backup
+174. Selective restore (favorites / schedules / audio / lightshows / discovery / groups+zones) that provably never touches device credentials
+175. Backup versioning — keep the last N, older ones overwritten with random bytes before deletion
+176. A restore can never turn remote access on or off — structural (nothing writes `remote_auth.json`), reported in the result, and pinned by a test in both directions
+
+## Secrets management — Week 2 Phase C (5)
+177. Environment-variable / `.env` support for device `local_key`s, with a documented `.env.example`, and an env-sourced key that is never written back into `config.json`
+178. Systematic redaction audit — a test that walks the real route table, so any future endpoint leaking a `local_key` fails the suite without anyone remembering to add it
+179. Exception-text scrubbing at the device layer, so a `local_key` cannot reach an API response or the history log via third-party error text
+180. Secret-scanning CI check — fails the build if `backend/config.json`, `backend/data/`, `.env` or a real-looking key is ever committed, beyond what `.gitignore` can enforce
+181. Documented sensitivity, storage location and rotation procedure for each of the four secrets, served live at `GET /api/security/secrets` so the docs can't drift from the code
+
 ---
 
-**Total: 159 working features**, verified end-to-end against a real Bytech
+**Total: 181 working features**, verified end-to-end against a real Bytech
 A19 Wi-Fi RGB+CCT bulb (Tuya protocol v3.5) and this machine's real audio
 devices (VoiceMeeter + physical microphone) — see the verification log in
 `HANDOFF.md`, and `iterations/001` through `iterations/004` for each new

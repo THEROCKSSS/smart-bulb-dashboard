@@ -9,12 +9,13 @@ points — this file is deliberately terser and more directive.
 
 A local, cloud-independent dashboard + REST API for controlling Tuya-based
 Wi-Fi smart bulbs. FastAPI backend (`backend/`), vanilla-JS frontend
-(`frontend/`, no build step). 159 working features as of the last count in
+(`frontend/`, no build step). 181 working features as of the last count in
 `FEATURES.md` — audio-reactive lighting (14 modes, multi-bulb
 orchestration), network auto-discovery, scenes/effects/schedules, a
-PIN-gated remote-access path with session management and audit logging,
-a stdlib CLI (`cli/bulbctl.py`), and a real pytest suite (`backend/tests/`,
-`cli/tests/`).
+PIN-gated remote-access path with session management and audit logging, a
+tamper-evident security-event log with alerting, encrypted backup/restore,
+env-var secrets, a stdlib CLI (`cli/bulbctl.py`), and a real pytest suite
+(`backend/tests/`, `cli/tests/`).
 
 ## Do this first, in order
 
@@ -75,11 +76,27 @@ a stdlib CLI (`cli/bulbctl.py`), and a real pytest suite (`backend/tests/`,
   live-hardware verification — that's a legitimate, documented fallback,
   not a shortcut to feel bad about.
 - **Local `local_key` values and any real PIN must never end up in a
-  commit, a log line, or a doc.** `config.json` and `backend/data/` are
-  git-ignored for exactly this reason — check `.gitignore` before adding
-  any new file that might carry a secret, and confirm via a Forgejo/GitHub
-  API readback after pushing (this project has done that check after
-  every push so far) rather than assuming `.gitignore` alone is proof.
+  commit, a log line, or a doc.** `config.json`, `backend/data/`,
+  `backend/backups/` and `.env` are git-ignored for exactly this reason —
+  check `.gitignore` before adding any new file that might carry a secret,
+  and confirm via a Forgejo/GitHub API readback after pushing (this project
+  has done that check after every push so far) rather than assuming
+  `.gitignore` alone is proof. `.github/workflows/secret-scan.yml` now
+  enforces this in CI as well; run
+  `python .github/scripts/scan_secrets.py` locally before a push.
+- **Anything that can surface a secret needs a test, not a code read.**
+  `backend/tests/test_secrets.py` sweeps the *real* route table for
+  `local_key` values, so a new endpoint that echoes a device dict fails the
+  suite without anyone remembering to update a list. If you add an endpoint
+  that returns device data, run that file before claiming it's safe.
+  Exception text counts: `BulbController._safe_error()` exists because
+  `status()` used to pass raw tinytuya error strings straight into an API
+  response *and* the history log.
+- **Never back up or restore `backend/data/remote_auth.json` or the
+  security-audit chain files.** Restoring auth state would let a restore
+  silently flip the PIN gate (W2-175); restoring the audit log would rewind
+  the tamper-evidence. Both exclusions are structural in
+  `backup_restore.py` — don't "helpfully" add them back.
 
 ## Definition of done, on this project
 

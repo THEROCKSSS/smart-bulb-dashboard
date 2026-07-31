@@ -4,21 +4,32 @@ import time
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, Response
 from pydantic import BaseModel
 
-import config as cfgmod
-import bulb_manager as bm
-import schedule_engine
-import discovery
-import audio_reactive
-import audio_signal
-import audio_presets
-import audio_safety
-import audio_lightshow
-import remote_auth
-import analytics
-from scenes_presets import PRESET_COLORS, SCENES, EFFECTS
+import secrets_env
+
+# Before anything reads config: a `.env` may be supplying device local_keys
+# that config.json deliberately leaves blank. Done here, at the entry point,
+# rather than as an import side effect of secrets_env itself -- a module
+# that mutates os.environ merely by being imported is a nasty surprise in a
+# test run. See secrets_env.py and .env.example.
+secrets_env.load_env_file()
+
+import config as cfgmod  # noqa: E402
+import bulb_manager as bm  # noqa: E402
+import schedule_engine  # noqa: E402
+import discovery  # noqa: E402
+import audio_reactive  # noqa: E402
+import audio_signal  # noqa: E402
+import audio_presets  # noqa: E402
+import audio_safety  # noqa: E402
+import audio_lightshow  # noqa: E402
+import remote_auth  # noqa: E402
+import analytics  # noqa: E402
+import security_audit  # noqa: E402
+import backup_restore  # noqa: E402
+from scenes_presets import PRESET_COLORS, SCENES, EFFECTS  # noqa: E402
 
 APP_VERSION = "0.3.0"
 START_TIME = time.time()
@@ -325,6 +336,41 @@ class RemoteAuthEnableBody(BaseModel):
 
 class RevokeSessionBody(BaseModel):
     session_id: str
+
+
+class SecurityConfigBody(BaseModel):
+    min_severity: str | None = None
+    alert_min_severity: str | None = None
+    severity_overrides: dict | None = None
+    alert_thresholds: dict | None = None
+    webhook_enabled: bool | None = None
+    webhook_url: str | None = None
+    local_alerts_enabled: bool | None = None
+    max_log_bytes: int | None = None
+    rotate_keep: int | None = None
+    retention_days: int | None = None
+
+
+class BackupCreateBody(BaseModel):
+    # None means "no encryption" -- an explicit, acknowledged choice, not an
+    # oversight. See the warning the create endpoint returns.
+    password: str | None = None
+    exclude: list[str] | None = None
+    note: str | None = None
+
+
+class BackupPasswordBody(BaseModel):
+    password: str | None = None
+
+
+class BackupRestoreBody(BaseModel):
+    password: str | None = None
+    confirm: bool = False
+    sections: list[str] | None = None
+
+
+class BackupSettingsBody(BaseModel):
+    keep: int
 
 
 class LoginRateLimitBody(BaseModel):
@@ -1427,6 +1473,215 @@ def discovery_forget(device_id: str):
 def analytics_usage(period: str = "today"):
     try:
         return analytics.usage_summary(period)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+
+# ------------------------------------------------------- security audit ---
+@app.get("/api/security/events")
+def security_events(limit: int = 100, since: float | None = None, until: float | None = None,
+                    event: str | None = None, min_severity: str | None = None,
+                    outcome: str | None = None, q: str | None = None,
+                    include_rotated: bool = False):
+    try:
+        events = security_audit.read_events(
+            limit=limit, since=since, until=until, event=event,
+            min_severity=min_severity, outcome=outcome, q=q,
+            include_rotated=include_rotated,
+        )
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    return {
+        "events": events,
+        "count": len(events),
+        "severities": list(security_audit.SEVERITIES),
+        "known_events": sorted(security_audit.DEFAULT_SEVERITIES),
+        "data_source": "LIVE DATA (this host's security event log)",
+    }
+
+
+@app.get("/api/security/events/export")
+def security_events_export(format: str = "json", limit: int = 0, since: float | None = None,
+                           until: float | None = None, event: str | None = None,
+                           min_severity: str | None = None, outcome: str | None = None,
+                           q: str | None = None, include_rotated: bool = True):
+    try:
+        content, media_type, filename = security_audit.export_events(
+            fmt=format, limit=limit, since=since, until=until, event=event,
+            min_severity=min_severity, outcome=outcome, q=q, include_rotated=include_rotated,
+        )
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    return Response(content=content, media_type=media_type,
+                    headers={"Content-Disposition": f'attachment; filename="{filename}"'})
+
+
+@app.get("/api/security/verify")
+def security_verify(include_rotated: bool = True):
+    """Tamper check (W2-152). Read-only -- it never repairs or re-seals the
+    chain, because a 'fix it' button on a tamper-evidence feature would let
+    the tampering be papered over with one click."""
+    return security_audit.verify_chain(include_rotated=include_rotated)
+
+
+@app.post("/api/security/events/rotate")
+def security_rotate():
+    security_audit.rotate_now()
+    return {"ok": True, "removed": security_audit.apply_retention()}
+
+
+@app.get("/api/security/config")
+def security_config_get():
+    return security_audit.get_config()
+
+
+@app.post("/api/security/config")
+def security_config_set(body: SecurityConfigBody):
+    try:
+        return security_audit.update_config(**body.model_dump(exclude_unset=True))
+    except (ValueError, TypeError) as e:
+        raise HTTPException(400, str(e))
+
+
+@app.get("/api/security/alerts")
+def security_alerts(limit: int = 50, unacknowledged_only: bool = False):
+    return {"alerts": security_audit.list_alerts(limit=limit,
+                                                 unacknowledged_only=unacknowledged_only)}
+
+
+@app.post("/api/security/alerts/ack")
+def security_alerts_ack():
+    return {"ok": True, "acknowledged": security_audit.acknowledge_alerts()}
+
+
+@app.get("/api/security/digest")
+def security_digest(days: int = 7):
+    if days < 1:
+        raise HTTPException(400, "days must be >= 1")
+    return security_audit.digest(days=days)
+
+
+@app.post("/api/security/self-test")
+def security_self_test():
+    return security_audit.self_test()
+
+
+@app.get("/api/security/secrets")
+def security_secrets():
+    """Where each secret lives and what it's worth to an attacker (W2-223).
+    Returns no secret values, lengths or prefixes -- only presence and
+    source, which is everything a settings page legitimately needs."""
+    return secrets_env.secret_inventory(cfgmod.load_config())
+
+
+# ------------------------------------------------------ backup / restore ---
+@app.get("/api/backups")
+def backups_list():
+    return {"backups": backup_restore.list_backups(), "settings": backup_restore.get_settings()}
+
+
+@app.get("/api/backups/options")
+def backups_options():
+    """What can be excluded from a backup and what can be selectively
+    restored -- so the UI never has to hardcode either list."""
+    return {
+        "exclusions": backup_restore.optional_exclusions(),
+        "sections": [dict(backup_restore.SECTIONS[k], id=k) for k in backup_restore.SECTIONS],
+        "never_included": sorted(backup_restore.HARD_EXCLUDED_DATA
+                                 | set(backup_restore.HARD_EXCLUDED_PREFIXES)),
+    }
+
+
+@app.get("/api/backups/settings")
+def backups_settings_get():
+    return backup_restore.get_settings()
+
+
+@app.post("/api/backups/settings")
+def backups_settings_set(body: BackupSettingsBody):
+    try:
+        return backup_restore.update_settings(keep=body.keep)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+
+@app.post("/api/backups")
+def backups_create(body: BackupCreateBody):
+    try:
+        return backup_restore.create_backup(password=body.password, exclude=body.exclude,
+                                            note=body.note)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+
+# POST, not GET, for everything below that takes a password: a password in a
+# query string ends up in server logs, browser history and referrers.
+@app.post("/api/backups/{name}/verify")
+def backups_verify(name: str, body: BackupPasswordBody = BackupPasswordBody()):
+    try:
+        return backup_restore.verify_backup(name, password=body.password)
+    except FileNotFoundError as e:
+        raise HTTPException(404, str(e))
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+
+@app.post("/api/backups/{name}/preflight")
+def backups_preflight(name: str, body: BackupPasswordBody = BackupPasswordBody()):
+    try:
+        return backup_restore.restore_preflight(name, password=body.password)
+    except FileNotFoundError as e:
+        raise HTTPException(404, str(e))
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+
+@app.post("/api/backups/{name}/diff")
+def backups_diff(name: str, body: BackupPasswordBody = BackupPasswordBody()):
+    try:
+        return backup_restore.diff_backup(name, password=body.password)
+    except FileNotFoundError as e:
+        raise HTTPException(404, str(e))
+    except PermissionError as e:
+        raise HTTPException(401, str(e))
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+
+@app.get("/api/backups/{name}/download")
+def backups_download(name: str):
+    try:
+        content, filename = backup_restore.export_bytes(name)
+    except FileNotFoundError as e:
+        raise HTTPException(404, str(e))
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    return Response(content=content, media_type="application/octet-stream",
+                    headers={"Content-Disposition": f'attachment; filename="{filename}"'})
+
+
+@app.post("/api/backups/{name}/restore")
+def backups_restore(name: str, body: BackupRestoreBody):
+    try:
+        return backup_restore.restore_backup(name, password=body.password,
+                                             confirm=body.confirm, sections=body.sections)
+    except FileNotFoundError as e:
+        raise HTTPException(404, str(e))
+    except PermissionError as e:
+        # Covers both "you didn't confirm" and "this archive needs a
+        # password" -- 409 rather than 400 because nothing is wrong with the
+        # request's shape, it's the state/consent that's missing.
+        raise HTTPException(409, str(e))
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+
+@app.delete("/api/backups/{name}")
+def backups_delete(name: str):
+    try:
+        return backup_restore.delete_backup(name)
+    except FileNotFoundError as e:
+        raise HTTPException(404, str(e))
     except ValueError as e:
         raise HTTPException(400, str(e))
 

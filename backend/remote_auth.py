@@ -8,6 +8,8 @@ import threading
 import time
 from datetime import datetime, timezone
 
+import security_audit
+
 DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
 os.makedirs(DATA_DIR, exist_ok=True)
 AUTH_PATH = os.path.join(DATA_DIR, "remote_auth.json")
@@ -122,7 +124,13 @@ def log_audit_event(event, outcome, **fields):
     `fields` is free-form context (ip, session_id/jti, counts, ...) -- callers
     must never pass a raw PIN or session token value here. Best-effort: a
     logging failure (disk full, permissions) must never break the actual
-    auth flow, so write errors are swallowed."""
+    auth flow, so write errors are swallowed.
+
+    Also forwards the same event to `security_audit`, which adds severity,
+    alerting and the tamper-evident chain on top. This file stays the plain,
+    dependency-free auth trail (it is what iteration 004 verified against);
+    forwarding here rather than at each call site means a new auth event can
+    never be added to one log and forgotten in the other."""
     entry = {
         "ts": time.time(),
         "timestamp": datetime.now(timezone.utc).isoformat(),
@@ -137,6 +145,7 @@ def log_audit_event(event, outcome, **fields):
                 f.write(line + "\n")
     except OSError:
         pass
+    security_audit.log_event(event, outcome, source="remote_auth", **fields)
 
 
 def _hash_pin(pin, salt):
@@ -155,13 +164,27 @@ def enable(pin, session_ttl_s=None):
         if session_ttl_s:
             state["session_ttl_s"] = session_ttl_s
         _save(state)
+    # Audited outside the lock, deliberately: log_audit_event() takes
+    # _audit_lock and this module's own comments call out that an audit
+    # write must never nest inside a state-file lock.
+    log_audit_event("remote_auth_enabled", "success", session_ttl_s=session_ttl_s)
 
 
 def disable():
     with _lock:
         state = _load()
+        was_enabled = state.get("enabled", False)
         state["enabled"] = False
         _save(state)
+    # W2-145: turning the gate off is the single most security-relevant
+    # config change this app has -- it takes a remotely-exposed dashboard
+    # from PIN-protected to wide open. Logged `critical` in security_audit,
+    # which means it alerts under the default (warning) threshold. Only a
+    # real off-transition is logged: disabling an already-disabled gate is a
+    # no-op, and manufacturing a critical alert from one is exactly the
+    # alert-fatigue failure W2-156 warns about.
+    if was_enabled:
+        log_audit_event("remote_auth_disabled", "success")
 
 
 def set_login_rate_limit(max_attempts, window_s):
