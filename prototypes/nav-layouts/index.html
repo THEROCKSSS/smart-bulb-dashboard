@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>PROTOTYPE — 50 Nav Layouts</title>
+<link rel="stylesheet" href="layouts.css">
+</head>
+<body>
+
+<!-- Switcher. Fixed to the bottom so it never collides with a variant's own
+     chrome (several variants use the top bar, several use the bottom). -->
+<div class="switcher" id="switcher">
+  <button class="sw-btn" id="prev" title="Previous variant">←</button>
+  <div class="sw-meta">
+    <select id="pick"></select>
+    <span class="sw-note" id="note"></span>
+  </div>
+  <button class="sw-btn" id="next" title="Next variant">→</button>
+  <button class="sw-btn" id="gridview" title="See all 50 at once">▦ All</button>
+  <button class="sw-btn" id="rate" title="Mark as a favourite">☆</button>
+</div>
+
+<div class="stage" id="stage"></div>
+
+<!-- Contact-sheet overlay: all 50 as thumbnails, click to jump. -->
+<div class="overview" id="overview" hidden>
+  <div class="overview__head">
+    <h2>All 50 variants <span id="favcount"></span></h2>
+    <div>
+      <button class="sw-btn" id="copyfavs">Copy favourites</button>
+      <button class="sw-btn" id="closeover">Close ✕</button>
+    </div>
+  </div>
+  <div class="overview__grid" id="overgrid"></div>
+</div>
+
+<script src="variants.js"></script>
+<script src="prototype.js"></script>
+</body>
+</html>
