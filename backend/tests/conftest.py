@@ -12,6 +12,11 @@ the real backend/data/*.json files:
     tests.
   - `auth_reset` points remote_auth's on-disk state file at a pytest tmp
     path instead of the real backend/data/remote_auth.json.
+  - `observability_reset` (autouse) clears the process-global metric,
+    log-buffer and dependency-cache state and redirects every Week 2 Phase
+    D state file (observability.json, network_state.json,
+    remote_access.json) at a pytest tmp path, so no test can read or write
+    the real backend/data/ copies.
 """
 
 import colorsys
@@ -28,6 +33,9 @@ if BACKEND_DIR not in sys.path:
 import config as cfgmod  # noqa: E402
 import bulb_manager as bm  # noqa: E402
 import remote_auth  # noqa: E402
+import observability  # noqa: E402
+import network_health  # noqa: E402
+import remote_access_status  # noqa: E402
 import main as main_module  # noqa: E402
 
 
@@ -261,6 +269,30 @@ def reset_audio_rate_limit():
     yield
     with ar_module._rate_limit_lock:
         ar_module._rate_limit_hits.clear()
+
+
+@pytest.fixture(autouse=True)
+def observability_reset(tmp_path, monkeypatch):
+    """Week 2 Phase D state is process-global (metrics counters, the log
+    ring buffer, the dependency-probe cache) or disk-backed under
+    backend/data/. Both leak across tests and, worse, the disk-backed half
+    would have tests reading and overwriting the real machine's network /
+    remote-access state -- the same class of bug `auth_reset` exists for.
+    Everything gets a clean, throwaway home per test."""
+    monkeypatch.setattr(observability, "SETTINGS_PATH", str(tmp_path / "observability.json"))
+    monkeypatch.setattr(network_health, "NETWORK_STATE_PATH", str(tmp_path / "network_state.json"))
+    monkeypatch.setattr(remote_access_status, "REMOTE_ACCESS_PATH", str(tmp_path / "remote_access.json"))
+    observability.reset_metrics()
+    observability.clear_log_buffer()
+    observability.clear_template_cache()
+    with network_health._latency_lock:
+        network_health._latency.clear()
+    yield
+    observability.reset_metrics()
+    observability.clear_log_buffer()
+    observability.clear_template_cache()
+    with network_health._latency_lock:
+        network_health._latency.clear()
 
 
 @pytest.fixture

@@ -231,6 +231,84 @@ curl -X POST http://localhost:8500/api/system/discovery/<device_id>/unignore
 curl -X DELETE http://localhost:8500/api/system/discovery/<device_id>
 ```
 
+## Observability & system health
+
+See `docs/observability.md` for the metric list, the documented "healthy"
+baseline, and how redaction in the diagnostic report works.
+
+```bash
+# Prometheus text exposition format. NOT exempt from the PIN gate.
+curl http://localhost:8500/metrics
+
+# Same numbers as JSON, for the dashboard's own Health page
+curl http://localhost:8500/api/system/metrics
+
+# Backend-level health: uptime, dependencies, request/error rates,
+# network mode, per-bulb latency, recent errors. Distinct from the
+# per-device Diagnostics tab.
+curl http://localhost:8500/api/system/health-summary
+
+# Startup dependency probes (add ?refresh=true to re-probe)
+curl http://localhost:8500/api/system/dependencies
+
+# Log level — persisted, applied without a restart
+curl http://localhost:8500/api/system/log-level
+curl -X POST http://localhost:8500/api/system/log-level \
+  -H "Content-Type: application/json" -d '{"level": "DEBUG"}'
+
+# Tail the in-memory log buffer (level filters to that severity AND ABOVE)
+curl "http://localhost:8500/api/system/logs?limit=50&level=WARNING"
+
+# Shareable support bundle, every secret stripped. Returned to the caller
+# only -- never written to disk.
+curl http://localhost:8500/api/system/diagnostic-report
+```
+
+Every request carries an `X-Correlation-ID` response header. Send your own
+to keep one id end-to-end (it must match `^[A-Za-z0-9._:-]{1,64}$`,
+otherwise it's replaced):
+
+```bash
+curl -i -H "X-Correlation-ID: my-trace-1" http://localhost:8500/api/system/health
+```
+
+## Network resilience
+
+```bash
+# Host IP + change log, connectivity mode, LAN-only firewall guidance
+curl http://localhost:8500/api/system/network
+
+# Take a reading now instead of waiting for the 60s monitor tick
+curl -X POST http://localhost:8500/api/system/network/refresh
+
+# Per-bulb latency over time (rolling 200-sample window, in memory)
+curl "http://localhost:8500/api/devices/bulb-1/latency-history?limit=50"
+```
+
+## Remote-access surfacing
+
+```bash
+# Public IP (cached), DuckDNS last sync, exposure state, warnings
+curl http://localhost:8500/api/system/remote-access/status
+
+# Is Tailscale running on this host? Returns the tailnet-reachable URL.
+curl http://localhost:8500/api/system/remote-access/tailscale
+
+# The ONE outbound internet request this project makes, on demand only.
+curl -X POST http://localhost:8500/api/system/remote-access/detect-public-ip
+
+# Your own DuckDNS updater reports its sync here
+curl -X POST http://localhost:8500/api/system/remote-access/duckdns-sync \
+  -H "Content-Type: application/json" \
+  -d '{"domain":"yourname.duckdns.org","ip":"203.0.113.9","ok":true}'
+
+# Declare (or retract) that a port forward exists. A successful DuckDNS
+# sync sets this automatically. While set, turning the PIN gate off
+# re-raises a persistent warning banner.
+curl -X POST http://localhost:8500/api/system/remote-access/exposure \
+  -H "Content-Type: application/json" -d '{"configured": true, "source": "port forward 48213"}'
+```
+
 ## Interactive docs
 
 FastAPI auto-generates Swagger UI at `http://localhost:8500/docs` — useful

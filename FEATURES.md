@@ -167,9 +167,44 @@ Gaming
 158. Rounder, softer visual pass — 8px → 12px corner radius, real card elevation, smoother hover states
 159. Real mobile-friendliness fix — the sidebar was collapsing to a ~16px sliver on phones (an unreset grid-column span), plus 44px minimum tap targets throughout
 
+## Observability & monitoring — Week 2 Phase D (11)
+160. `GET /metrics` — Prometheus text exposition format: uptime, per-endpoint request counts, error counts by class, and latency quantiles
+161. Request latency percentiles (p50/p95/p99) tracked per **route template**, not per concrete path — so one series per bulb id can't blow up cardinality
+162. Error-rate tracking, 5xx vs 4xx counted separately, per endpoint and process-wide
+163. System Health page (System → Health) — backend uptime, dependency state, request/error rates, network mode, per-bulb latency, recent errors; deliberately distinct from the per-device Diagnostics tab
+164. Startup dependency health checks that *exercise* each package (`tinytuya`, `numpy`, `sounddevice`), not just import it — fails fast with an actionable fix command when a required one is broken, degrades loudly rather than fatally when audio is unavailable
+165. Log level configurable from Settings (persisted, no restart, no code edit)
+166. Centralized log viewer in the dashboard — a filterable tail of the in-memory buffer, with per-line correlation IDs
+167. Correlation IDs on every request (`X-Correlation-ID`), echoed on the response and stamped onto every log record emitted while handling it; an inbound id is honoured only if it can't be used for log injection
+168. Self-diagnostic report generator — config shape + dependencies + metrics + network + recent logs and history, bundled for a bug report with secrets stripped three independent ways, asserted by test
+169. Three-layer secret redaction (secret-shaped field names, `key=value` patterns in free-form text, and bare occurrences of live secret values) applied to both the log buffer and the diagnostic report
+170. Documented "healthy" baseline metrics so a user can recognise a degraded install (`docs/observability.md`)
+
+## Network resilience — Week 2 Phase D (7)
+171. Host-IP change detection — logged with timestamp, old and new address, so "remote access stopped working yesterday" has an answer
+172. Automatic reconnection after the backend loses and regains connectivity — every stale persistent bulb socket is dropped and rebuilt, while controllers (history, timers, effect state) survive
+173. Router-reboot resilience for discovery — a failed scan retries with a widening delay instead of being recorded as "no devices on this network"
+174. Discovery scheduler skips scanning entirely when the host has no LAN address, instead of burning ~18s and overwriting `last_scan`; and scans immediately when the host IP changes
+175. Per-bulb latency monitoring over time, recorded free from real status calls, surfaced in Diagnostics and on the Health page with p50/p95/max and failure rate
+176. Connectivity modes (`full` / `lan_only` / `tailscale_only` / `offline`) with an explicit `bulb_control_available` flag — the tailnet-up-but-LAN-down case says plainly that bulb commands can't work rather than letting each one time out
+177. Firewall guidance for LAN-only operation, served as live data from the API so the docs and the UI can't drift apart
+
+## Remote-access surfacing — Week 2 Phase D (5)
+178. Settings display of the currently detected public IP and when it was last checked (opt-in, on-demand lookup only)
+179. Last DuckDNS sync time and status in Settings, reported by the user's own updater via `POST /api/system/remote-access/duckdns-sync`
+180. Tailscale status check in Diagnostics — is it installed, is the daemon running — plus the tailnet-reachable MagicDNS URL with a copy button
+181. Warning banner when the dashboard has demonstrably been reached from a public IP while the PIN gate is off
+182. Persistent fail-safe warning when public exposure is configured and the PIN gate is *later* disabled — survives restarts, clears only when the gate is re-enabled or exposure is explicitly retracted
+
+## Security documentation — Week 2 Phase D (4)
+183. `SECURITY.md` — responsible-disclosure process, response-time commitments, security update policy, and scope
+184. Formal PIN-gate threat model (`docs/pin-gate-threat-model.md`) — assets, trust boundaries, an attacker table, what's defended with test evidence, and ten explicitly-undefended cases
+185. `pip-audit` dependency vulnerability scan with real findings recorded, per-advisory applicability assessment, and an honest "not yet fixed, here's why" status
+186. Verified and documented no-telemetry guarantee — one opt-in outbound request in the entire codebase, with the grep command to check it yourself
+
 ---
 
-**Total: 159 working features**, verified end-to-end against a real Bytech
+**Total: 186 working features**, verified end-to-end against a real Bytech
 A19 Wi-Fi RGB+CCT bulb (Tuya protocol v3.5) and this machine's real audio
 devices (VoiceMeeter + physical microphone) — see the verification log in
 `HANDOFF.md`, and `iterations/001` through `iterations/004` for each new
