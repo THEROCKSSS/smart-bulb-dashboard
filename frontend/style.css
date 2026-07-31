@@ -145,6 +145,60 @@ button:disabled:hover { transform: none; }
   padding: 24px 28px 60px;
 }
 
+/* Sub-tabs — the second level of nav, used only on pages whose sections are
+   each big enough to deserve their own view. Pages whose sections genuinely
+   fit together (Automation, Rooms) render them stacked instead, with no bar. */
+.subtabs {
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
+  margin: 0 0 20px;
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 10px;
+}
+
+.subtab {
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--radius);
+  color: var(--text-dim);
+  cursor: pointer;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 500;
+  padding: 7px 13px;
+  /* 44px min target so these stay comfortably tappable on a phone, matching
+     the tap-target pass done for the rest of the mobile layout. */
+  min-height: 44px;
+  transition: background-color .15s, color .15s, border-color .15s;
+}
+
+.subtab:hover { background: var(--bg-card); color: var(--text); }
+.subtab.active {
+  background: rgba(124,156,255,0.14);
+  border-color: var(--accent-dim);
+  color: var(--accent);
+}
+
+/* Stacked sections on a merged page, separated by a rule so two panels on one
+   page still read as two distinct things rather than one long scroll. */
+.panel-section + .panel-section {
+  margin-top: 28px;
+  padding-top: 24px;
+  border-top: 1px solid var(--border);
+}
+
+/* Each panel renderer writes its own <h1 class="panel-title">, which is correct
+   when that panel owns the page but too loud when it's one section of a merged
+   page. Demote visually in CSS rather than rewriting the DOM: several of these
+   panels re-render themselves into their own container (renderTimers,
+   renderEffects, ...), which would undo any node swap on every refresh. */
+.panel-section .panel-title {
+  font-size: 15px;
+  color: var(--text);
+  margin-bottom: 2px;
+}
+
 .panel-title {
   font-size: 18px;
   font-weight: 700;

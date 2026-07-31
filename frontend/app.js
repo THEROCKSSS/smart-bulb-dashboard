@@ -124,6 +124,17 @@ function post(path, body) { return api(path, { method: "POST", body: JSON.string
 function patch(path, body) { return api(path, { method: "PATCH", body: JSON.stringify(body || {}) }); }
 function del(path) { return api(path, { method: "DELETE" }); }
 
+// Zone names, session-preset names and device names are user-supplied and get
+// interpolated into innerHTML, so escape them. `escAttr` additionally escapes
+// quotes because those values also land inside data-* attributes.
+function escHtml(s) {
+  return String(s == null ? "" : s)
+    .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+function escAttr(s) {
+  return escHtml(s).replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+}
+
 function rgbToHex(r, g, b) {
   return "#" + [r, g, b].map(v => Math.max(0, Math.min(255, Math.round(v))).toString(16).padStart(2, "0")).join("");
 }
@@ -150,28 +161,82 @@ function el(html) {
 }
 
 // -------------------------------------------------------------- routing --
-const ROUTES = {
-  control: renderControl,
-  scenes: renderScenes,
-  effects: renderEffects,
-  audio: renderAudio,
-  presets: renderPresets,
-  timers: renderTimers,
-  schedule: renderSchedule,
-  groups: renderGroups,
-  history: renderHistory,
-  diagnostics: renderDiagnostics,
-  settings: renderSettings,
+// Five top-level pages instead of eleven sidebar entries. Two shapes here,
+// deliberately:
+//   - `tabs`   : the page's sections are each large enough to deserve their own
+//                view, so they get an in-page sub-tab bar (and their own
+//                bookmarkable `#/page/sub` hash).
+//   - `merged` : the sections are small enough to genuinely live on ONE
+//                scrolling page, stacked. No sub-tabs at all.
+// Scenes+Effects and Timers+Schedule were the specific merges asked for; both
+// are pairs that answer the same user question, so splitting them was noise.
+const PAGES = {
+  light: {
+    label: "Light",
+    tabs: [
+      { id: "control", label: "Control", render: renderControl },
+      { id: "looks", label: "Scenes & Effects", render: renderLooks },
+      { id: "presets", label: "Presets & Favorites", render: renderPresets },
+    ],
+  },
+  audio: {
+    label: "Audio",
+    tabs: [
+      { id: "session", label: "Live Session", render: renderAudio },
+      { id: "presets", label: "Session Presets", render: renderSessionPresets },
+    ],
+  },
+  automation: { label: "Automation", merged: renderAutomation },
+  rooms: { label: "Rooms", merged: renderRooms },
+  system: {
+    label: "System",
+    tabs: [
+      { id: "history", label: "History", render: renderHistory },
+      { id: "diagnostics", label: "Diagnostics", render: renderDiagnostics },
+      { id: "settings", label: "Settings", render: renderSettings },
+    ],
+  },
 };
 
+// Old one-tab-per-panel hashes still work — bookmarks, the remembered
+// last-route in localStorage, and any link written before the consolidation
+// all resolve to wherever that panel lives now.
+const LEGACY_ROUTES = {
+  control: "light/control",
+  scenes: "light/looks",
+  effects: "light/looks",
+  presets: "light/presets",
+  audio: "audio/session",
+  timers: "automation",
+  schedule: "automation",
+  groups: "rooms",
+  zones: "rooms",
+  history: "system/history",
+  diagnostics: "system/diagnostics",
+  settings: "system/settings",
+};
+
+const DEFAULT_ROUTE = "light/control";
+
+// Returns { page, sub, key } — `key` is the canonical "page/sub" string used
+// for localStorage and nav highlighting.
 function currentRoute() {
-  const hash = location.hash.replace(/^#\/?/, "");
-  return ROUTES[hash] ? hash : "control";
+  let hash = location.hash.replace(/^#\/?/, "");
+  if (LEGACY_ROUTES[hash]) hash = LEGACY_ROUTES[hash];
+  const [pageId, subId] = hash.split("/");
+  const page = PAGES[pageId];
+  if (!page) {
+    const [dp, ds] = DEFAULT_ROUTE.split("/");
+    return { page: dp, sub: ds, key: DEFAULT_ROUTE };
+  }
+  if (page.merged) return { page: pageId, sub: null, key: pageId };
+  const tab = page.tabs.find(t => t.id === subId) || page.tabs[0];
+  return { page: pageId, sub: tab.id, key: pageId + "/" + tab.id };
 }
 
 async function router() {
   const route = currentRoute();
-  lsSet(LS_KEY_ROUTE, route);
+  lsSet(LS_KEY_ROUTE, route.key);
   if (controlKeyHandler) {
     document.removeEventListener("keydown", controlKeyHandler);
     controlKeyHandler = null;
@@ -197,14 +262,31 @@ async function router() {
     state.timersResyncHandle = null;
   }
   document.querySelectorAll(".nav-item").forEach(n => {
-    n.classList.toggle("active", n.dataset.route === route);
+    n.classList.toggle("active", n.dataset.route === route.page);
   });
   const main = document.getElementById("main");
   main.innerHTML = `<div class="empty-state loading">Loading…</div>`;
+  const page = PAGES[route.page];
   try {
-    await ROUTES[route](main);
+    if (page.merged) {
+      await page.merged(main);
+    } else {
+      // Sub-tab bar, then the active tab's own panel rendered into a container
+      // below it. Each tab keeps its own hash so it stays bookmarkable.
+      main.innerHTML =
+        `<div class="subtabs" role="tablist">` +
+        page.tabs.map(t =>
+          `<button type="button" role="tab" class="subtab${t.id === route.sub ? " active" : ""}"` +
+          ` aria-selected="${t.id === route.sub}" data-subtab="${t.id}">${t.label}</button>`
+        ).join("") +
+        `</div><div id="subtab-panel"><div class="empty-state loading">Loading…</div></div>`;
+      const panel = main.querySelector("#subtab-panel");
+      const tab = page.tabs.find(t => t.id === route.sub);
+      await tab.render(panel);
+    }
   } catch (e) {
-    main.innerHTML = `<div class="empty-state">Failed to load this panel: ${e.message}</div>`;
+    const target = main.querySelector("#subtab-panel") || main;
+    target.innerHTML = `<div class="empty-state">Failed to load this panel: ${e.message}</div>`;
   }
 }
 
@@ -212,6 +294,10 @@ window.addEventListener("hashchange", router);
 document.getElementById("sidebar").addEventListener("click", (e) => {
   const item = e.target.closest(".nav-item");
   if (item) location.hash = "#/" + item.dataset.route;
+});
+document.getElementById("main").addEventListener("click", (e) => {
+  const tab = e.target.closest(".subtab");
+  if (tab) location.hash = "#/" + currentRoute().page + "/" + tab.dataset.subtab;
 });
 
 // -------------------------------------------------------------- devices --
@@ -1557,6 +1643,251 @@ async function renderSettings(main) {
       renderSettings(main);
     };
   }
+}
+
+// ------------------------------------------------------- merged panels --
+// Each of these composes existing panel renderers into one page rather than
+// reimplementing them. The sub-renderers already scope their DOM lookups to
+// the container they're handed, so handing each a section <div> instead of
+// #main works unchanged — and any future fix to (say) renderTimers applies
+// here automatically.
+
+function panelSection(id) {
+  return `<section class="panel-section"><div class="panel-section__body" id="${id}"></div></section>`;
+}
+
+async function renderLooks(main) {
+  main.innerHTML =
+    `<h1 class="panel-title">Scenes &amp; Effects</h1>` +
+    `<p class="panel-subtitle">Both ways to put a look on the bulb, together — scenes are fixed multi-color moods, effects animate until you stop them.</p>` +
+    panelSection("sec-scenes") + panelSection("sec-effects");
+  await renderScenes(main.querySelector("#sec-scenes"));
+  await renderEffects(main.querySelector("#sec-effects"));
+}
+
+async function renderAutomation(main) {
+  main.innerHTML =
+    `<h1 class="panel-title">Automation</h1>` +
+    `<p class="panel-subtitle">Everything that happens on a clock — one-off sleep/wake timers, and the recurring weekly schedule.</p>` +
+    panelSection("sec-timers") + panelSection("sec-schedule");
+  await renderTimers(main.querySelector("#sec-timers"));
+  await renderSchedule(main.querySelector("#sec-schedule"));
+}
+
+async function renderRooms(main) {
+  main.innerHTML =
+    `<h1 class="panel-title">Rooms</h1>` +
+    `<p class="panel-subtitle">Groups are a flat set of bulbs you control together. Zones sit above them — a zone can contain bulbs, whole groups, or both.</p>` +
+    panelSection("sec-groups") + panelSection("sec-zones");
+  await renderGroups(main.querySelector("#sec-groups"));
+  await renderZones(main.querySelector("#sec-zones"));
+}
+
+// ------------------------------------------------------------- zones --
+async function renderZones(main) {
+  let zones = [];
+  try { zones = await get("/api/zones"); } catch (e) { zones = []; }
+  const groups = await get("/api/groups").catch(() => []);
+  const devices = state.devices || [];
+
+  // A zone's real membership is bulbs + every bulb inside its groups, deduped.
+  // Resolve it client-side for the list so this doesn't fire N extra requests;
+  // the server does the same resolution on GET /api/zones/{id}.
+  const resolveCount = (z) => {
+    const seen = new Set(z.device_ids || []);
+    (z.group_ids || []).forEach(gid => {
+      const g = groups.find(x => x.id === gid);
+      if (g) (g.device_ids || []).forEach(d => seen.add(d));
+    });
+    return seen.size;
+  };
+
+  main.innerHTML = `
+    <h1 class="panel-title">Zones</h1>
+    <p class="panel-subtitle">A zone sits above groups — it can hold individual bulbs, whole groups, or a mix of both.</p>
+    <div class="card">
+      <h3>Create a zone</h3>
+      <div class="form-grid">
+        <label>Zone ID<input id="zone-new-id" placeholder="upstairs"></label>
+        <label>Display name<input id="zone-new-name" placeholder="Upstairs"></label>
+      </div>
+      <div class="row" style="margin-top:8px;">
+        <button id="zone-create" class="primary">Create Zone</button>
+      </div>
+    </div>
+    ${zones.length === 0
+      ? `<div class="empty-state">No zones yet. A zone is a higher-level room — it can hold individual bulbs, whole groups, or a mix of both.</div>`
+      : zones.map(z => `
+        <div class="card" data-zone="${escAttr(z.id)}">
+          <div class="row" style="justify-content:space-between;align-items:center;">
+            <h3 style="margin:0;">${escHtml(z.name || z.id)} <span class="tag">${resolveCount(z)} bulb(s)</span></h3>
+            <button class="zone-delete danger" data-zone-id="${escAttr(z.id)}">Delete</button>
+          </div>
+          <p class="panel-subtitle" style="margin-top:4px;">ID <code>${escHtml(z.id)}</code></p>
+          <div class="slider-row">
+            <label><span>Bulbs in this zone</span></label>
+            <div class="row" style="flex-wrap:wrap;gap:6px;">
+              ${(z.device_ids || []).length === 0
+                ? `<span class="panel-subtitle">none directly assigned</span>`
+                : (z.device_ids || []).map(did => {
+                    const d = devices.find(x => x.id === did);
+                    return `<span class="tag">${escHtml(d ? d.name : did)}
+                      <button class="zone-remove-device" data-zone-id="${escAttr(z.id)}" data-device-id="${escAttr(did)}" title="Remove from zone">×</button></span>`;
+                  }).join("")}
+            </div>
+          </div>
+          <div class="row" style="margin-top:8px;">
+            <select class="zone-add-select" data-zone-id="${escAttr(z.id)}">
+              ${devices.filter(d => !(z.device_ids || []).includes(d.id))
+                .map(d => `<option value="${escAttr(d.id)}">${escHtml(d.name)}</option>`).join("")
+                || `<option value="">(every bulb already in this zone)</option>`}
+            </select>
+            <button class="zone-add-device" data-zone-id="${escAttr(z.id)}">Add bulb</button>
+          </div>
+          <div class="slider-row" style="margin-top:8px;">
+            <label><span>Groups in this zone</span></label>
+            <div class="row" style="flex-wrap:wrap;gap:6px;">
+              ${(z.group_ids || []).length === 0
+                ? `<span class="panel-subtitle">none</span>`
+                : (z.group_ids || []).map(gid => {
+                    const g = groups.find(x => x.id === gid);
+                    return `<span class="tag">${escHtml(g ? g.name : gid)}</span>`;
+                  }).join("")}
+            </div>
+          </div>
+        </div>`).join("")}
+  `;
+
+  main.querySelector("#zone-create").onclick = async () => {
+    const id = main.querySelector("#zone-new-id").value.trim();
+    const name = main.querySelector("#zone-new-name").value.trim();
+    if (!id || !name) { toast("Zone needs both an ID and a name", "error"); return; }
+    try {
+      await post("/api/zones", { id, name, device_ids: [], group_ids: [] });
+      toast(`Zone "${name}" created`, "success");
+      renderZones(main);
+    } catch (e) { toast(e.message || "Could not create zone", "error"); }
+  };
+
+  main.querySelectorAll(".zone-delete").forEach(btn => {
+    btn.onclick = async () => {
+      await del(`/api/zones/${btn.dataset.zoneId}`);
+      toast("Zone deleted");
+      renderZones(main);
+    };
+  });
+
+  main.querySelectorAll(".zone-add-device").forEach(btn => {
+    btn.onclick = async () => {
+      const sel = main.querySelector(`.zone-add-select[data-zone-id="${btn.dataset.zoneId}"]`);
+      if (!sel || !sel.value) return;
+      await post(`/api/zones/${btn.dataset.zoneId}/devices`, { device_id: sel.value });
+      toast("Bulb added to zone", "success");
+      renderZones(main);
+    };
+  });
+
+  main.querySelectorAll(".zone-remove-device").forEach(btn => {
+    btn.onclick = async () => {
+      await del(`/api/zones/${btn.dataset.zoneId}/devices/${btn.dataset.deviceId}`);
+      toast("Bulb removed from zone");
+      renderZones(main);
+    };
+  });
+}
+
+// --------------------------------------------------- audio session presets --
+async function renderSessionPresets(main) {
+  let presets = [];
+  try { presets = await get("/api/audio/session-presets"); } catch (e) { presets = []; }
+  let live = { active: false };
+  try { live = await get(`/api/devices/${state.deviceId}/audio-reactive/status`); } catch (e) {}
+
+  main.innerHTML = `
+    <h1 class="panel-title">Session Presets</h1>
+    <p class="panel-subtitle">A snapshot of a whole audio-reactive session — mode, sensitivity, band count, dwell, capture device and safety limits — saved under a name so you can drop straight back into it. Distinct from the genre presets on the Live Session tab, which are curated starting points rather than saved state.</p>
+
+    <div class="card">
+      <h3>Save the running session</h3>
+      ${live.active
+        ? `<p class="panel-subtitle">Currently running: <span class="tag on">${escHtml(live.mode)}</span>
+             sensitivity ${live.sensitivity}, ${live.n_bands} band(s), input #${live.device_index}</p>
+           <div class="row">
+             <input id="sp-name" placeholder="e.g. Evening chill" style="flex:1;">
+             <button id="sp-save" class="primary">Save as preset</button>
+           </div>`
+        : `<div class="empty-state">No audio-reactive session is running on this bulb right now. Start one on the <a href="#/audio/session">Live Session</a> tab, get it sounding right, then come back here to save it.</div>`}
+    </div>
+
+    <h3>Saved presets</h3>
+    ${presets.length === 0
+      ? `<div class="empty-state">Nothing saved yet.</div>`
+      : presets.map(p => {
+          const c = p.config || {};
+          return `
+          <div class="card">
+            <div class="row" style="justify-content:space-between;align-items:center;">
+              <h3 style="margin:0;">${escHtml(p.name)}</h3>
+              <div class="row">
+                <button class="sp-apply primary" data-preset-id="${escAttr(p.id)}">Apply</button>
+                <button class="sp-delete danger" data-preset-id="${escAttr(p.id)}">Delete</button>
+              </div>
+            </div>
+            <p class="panel-subtitle" style="margin-top:6px;">
+              <span class="tag">${escHtml(c.mode || "?")}</span>
+              sensitivity ${c.sensitivity ?? "?"} ·
+              ${c.n_bands ?? "?"} band(s) ·
+              dwell ${c.min_dwell_ms ?? "?"}ms ·
+              input #${c.device_index ?? "?"}
+              ${c.max_duration_s ? ` · stops after ${c.max_duration_s}s` : ""}
+              ${c.max_flash_rate_hz ? ` · flash cap ${c.max_flash_rate_hz}Hz` : ""}
+            </p>
+          </div>`;
+        }).join("")}
+  `;
+
+  const saveBtn = main.querySelector("#sp-save");
+  if (saveBtn) {
+    saveBtn.onclick = async () => {
+      const name = main.querySelector("#sp-name").value.trim();
+      if (!name) { toast("Give the preset a name first", "error"); return; }
+      try {
+        await post(`/api/devices/${state.deviceId}/audio-reactive/session-presets`, {
+          name,
+          device_index: live.device_index,
+          mode: live.mode,
+          sensitivity: live.sensitivity,
+          n_bands: live.n_bands,
+          min_dwell_ms: (live.sender && live.sender.min_dwell_ms) || undefined,
+          max_duration_s: live.max_duration_s,
+          warmup_s: live.warmup_s,
+          max_flash_rate_hz: live.max_flash_rate_hz,
+        });
+        toast(`Saved "${name}"`, "success");
+        renderSessionPresets(main);
+      } catch (e) { toast(e.message || "Could not save preset", "error"); }
+    };
+  }
+
+  main.querySelectorAll(".sp-apply").forEach(btn => {
+    btn.onclick = async () => {
+      try {
+        await post(`/api/devices/${state.deviceId}/audio-reactive/session-presets/apply`, {
+          preset_id: btn.dataset.presetId,
+        });
+        toast("Session started from preset", "success");
+        renderSessionPresets(main);
+      } catch (e) { toast(e.message || "Could not apply preset", "error"); }
+    };
+  });
+
+  main.querySelectorAll(".sp-delete").forEach(btn => {
+    btn.onclick = async () => {
+      await del(`/api/audio/session-presets/${btn.dataset.presetId}`);
+      toast("Preset deleted");
+      renderSessionPresets(main);
+    };
+  });
 }
 
 // ------------------------------------------------------------ pin gate --
