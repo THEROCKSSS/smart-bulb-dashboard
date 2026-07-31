@@ -73,16 +73,27 @@ below), and understand its limits (also below) before relying on it.
   what was tested. Use a real PIN, not `1234` or `test1234` (the value used
   during this project's own testing — rotate it before exposing anything
   publicly).
-- **This is plain HTTP, not HTTPS.** The PIN and session cookie both
-  travel unencrypted between your phone and your house. On a trusted home
-  Wi-Fi this doesn't matter much; the moment you're forwarding a port to
-  the public internet, anyone positioned to intercept that specific
-  traffic path (a malicious/compromised Wi-Fi you're connecting from,
-  your ISP, etc.) can see the PIN in plaintext. If this matters to you,
-  put a reverse proxy (e.g. Caddy, which gets you free automatic TLS certs
-  for a DuckDNS domain with almost no config) in front of this dashboard
-  instead of forwarding straight to it. This is flagged as a roadmap item
-  rather than built now — see `roadmap/`.
+- **Put TLS in front of it — this is now built, not a roadmap item.**
+  Without a reverse proxy the PIN and session cookie travel unencrypted
+  between your phone and your house. On trusted home Wi-Fi that matters
+  little; the moment you forward a port to the public internet, anyone on
+  that traffic path (a compromised Wi-Fi you're connecting from, your ISP)
+  can read the PIN in plaintext. `deploy/caddy/Caddyfile` gets you
+  automatic Let's Encrypt certificates on a DuckDNS domain, renewal
+  included, in about five lines of config; `deploy/nginx/` is the
+  equivalent for people already running nginx. See
+  [deployment.md](deployment.md) and `deploy/README.md`.
+- **Set `SBD_TRUSTED_PROXIES` when you add that proxy.** Behind a proxy the
+  app's socket only ever sees the proxy, so the per-IP lockout below keys
+  every remote user into one bucket — one attacker's five wrong guesses
+  lock out everybody, and the rate limiter throttles legitimate users on
+  the attacker's behalf. `SBD_TRUSTED_PROXIES=127.0.0.1,::1` for a proxy
+  on the same host. It's opt-in and defaults to trusting nothing, because
+  `X-Forwarded-For` is just a request header: believed unconditionally,
+  anything that can reach the app directly forges a new source IP per
+  guess and the lockout stops existing. Verify with
+  `curl -s https://your-host/api/system/proxy-status` — `client_ip` must
+  be your real address, not the proxy's.
 - **Use a non-default external port.** Port 8500 (or any well-known
   default) gets found by internet-wide scanners fast. A random high port
   isn't real security on its own, but it cuts down drive-by scanning noise
@@ -111,9 +122,19 @@ Does:
   individually or all at once — a forgotten or compromised session doesn't
   have to just expire on its own.
 
+- **Week 2 Phase B:** attributes the lockout to the *real* client behind a
+  reverse proxy (`SBD_TRUSTED_PROXIES`), and only ever to a proxy that has
+  been explicitly named — a forged `X-Forwarded-For` from anything else is
+  ignored entirely, so the header cannot be used to farm fresh lockout
+  buckets. The session cookie also picks up `Secure` automatically once the
+  connection really is HTTPS (and deliberately not before, since browsers
+  discard a `Secure` cookie sent over plain HTTP and that would lock LAN
+  users out of their own dashboard).
+
 Doesn't:
 - Encrypt traffic on its own (see the HTTPS point above) — though Tailscale
-  Serve, above, sidesteps this for the tailnet path specifically.
+  Serve, above, sidesteps this for the tailnet path specifically, and
+  `deploy/` now covers the reverse-proxy path properly.
 - Defend against an attacker who can see your network traffic and doesn't
   need to guess the PIN because they can just read it off the wire.
 - Replace a real login/user system — there is exactly one PIN, shared by
@@ -140,8 +161,6 @@ than a same-machine simulation.
 
 ## Not doing (for now)
 
-- A reverse proxy / automatic TLS setup (Caddy or similar) — flagged above
-  as the real fix for the plaintext-PIN concern, scoped as a roadmap item.
 - Multi-user accounts — this is a single shared PIN by design; see
   `ROADMAP.md`'s existing note on multi-user auth as a separate, larger
   feature.

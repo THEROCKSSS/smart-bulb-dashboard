@@ -1,0 +1,71 @@
+# Smart Bulb Dashboard -- LAN-only HTTPS with no public domain (W2-042).
+#
+# For when you want the PIN and session cookie encrypted on your own
+# network but have no DuckDNS name, no port forward, and no intention of
+# getting either. `tls internal` makes Caddy mint the certificate from its
+# own local CA -- no Let's Encrypt, no internet access needed, and Caddy
+# renews it on the same schedule it would a public cert.
+#
+# This is a better self-signed story than `openssl req -x509` because the
+# CA is installable once and then every cert it issues is trusted, instead
+# of clicking through a browser warning per host forever:
+#
+#     sudo caddy trust      # installs Caddy's root CA into the local trust store
+#
+# Run that on each device you browse from. On phones you have to copy the
+# root out of Caddy's data directory and install it manually:
+#     ~/.local/share/caddy/pki/authorities/local/root.crt
+#     (root-run service: /var/lib/caddy/.local/share/caddy/pki/...)
+# If that's more trouble than it's worth for a phone, Tailscale Serve
+# (docs/remote-access-security.md) gives you a genuinely trusted HTTPS
+# endpoint with none of this ceremony -- prefer it if it fits.
+#
+# Usage:
+#     sudo caddy validate --config /etc/caddy/Caddyfile
+#     sudo systemctl reload caddy
+#
+# Replace `bulbs.lan` with whatever name resolves to this machine on your
+# network (a router DNS entry, a hosts-file line, or an mDNS `.local`
+# name). A bare IP works too -- `https://192.168.1.20` -- but note that
+# browsers ignore HSTS for IP addresses, so the app's SBD_HSTS setting
+# will have no effect on an IP-only setup.
+{
+	# No email/ACME account: nothing here talks to a public CA.
+	# Silences the "no email, using internal issuer" notice.
+	auto_https disable_redirects
+}
+
+bulbs.lan, 192.168.1.20 {
+	tls internal
+
+	encode zstd gzip
+
+	header {
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		Referrer-Policy "no-referrer"
+		-Server
+	}
+
+	request_body {
+		max_size 1MB
+	}
+
+	reverse_proxy 127.0.0.1:8500 {
+		health_uri /healthz
+		health_interval 30s
+		health_timeout 5s
+	}
+
+	# Same requirement as the public config: the dashboard must run with
+	#     SBD_TRUSTED_PROXIES=127.0.0.1,::1
+	# or its per-IP lockout attributes every LAN client to the proxy.
+}
+
+# `auto_https disable_redirects` above turns OFF Caddy's automatic
+# :80 -> :443 redirect, on purpose: on a LAN you very likely still have
+# things (a script, a smart-home hub, `curl` in a cron job) hitting plain
+# HTTP, and silently redirecting them to a certificate their trust store
+# has never seen breaks them with a confusing TLS error rather than an
+# honest connection refused. Delete that line once everything on your
+# network trusts the Caddy root and you actually want the redirect.

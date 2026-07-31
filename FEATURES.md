@@ -167,9 +167,27 @@ Gaming
 158. Rounder, softer visual pass — 8px → 12px corner radius, real card elevation, smoother hover states
 159. Real mobile-friendliness fix — the sidebar was collapsing to a ~16px sliver on phones (an unreset grid-column span), plus 44px minimum tap targets throughout
 
+## TLS, reverse proxy & deployment (16)
+160. Trusted-proxy `X-Forwarded-For` handling — the PIN gate's per-IP lockout and login rate limiter attribute requests to the real client behind a reverse proxy instead of collapsing every remote user into one bucket. Opt-in via `SBD_TRUSTED_PROXIES`, defaulting to trusting nothing, and the forwarded chain is walked right-to-left so a client-prepended value can't win
+161. `Secure` flag applied to the session cookie automatically once the connection is genuinely HTTPS (direct TLS or `X-Forwarded-Proto` from a trusted proxy) — and deliberately not before, since browsers discard a `Secure` cookie sent over plain HTTP
+162. Opt-in HSTS (`SBD_HSTS`, with max-age/includeSubDomains/preload controls), only ever emitted on a request that really is HTTPS
+163. Opt-in redirect-to-HTTPS (`SBD_HTTPS_REDIRECT`), 307 so it isn't cached, and never applied to health probes
+164. `/healthz` — infrastructure liveness endpoint, separate from `/api/system/health`, open when the PIN gate is on and leaking no version/uptime
+165. `/api/system/proxy-status` — diagnostic showing the resolved client IP, TLS state, and trusted-proxy settings, so a proxy misconfiguration is visible instead of silent
+166. Caddy reference config with automatic Let's Encrypt certs for a DuckDNS domain (`deploy/caddy/Caddyfile`)
+167. Caddy LAN-only HTTPS config using its internal CA, no public domain needed (`deploy/caddy/Caddyfile.lan-selfsigned`)
+168. nginx reference config — TLS, HTTP/2, per-endpoint rate limiting, WebSocket passthrough, request size limits (`deploy/nginx/`)
+169. Documented certbot renewal automation for nginx, including the deploy hook that reloads it (the step whose absence kills a working setup 90 days later)
+170. Self-signed certificate generator with correct SAN handling for hostnames and IPs (`deploy/nginx/make-selfsigned-cert.sh`)
+171. `docker-compose.caddy.yml` — dashboard + Caddy in one command, with the trusted-proxy env var pre-set
+172. Docker healthcheck directive in `Dockerfile` and `docker-compose.yml`, probing `/healthz`
+173. systemd service unit — restart on crash, start on boot, sandboxing, with the audio-capture caveats documented
+174. systemd health-check timer that restarts the service when it stops answering while still technically alive
+175. Post-deploy smoke test (`deploy/smoke-test.py`) — stdlib-only, checks health, assets, PIN gate enforcement, cookie flags, TLS validity, certificate expiry, and reverse-proxy IP attribution
+
 ---
 
-**Total: 159 working features**, verified end-to-end against a real Bytech
+**Total: 175 working features**, verified end-to-end against a real Bytech
 A19 Wi-Fi RGB+CCT bulb (Tuya protocol v3.5) and this machine's real audio
 devices (VoiceMeeter + physical microphone) — see the verification log in
 `HANDOFF.md`, and `iterations/001` through `iterations/004` for each new
@@ -177,3 +195,13 @@ feature area's actual test results, including five real bugs found and
 fixed across these rounds of testing (an IP-change log field bug, a
 brightness-floor bug, the audio/bulb-I/O blocking bug, a circular hue
 smoothing bug, and a root-page auth lockout bug).
+
+Items 160–175 (Week 2 Phase B) are the exception to "verified against a
+real bulb" — they're deployment infrastructure, and were verified
+differently: the proxy configs against real `caddy validate` / `nginx -t` /
+`systemd-analyze verify` binaries, the X-Forwarded-For handling end-to-end
+through a real Caddy container proxying to a running instance, and the
+smoke test against that live instance with the PIN gate both off and on.
+No Let's Encrypt certificate has been issued against a real domain and no
+systemd unit has been started on a real Linux host — see `deploy/README.md`
+for the full validated/not-validated split.

@@ -4,7 +4,7 @@ import time
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from pydantic import BaseModel
 
 import config as cfgmod
@@ -17,6 +17,7 @@ import audio_presets
 import audio_safety
 import audio_lightshow
 import remote_auth
+import reverse_proxy
 import analytics
 from scenes_presets import PRESET_COLORS, SCENES, EFFECTS
 
@@ -43,6 +44,28 @@ async def pin_gate(request: Request, call_next):
         if not remote_auth.verify_session_token(token):
             return JSONResponse({"detail": "authentication required"}, status_code=401)
     return await call_next(request)
+
+
+# Registered AFTER pin_gate, which in Starlette means it wraps it: a
+# plain-HTTP request gets redirected before the gate bothers checking a
+# session, and the HSTS header lands on every response including the
+# gate's own 401s. Both halves are no-ops until explicitly enabled --
+# see backend/reverse_proxy.py for why neither defaults to on.
+@app.middleware("http")
+async def https_enforcement(request: Request, call_next):
+    if reverse_proxy.should_redirect_to_https(request):
+        # 307, not 301/308: permanent redirects get cached hard by
+        # browsers, and "I turned this on to try it and now my LAN
+        # dashboard won't load over HTTP anymore" is a support problem
+        # nobody needs. 307 also preserves the method/body, so an API
+        # client mid-POST isn't silently downgraded to a GET.
+        return RedirectResponse(reverse_proxy.https_redirect_url(request), status_code=307)
+    response = await call_next(request)
+    if reverse_proxy.request_is_https(request):
+        hsts = reverse_proxy.hsts_header_value()
+        if hsts:
+            response.headers["Strict-Transport-Security"] = hsts
+    return response
 
 
 def get_controller_or_404(device_id):
@@ -333,9 +356,34 @@ class LoginRateLimitBody(BaseModel):
 
 
 # --------------------------------------------------------------- system ---
+@app.get("/healthz")
+def healthz():
+    """Liveness probe for infrastructure -- a reverse proxy's upstream
+    health check, a Docker HEALTHCHECK, a systemd watchdog. Deliberately
+    separate from /api/system/health so the two can diverge: this one is
+    the endpoint most likely to end up reachable from the public internet
+    (a proxy probes it before any auth runs), so it returns the absolute
+    minimum -- no version, no uptime, nothing that helps someone fingerprint
+    the install. /api/system/health stays the app's own richer status
+    endpoint and is free to grow dependency checks that would be wrong to
+    expose here."""
+    return {"status": "ok"}
+
+
 @app.get("/api/system/health")
 def health():
     return {"ok": True, "uptime_seconds": round(time.time() - START_TIME, 1)}
+
+
+@app.get("/api/system/proxy-status")
+def proxy_status(request: Request):
+    """What the backend currently believes about this request's real client
+    IP and TLS state, and the trusted-proxy/HSTS/redirect settings behind
+    that belief. The point is to make a reverse-proxy deployment verifiable
+    from the outside: hit this through the proxy and confirm `client_ip` is
+    your actual address, not the proxy's -- otherwise the per-IP lockout is
+    silently keying every remote user into one shared bucket."""
+    return reverse_proxy.proxy_status(request)
 
 
 @app.get("/api/system/info")
@@ -352,7 +400,11 @@ def info():
 # ----------------------------------------------------------- pin auth ---
 @app.post("/api/auth/login")
 def auth_login(body: PinLoginBody, request: Request):
-    ip = request.client.host if request.client else "unknown"
+    # Not request.client.host directly: behind a trusted reverse proxy that
+    # is the proxy's address, and keying the lockout/rate limiter to it
+    # would throttle every remote user as one. See reverse_proxy.py -- the
+    # forwarded header is only believed from an explicitly trusted peer.
+    ip = reverse_proxy.client_ip(request)
 
     allowed, retry_after = remote_auth.check_login_rate_limit(ip)
     if not allowed:
@@ -369,7 +421,14 @@ def auth_login(body: PinLoginBody, request: Request):
     token = remote_auth.create_session_token(ip=ip)
     remote_auth.log_audit_event("login_success", "success", ip=ip)
     resp = JSONResponse({"ok": True})
+    # `secure` is conditional, not always-on, and that's load-bearing: a
+    # Secure cookie is silently dropped by the browser over plain HTTP, so
+    # hardcoding it would lock every LAN user out of a dashboard that has
+    # no HTTPS to fall back to. Conversely it must be set the moment the
+    # browser really is on HTTPS, or the session cookie stays eligible to
+    # leak over a downgraded/plaintext request.
     resp.set_cookie(remote_auth.SESSION_COOKIE, token, httponly=True, samesite="lax",
+                     secure=reverse_proxy.request_is_https(request),
                      max_age=remote_auth.get_session_ttl())
     return resp
 
@@ -385,7 +444,13 @@ def auth_logout(request: Request):
         if revoked:
             remote_auth.log_audit_event("logout", "success")
     resp = JSONResponse({"ok": True})
-    resp.delete_cookie(remote_auth.SESSION_COOKIE)
+    # Attributes must mirror the ones set at login: a browser only replaces
+    # a cookie when name/path/domain match, and a Secure-flagged deletion
+    # sent over plain HTTP would itself be discarded, leaving the stale
+    # cookie in place. (The session is revoked server-side above either
+    # way, so this is about not leaving a dead cookie lying around.)
+    resp.delete_cookie(remote_auth.SESSION_COOKIE, httponly=True, samesite="lax",
+                        secure=reverse_proxy.request_is_https(request))
     return resp
 
 

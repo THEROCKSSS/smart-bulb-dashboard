@@ -6,9 +6,25 @@ Replace `bulb-1` with your device's `id` from `config.json`.
 ## System
 
 ```bash
-curl http://localhost:8500/api/system/health
+curl http://localhost:8500/healthz            # {"status": "ok"} -- nothing else
+curl http://localhost:8500/api/system/health  # {"ok": true, "uptime_seconds": ...}
 curl http://localhost:8500/api/system/info
+curl http://localhost:8500/api/system/proxy-status
 ```
+
+`/healthz` is the **infrastructure** liveness probe: for a reverse proxy's
+upstream check, a Docker `HEALTHCHECK`, or an uptime monitor. It stays
+reachable when the PIN gate is enabled, is never caught by the
+redirect-to-HTTPS setting, and deliberately returns nothing that
+fingerprints the install — it's the endpoint most likely to end up publicly
+reachable. `/api/system/health` remains the app's own richer status route.
+
+`/api/system/proxy-status` (gated like the rest of `/api/system/`) reports
+what the backend believes about a request's real client IP and TLS state,
+and the trusted-proxy/HSTS/redirect settings behind that belief. Use it to
+verify a reverse-proxy deployment: `client_ip` must be your real address,
+not the proxy's, or the PIN gate's per-IP lockout is keying every remote
+user into one bucket. See [docs/deployment.md](docs/deployment.md).
 
 ## Devices
 
@@ -215,6 +231,21 @@ curl http://localhost:8500/api/auth/status   # {"enabled": bool, "authenticated"
 5 wrong PIN attempts from the same client locks that IP out for 5 minutes,
 even for a subsequently-correct PIN — see `iterations/004-pin-gate-remote-auth/`
 for what was tested.
+
+**Behind a reverse proxy**, "the same client" is only meaningful if the
+backend can see past the proxy. Set `SBD_TRUSTED_PROXIES` (e.g.
+`127.0.0.1,::1`) or every remote user shares one lockout bucket. It is
+opt-in and defaults to trusting nothing: `X-Forwarded-For` is attacker
+input otherwise, and believing it unconditionally would let anyone forge a
+fresh source IP per guess. Full detail and the other TLS-related env vars
+(`SBD_HSTS*`, `SBD_HTTPS_REDIRECT`) are in
+[docs/deployment.md](docs/deployment.md).
+
+The session cookie is `HttpOnly` and `SameSite=Lax` always, and picks up
+`Secure` automatically when the request is actually HTTPS (direct TLS, or
+`X-Forwarded-Proto: https` from a trusted proxy). It is deliberately *not*
+set over plain HTTP — browsers discard a `Secure` cookie delivered over
+plaintext, which would lock LAN users out of their own dashboard.
 
 ## Network auto-discovery
 
