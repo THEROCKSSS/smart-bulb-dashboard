@@ -12,6 +12,8 @@ the real backend/data/*.json files:
     tests.
   - `auth_reset` points remote_auth's on-disk state file at a pytest tmp
     path instead of the real backend/data/remote_auth.json.
+  - `reset_api_rate_limit` / `reset_audio_rate_limit` (both autouse) clear
+    the two module-level rate limiters between tests.
 """
 
 import colorsys
@@ -249,6 +251,20 @@ def reset_controllers():
 
 
 @pytest.fixture(autouse=True)
+def reset_api_rate_limit():
+    # Same class of leak as reset_audio_rate_limit below, one layer up:
+    # api_rate_limit's counters are module-level and every TestClient request
+    # in the whole suite reports the same client host ("testclient"), so
+    # without this the suite as a whole would eventually trip a 429 in some
+    # unrelated test. Also restores the tier limits, since rate-limit tests
+    # lower them deliberately.
+    import api_rate_limit
+    api_rate_limit.reset()
+    yield
+    api_rate_limit.reset()
+
+
+@pytest.fixture(autouse=True)
 def reset_audio_rate_limit():
     # Real bug, found by actually running the full suite after merging Week 1
     # Phase D's per-endpoint rate limiter: audio_reactive._rate_limit_hits is
@@ -295,5 +311,7 @@ def auth_reset(tmp_path, monkeypatch):
     fake_path = tmp_path / "remote_auth.json"
     monkeypatch.setattr(remote_auth, "AUTH_PATH", str(fake_path))
     remote_auth._attempts.clear()
+    remote_auth._rate_limit_buckets.clear()
     yield
     remote_auth._attempts.clear()
+    remote_auth._rate_limit_buckets.clear()

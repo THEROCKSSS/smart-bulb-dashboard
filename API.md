@@ -214,7 +214,82 @@ curl http://localhost:8500/api/auth/status   # {"enabled": bool, "authenticated"
 
 5 wrong PIN attempts from the same client locks that IP out for 5 minutes,
 even for a subsequently-correct PIN — see `iterations/004-pin-gate-remote-auth/`
-for what was tested.
+for what was tested. Repeat lockouts for the same IP double that wait (up to
+24h by default), and both the threshold and the durations are configurable.
+
+Weak PINs are refused outright, not warned about: under 6 characters, a
+well-known PIN (`1234`, `0000`, …), any of the development/test PINs, a
+single repeated character, a straight sequence, or a short pattern padded
+out by repetition.
+
+```bash
+# Grade a candidate PIN without committing to it (what the Settings UI shows)
+curl -X POST http://localhost:8500/api/system/remote-auth/pin-strength \
+  -H "Content-Type: application/json" -d '{"pin": "1234"}'
+# -> {"ok": false, "strength": "weak", "issues": [...], "hints": [...]}
+
+# Change the household PIN. Revokes every existing session and rotates the
+# signing key; the response carries a fresh cookie for the caller.
+curl -X POST http://localhost:8500/api/system/remote-auth/pin \
+  -H "Content-Type: application/json" -d '{"pin": "your-new-pin"}'
+
+# Guest PINs — open the same gate, revocable on their own (max 5 active)
+curl http://localhost:8500/api/system/remote-auth/pins
+curl -X POST http://localhost:8500/api/system/remote-auth/pins \
+  -H "Content-Type: application/json" \
+  -d '{"pin": "guest-pin", "label": "Dog sitter", "expires_in_s": 604800}'
+# Revoking a guest PIN also signs out the sessions it opened -- and only those
+curl -X DELETE http://localhost:8500/api/system/remote-auth/pins/<pin_id>
+
+# Session TTL and lockout policy (both also in Settings)
+curl -X POST http://localhost:8500/api/system/remote-auth/session-ttl \
+  -H "Content-Type: application/json" -d '{"session_ttl_s": 28800}'
+curl -X POST http://localhost:8500/api/system/remote-auth/lockout-policy \
+  -H "Content-Type: application/json" \
+  -d '{"max_attempts": 5, "base_seconds": 300, "max_seconds": 86400}'
+
+# Sessions
+curl http://localhost:8500/api/auth/sessions
+curl -X POST http://localhost:8500/api/auth/sessions/revoke \
+  -H "Content-Type: application/json" -d '{"session_id": "<id>"}'
+curl -X POST http://localhost:8500/api/auth/sessions/revoke-all
+```
+
+## API rate limiting
+
+Separate from the PIN gate's lockout: a per-IP cap on overall request volume
+to the public HTTP surface, with different allowances by endpoint
+sensitivity. Loopback and LAN clients are exempt by default, so a local-only
+setup is unaffected. Over-limit requests get `429` with a `Retry-After`
+header. Counters and config are in-memory and reset on restart — the env
+vars are the durable way to change a default.
+
+```bash
+curl http://localhost:8500/api/system/rate-limit
+# -> {"enabled":true,"exempt_local":true,"window_s":60.0,
+#     "limits":{"poll":600,"read":240,"write":120,"expensive":10}}
+
+curl -X POST http://localhost:8500/api/system/rate-limit \
+  -H "Content-Type: application/json" \
+  -d '{"exempt_local": false, "limits": {"write": 60}}'
+
+# How often limits are actually being hit, and by whom (also in Diagnostics)
+curl http://localhost:8500/api/system/diagnostics/rate-limit
+```
+
+Tiers: `poll` covers the endpoints the dashboard polls on a timer (the audio
+panel alone polls 200×/minute, so this budget is deliberately large), `read`
+every other safe method, `write` every state-changing method, and
+`expensive` the handful of routes that each kick off seconds of real network
+I/O (`/api/system/scan`, `/rescan`, `/test-connection`, `/api/audio/calibrate`).
+Env overrides: `SBD_RATE_LIMIT_POLL`, `_READ`, `_WRITE`, `_EXPENSIVE`,
+`SBD_RATE_LIMIT_EXEMPT_LOCAL=0`.
+
+This is enforced only in the HTTP middleware, so the audio-reactive engine's
+internal per-bulb dispatch — which never enters the HTTP stack — can't spend
+the budget. That's also why `min_dwell_ms` (how often a *bulb* is written to)
+and these limits (how often a *client* may call the API) are separate
+concerns that don't interact.
 
 ## Network auto-discovery
 
