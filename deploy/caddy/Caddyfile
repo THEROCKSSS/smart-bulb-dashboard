@@ -1,0 +1,155 @@
+# Smart Bulb Dashboard -- Caddy reverse proxy with automatic Let's Encrypt
+# certificates for a DuckDNS domain. (Week 2, W2-031/033/034/039/044/045/049.)
+#
+# Replace the two placeholders before use:
+#   yourname.duckdns.org  -> your actual DuckDNS subdomain
+#   you@example.com       -> an address you read; Let's Encrypt mails
+#                            expiry warnings there if renewal ever stalls
+#
+# What you get for free and do NOT have to configure:
+#   - Certificate issuance on first request, and renewal at ~2/3 of the
+#     cert lifetime, retried automatically. There is no cron job, no
+#     certbot timer, and no renewal hook to write -- this is the entire
+#     reason to prefer Caddy over nginx here. `caddy reload` picks up
+#     config changes without dropping the cert.
+#   - HTTP -> HTTPS redirect. Naming a site by hostname (rather than
+#     `:80`) makes Caddy open both ports and 308 the plaintext one, so
+#     leave SBD_HTTPS_REDIRECT off in the app; the app's own redirect is a
+#     backstop for traffic that bypassed the proxy, not the main path.
+#
+# Requirements for the automatic (HTTP-01/TLS-ALPN) issuance below:
+#   - yourname.duckdns.org resolves to your current public IP
+#   - your router forwards BOTH :80 and :443 to this machine. :80 is not
+#     optional -- Let's Encrypt validates over it. If you cannot forward
+#     :80 (many ISPs block it), use the DNS-01 block at the bottom instead.
+#
+# Install: put this at /etc/caddy/Caddyfile, then
+#     sudo caddy validate --config /etc/caddy/Caddyfile
+#     sudo systemctl reload caddy
+{
+	email you@example.com
+}
+
+yourname.duckdns.org {
+	encode zstd gzip
+
+	header {
+		# Caddy does not send HSTS on its own. Owning it here rather than
+		# in the app (SBD_HSTS) keeps one source of truth and means the
+		# header is still sent on responses Caddy generates itself.
+		# includeSubDomains is deliberately absent: on a *.duckdns.org name
+		# you do not necessarily control neighbouring labels, and the
+		# directive is a year-long commitment browsers will not let you
+		# take back early.
+		Strict-Transport-Security "max-age=31536000"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		Referrer-Policy "no-referrer"
+		-Server
+	}
+
+	# W2-049: cap request bodies. Nothing this API accepts is large -- the
+	# biggest real payload is a light-show export of a few hundred KB -- so
+	# this is pure downside protection against someone streaming garbage at
+	# an endpoint to tie up the backend.
+	request_body {
+		max_size 1MB
+	}
+
+	# W2-045: security-relevant events are visible at the proxy layer too,
+	# in JSON so `jq` can pick out repeated 401s from one address:
+	#   jq -r 'select(.status==401) | .request.remote_ip' \
+	#     /var/log/caddy/smart-bulb-dashboard.log | sort | uniq -c | sort -rn
+	# The app's own backend/data/auth_audit.log stays the authoritative
+	# record of *auth decisions*; this is the record of raw traffic, which
+	# is what shows you a scan that never got as far as a login attempt.
+	log {
+		output file /var/log/caddy/smart-bulb-dashboard.log {
+			roll_size 10MiB
+			roll_keep 10
+		}
+		format json
+	}
+
+	reverse_proxy 127.0.0.1:8500 {
+		# W2-044: probe the dedicated infrastructure endpoint, never
+		# /api/system/health. /healthz is guaranteed to stay open when the
+		# PIN gate is enabled and returns nothing that fingerprints the
+		# install; /api/system/health is the app's own richer status route
+		# and is free to change or grow dependency checks.
+		health_uri /healthz
+		health_interval 30s
+		health_timeout 5s
+		health_status 200
+
+		# Caddy sets X-Forwarded-For / -Proto / -Host by default. Verified
+		# against Caddy v2.11.4: it REPLACES a client-supplied
+		# X-Forwarded-For with the real peer rather than appending to it,
+		# unless Caddy's own `trusted_proxies` says another proxy sits in
+		# front. So a client sending "X-Forwarded-For: 9.9.9.9" has that
+		# value discarded here, before the backend ever sees it. (nginx's
+		# conventional $proxy_add_x_forwarded_for appends instead, which is
+		# why the backend still walks the header right-to-left.)
+		#
+		# The backend ignores all of it unless told this proxy is
+		# trustworthy, so the dashboard MUST run with:
+		#     SBD_TRUSTED_PROXIES=127.0.0.1,::1
+		# Without it, the PIN gate's per-IP lockout keys every remote user
+		# to 127.0.0.1 and one attacker locks out everybody. Confirm with
+		# `curl https://yourname.duckdns.org/api/system/proxy-status` and
+		# check that client_ip is your address, not the proxy's.
+	}
+}
+
+# ---------------------------------------------------------------------------
+# W2-039: rate limiting at the proxy layer, in front of the app-level lockout
+# ---------------------------------------------------------------------------
+# NOT enabled above, and not a copy-paste-ready block, because rate limiting
+# is not in Caddy's standard distribution -- the directive below does not
+# exist in a stock `caddy` binary and adding it as-is will make
+# `caddy validate` fail. It needs a custom build:
+#
+#     xcaddy build --with github.com/mholt/caddy-ratelimit
+#
+# With that binary, inside the site block:
+#
+#     rate_limit {
+#         zone login {
+#             match {
+#                 path /api/auth/login
+#             }
+#             key    {remote_host}
+#             events 10
+#             window 1m
+#         }
+#     }
+#
+# Treat it as defence in depth only. The app already rate-limits login
+# per-IP (SBD_LOGIN_RATE_LIMIT_MAX / _WINDOW_S) and locks out after five
+# wrong PINs; the proxy-layer version's real value is dropping the traffic
+# before it costs the backend a PBKDF2 hash. If you would rather not
+# maintain a custom Caddy build, use the nginx config in ../nginx/ instead
+# -- limit_req is built into stock nginx.
+
+# ---------------------------------------------------------------------------
+# Alternative: DNS-01 issuance when port 80 cannot reach you
+# ---------------------------------------------------------------------------
+# If your ISP blocks :80, or you would rather not forward it, Caddy can
+# prove domain control through DuckDNS's API instead of an inbound request.
+# This also needs a custom build (the DuckDNS DNS provider module is not in
+# the standard binary), so it is left commented -- uncommenting it against
+# a stock binary will fail validation:
+#
+#     xcaddy build --with github.com/caddy-dns/duckdns
+#
+# Then replace the site block's implicit TLS with:
+#
+#     tls {
+#         dns duckdns {env.DUCKDNS_API_TOKEN}
+#         resolvers 1.1.1.1
+#     }
+#
+# and put DUCKDNS_API_TOKEN in Caddy's systemd unit environment
+# (systemctl edit caddy -> [Service] Environment="DUCKDNS_API_TOKEN=...").
+# Never inline the token in this file: /etc/caddy/Caddyfile is
+# world-readable on most distributions.

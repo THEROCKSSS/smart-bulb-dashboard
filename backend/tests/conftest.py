@@ -14,6 +14,9 @@ the real backend/data/*.json files:
     path instead of the real backend/data/remote_auth.json.
   - `reset_api_rate_limit` / `reset_audio_rate_limit` (both autouse) clear
     the two module-level rate limiters between tests.
+  - `reset_reverse_proxy_settings` (autouse) forces reverse_proxy back to
+    its shipped defaults, so neither a developer's own SBD_* environment
+    nor a test that enables proxy trust can leak into anything else.
 """
 
 import colorsys
@@ -30,6 +33,7 @@ if BACKEND_DIR not in sys.path:
 import config as cfgmod  # noqa: E402
 import bulb_manager as bm  # noqa: E402
 import remote_auth  # noqa: E402
+import reverse_proxy  # noqa: E402
 import main as main_module  # noqa: E402
 
 
@@ -277,6 +281,19 @@ def reset_audio_rate_limit():
     yield
     with ar_module._rate_limit_lock:
         ar_module._rate_limit_hits.clear()
+
+
+@pytest.fixture(autouse=True)
+def reset_reverse_proxy_settings():
+    # reverse_proxy caches its parsed SBD_* config in a module global, so
+    # without this a test that turns on proxy trust or the HTTPS redirect
+    # would change what every later test's requests mean -- and a developer
+    # who happens to have SBD_TRUSTED_PROXIES exported in their own shell
+    # would get different results from CI. Empty env == the shipped
+    # defaults (trust nothing, no HSTS, no redirect).
+    reverse_proxy.reload_from_env(env={})
+    yield
+    reverse_proxy.reload_from_env(env={})
 
 
 @pytest.fixture

@@ -1,0 +1,113 @@
+# Smart Bulb Dashboard as a systemd service (W2-176).
+# Auto-restarts on crash and comes back after a reboot.
+#
+# Install:
+#     sudo cp smart-bulb-dashboard.service /etc/systemd/system/
+#     sudo systemctl daemon-reload
+#     sudo systemctl enable --now smart-bulb-dashboard
+#     systemctl status smart-bulb-dashboard
+#     journalctl -u smart-bulb-dashboard -f
+#
+# `enable` is the half that survives a reboot; `start` alone does not.
+#
+# Assumes the layout below. Adjust the paths if yours differs:
+#     /opt/smart-bulb-dashboard/            <- the repo
+#     /opt/smart-bulb-dashboard/backend/venv <- its virtualenv
+#     a `bulbs` system user that owns backend/config.json and backend/data/
+#
+#     sudo useradd --system --home /opt/smart-bulb-dashboard --shell /usr/sbin/nologin bulbs
+#     sudo chown -R bulbs:bulbs /opt/smart-bulb-dashboard
+
+[Unit]
+Description=Smart Bulb Dashboard (Tuya bulb control API + web UI)
+Documentation=https://github.com/THEROCKSSS/smart-bulb-dashboard
+# network-online, not just network: the app opens TCP connections to bulbs
+# by IP at startup. `network.target` only means the stack is up, not that
+# an address has been assigned, which on DHCP is a real difference.
+After=network-online.target
+Wants=network-online.target
+
+# Give up after 5 restarts in 5 minutes rather than crash-looping forever.
+# These live in [Unit], not [Service] -- systemd moved them in v229 and
+# silently ignores them in [Service], so the misplaced version looks
+# correct and does nothing. `systemd-analyze verify` flags it; caught that
+# way here. Clear the block after fixing the cause with:
+#     systemctl reset-failed smart-bulb-dashboard
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=bulbs
+Group=bulbs
+WorkingDirectory=/opt/smart-bulb-dashboard/backend
+
+# Unbuffered, or journalctl shows nothing until the process dies and
+# flushes -- which is exactly when you want the log.
+Environment=PYTHONUNBUFFERED=1
+
+# Leading "-" = optional; the service still starts if the file is absent.
+# This is where SBD_TRUSTED_PROXIES and friends belong. Keep it out of the
+# unit file itself so `systemctl cat` (world-readable) never shows config
+# you'd rather keep to yourself:
+#     sudo install -m 640 -o root -g bulbs /dev/null /etc/smart-bulb-dashboard.env
+#     echo 'SBD_TRUSTED_PROXIES=127.0.0.1,::1' | sudo tee -a /etc/smart-bulb-dashboard.env
+EnvironmentFile=-/etc/smart-bulb-dashboard.env
+
+# Binds loopback only, on the assumption a reverse proxy (see deploy/caddy
+# or deploy/nginx) is in front. Change to 0.0.0.0 for direct LAN access
+# with no proxy -- but then do NOT set SBD_TRUSTED_PROXIES, because with
+# the port directly reachable, anything on the LAN could forge
+# X-Forwarded-For and bypass the PIN gate's per-IP lockout.
+#
+# --no-proxy-headers is not optional. uvicorn enables its own
+# ProxyHeadersMiddleware by default, trusting 127.0.0.1, and rewrites the
+# request's client address from X-Forwarded-For before the app sees it --
+# which with --host 127.0.0.1 means EVERY request qualifies, so any local
+# process could hand itself an arbitrary source IP and a fresh per-IP
+# lockout bucket. The app handles forwarded headers itself, gated on
+# SBD_TRUSTED_PROXIES. Confirm which layer is in charge after install:
+#     curl -s localhost:8500/api/system/proxy-status | jq .peer_rewritten_by_server
+# It must be false.
+ExecStart=/opt/smart-bulb-dashboard/backend/venv/bin/python -m uvicorn main:app --host 127.0.0.1 --port 8500 --no-proxy-headers
+
+Restart=always
+RestartSec=5
+
+# --- hardening ------------------------------------------------------------
+# Sane for the default deployment. If something stops working after you
+# install this unit, comment the block out first to confirm that's the
+# cause before hunting elsewhere -- these directives fail closed and the
+# resulting errors rarely point at systemd.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictNamespaces=true
+RestrictRealtime=true
+LockPersonality=true
+# ProtectSystem=strict makes everything outside these read-only. The app
+# writes device state, favourites, schedules, sessions and the auth audit
+# log into backend/data/, and tinytuya drops snapshot.json next to it.
+ReadWritePaths=/opt/smart-bulb-dashboard/backend/data
+ReadWritePaths=/opt/smart-bulb-dashboard/backend
+
+# --- audio-reactive lighting ----------------------------------------------
+# Audio capture needs /dev/snd, which the hardening above does not block by
+# itself -- but if you add PrivateDevices=true it will, silently: the
+# session starts, reports itself running, and simply never reacts to sound.
+# The `bulbs` user also has to be in the `audio` group:
+SupplementaryGroups=audio
+#
+# And note that a system service has no desktop audio session. Capturing
+# "what's playing on the speakers" (a loopback/monitor device) generally
+# needs a user session, so if that's your use case, run this as a user unit
+# instead: put the file in ~/.config/systemd/user/, drop User=/Group=, and
+# use `systemctl --user enable --now smart-bulb-dashboard`. You'll also
+# want `loginctl enable-linger $USER` so it runs without you logged in.
+
+[Install]
+WantedBy=multi-user.target

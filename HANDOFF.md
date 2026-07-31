@@ -474,6 +474,108 @@ fixing — see the iteration entry.
   (W2-105), a persisted rate-limit store (W2-116), load testing (W2-118).
 - The adversarial security-test phase (section 5) is still untouched and
   still needs a real deployed target.
+## Week 2 Phase B — TLS / reverse proxy + deployment (issue #70)
+
+Roadmap sections 3 (W2-031..050) and 10 (W2-176..195). Branched from
+`master`; test suite went 353 → 395 passing.
+
+### Backend changes
+
+New module **`backend/reverse_proxy.py`** — everything about running behind
+a TLS-terminating proxy. Configured by env var only (`SBD_TRUSTED_PROXIES`,
+`SBD_HSTS*`, `SBD_HTTPS_REDIRECT`), deliberately *not* through the API: a
+runtime-flippable trust setting would let one session that got in once
+permanently disable brute-force protection for everyone.
+
+- **W2-038, the important one.** `remote_auth`'s per-IP lockout and login
+  rate limiter now key off the real client behind a proxy instead of the
+  proxy's own address. Opt-in and default-off: `X-Forwarded-For` is
+  attacker input unless a specific peer has been named, and believing it
+  unconditionally would let anyone forge a fresh source IP per guess and
+  delete the lockout. The chain is walked **right to left**, because both
+  nginx (`$proxy_add_x_forwarded_for`) and forwarding proxies generally
+  append the real peer to whatever the client sent — reading left-to-right
+  is the classic bug and hands the attacker their forged value.
+- **W2-036.** Session cookie gets `Secure` when the request really is
+  HTTPS, and *not* otherwise. Unconditional would be worse than absent:
+  browsers silently discard a `Secure` cookie over plain HTTP, so every LAN
+  user's login would appear to do nothing.
+- **W2-034/035.** HSTS and 307 redirect-to-HTTPS, both opt-in, both off by
+  default (reasoning in `docs/deployment.md` §3.3). Health paths are exempt
+  from the redirect so container probes don't 307.
+- **W2-044.** `/healthz`, added to `remote_auth.OPEN_PATHS`. Returns
+  `{"status":"ok"}` and nothing else — it's the endpoint most likely to be
+  publicly reachable.
+- `/api/system/proxy-status` (gated) — makes a proxy misconfiguration
+  visible instead of silent.
+
+### The pre-existing bug this turned up
+
+**uvicorn ships `ProxyHeadersMiddleware` enabled by default, trusting
+`127.0.0.1`.** It rewrites the request's client address from
+`X-Forwarded-For` *before the app runs*. With the app bound to loopback
+that matches every request, so any local process could hand itself an
+arbitrary source IP and a fresh lockout bucket — and this predates Phase B;
+the old `request.client.host` in `auth_login` was already reading a
+substituted value. Confirmed live: before the fix, a direct `curl` with
+`X-Forwarded-For: 198.51.100.42` made the app report that as `peer_ip`.
+
+Fixed by running uvicorn with `--no-proxy-headers` (`Dockerfile`,
+`deploy/systemd/`, `deploy/windows-service.md`) so this app's explicit trust
+list is the only thing deciding it. `/api/system/proxy-status` reports
+`peer_rewritten_by_server` to catch a start command that missed the flag.
+**Anyone running their own start command needs to add it.**
+
+### Reference artifacts (`deploy/`)
+
+Caddy (DuckDNS + automatic Let's Encrypt, and a LAN `tls internal`
+variant), nginx + certbot renewal automation, a self-signed cert
+generator, `docker-compose.caddy.yml`, systemd service + health-check
+timer, NSSM notes, and `deploy/smoke-test.py`. `docs/deployment.md` covers
+min Python/OS versions, measured resource footprint, update/rollback, and
+version pinning.
+
+### What was actually validated vs. only written
+
+Validated with real binaries: Caddyfiles via `caddy validate` (v2.11.4),
+nginx conf via `nginx -t` (1.27) with real certs in place, systemd units
+via `systemd-analyze verify` (Debian 12), compose via `docker compose
+config`, the cert script executed on Linux, and the smoke test run against
+a live instance — including **through a real Caddy container** proxying to
+it, confirming a forged header is ignored without trust and the real client
+IP comes through with it.
+
+**Not validated:** no Let's Encrypt cert issued against a real domain (needs
+a real domain + open ports), no systemd unit started on a real Linux host,
+NSSM instructions not executed, and the Raspberry Pi CPU guidance is
+extrapolated from desktop measurements. `deploy/README.md` carries this
+same split so it doesn't get lost.
+
+### Bugs found while building this
+
+1. **`SBD_TRUSTED_PROXIES=*` was silently inert** — the wildcard made every
+   forwarded entry look like a proxy hop to skip, so the right-to-left walk
+   fell off the end and returned the peer, collapsing `*` into the no-trust
+   behaviour it was set to escape. Caught by its own test. Fixed by
+   splitting "may I believe this peer" from "is this entry one of my own
+   proxies" (`is_trusted_proxy` vs `is_known_proxy_hop`).
+2. **`StartLimitIntervalSec` was in `[Service]`** in the systemd unit, where
+   systemd has silently ignored it since v229 — the crash-loop guard looked
+   present and did nothing. Caught by `systemd-analyze verify`.
+3. **The smoke test looked up response headers case-sensitively**, so it
+   reported the app wasn't setting `Content-Type` on static assets. The app
+   was fine; the script wasn't.
+
+### What a reviewer should check by hand
+
+- A real Let's Encrypt issuance on an actual DuckDNS domain with ports
+  80/443 forwarded — the one thing no amount of local validation covers.
+- Installing the systemd unit on a real Linux host, including whether the
+  `ProtectSystem=strict` + `ReadWritePaths` set is actually sufficient for
+  `backend/data/` and tinytuya's `snapshot.json`.
+- Whether audio-reactive lighting survives the systemd sandboxing on a real
+  machine (the unit documents the `PrivateDevices` / `SupplementaryGroups=audio`
+  caveats, but they weren't exercised).
 
 ## Repo
 

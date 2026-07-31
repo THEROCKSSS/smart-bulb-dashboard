@@ -1,0 +1,29 @@
+# Health-check-based auto-restart (W2-180).
+#
+# Restart=always in smart-bulb-dashboard.service only catches a process
+# that actually EXITS. It does nothing for the worse failure: the process
+# is alive, systemd is happy, and the app stopped answering — a deadlocked
+# thread, an event loop wedged on a blocking bulb call. This probes the
+# real HTTP surface and restarts on no answer.
+#
+# Install (needs the .timer alongside it):
+#     sudo cp smart-bulb-dashboard-healthcheck.* /etc/systemd/system/
+#     sudo systemctl daemon-reload
+#     sudo systemctl enable --now smart-bulb-dashboard-healthcheck.timer
+#     systemctl list-timers smart-bulb-dashboard-healthcheck.timer
+#
+# Test it for real before trusting it: `sudo systemctl stop
+# smart-bulb-dashboard`, wait two minutes, and confirm it came back.
+
+[Unit]
+Description=Restart Smart Bulb Dashboard if it stops answering /healthz
+# No point probing while the service is deliberately stopped.
+After=smart-bulb-dashboard.service
+BindsTo=smart-bulb-dashboard.service
+
+[Service]
+Type=oneshot
+# --retry 2 (three attempts, ~2s apart) before declaring it dead, so a
+# single dropped request during a slow moment doesn't bounce a service
+# that is fine. --max-time bounds the whole thing so this unit can't hang.
+ExecStart=/bin/sh -c '/usr/bin/curl -fsS --max-time 5 --retry 2 --retry-delay 2 http://127.0.0.1:8500/healthz >/dev/null || { echo "healthz unanswered, restarting"; /bin/systemctl restart smart-bulb-dashboard; }'

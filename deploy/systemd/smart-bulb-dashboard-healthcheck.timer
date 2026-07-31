@@ -1,0 +1,20 @@
+# Timer for smart-bulb-dashboard-healthcheck.service (W2-180).
+# See that file for what it does and how to test it.
+
+[Unit]
+Description=Probe Smart Bulb Dashboard health every minute
+
+[Timer]
+# Two minutes after boot, not immediately: the app imports numpy and
+# sounddevice at startup, and on a Raspberry Pi that takes long enough
+# that an eager first probe would restart a service which was merely
+# still booting.
+OnBootSec=2min
+OnUnitActiveSec=1min
+# Spread the probe across a few seconds so it doesn't line up with every
+# other periodic job on the machine.
+RandomizedDelaySec=10s
+Unit=smart-bulb-dashboard-healthcheck.service
+
+[Install]
+WantedBy=timers.target

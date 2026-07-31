@@ -14,3 +14,21 @@ services:
     # discovery) to work. Direct control (color/power/etc.) works fine
     # with normal bridge networking + the ports mapping above too, since
     # that's a plain outbound TCP connection to the bulb's IP.
+
+    # W2-186. Probes /healthz, not /api/system/health: /healthz is the
+    # dedicated infrastructure endpoint that stays reachable when the PIN
+    # gate is enabled and returns nothing that fingerprints the install.
+    # Python, not curl/wget -- the base image is python:3.11-slim, which
+    # ships neither.
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8500/healthz', timeout=5).status == 200 else 1)"]
+      interval: 30s
+      timeout: 10s
+      # 40s, not the 0s default: the app imports numpy and sounddevice at
+      # startup, which is slow on a Pi. A short grace period restart-loops
+      # the container before it has ever finished booting.
+      start_period: 40s
+      retries: 3
+
+# For a TLS-terminated deploy (Caddy + automatic Let's Encrypt on a DuckDNS
+# domain, one command), use docker-compose.caddy.yml instead of this file.

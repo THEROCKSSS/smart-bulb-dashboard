@@ -99,9 +99,17 @@ Explicitly **not yet done**:
   replay attacks, discovery-timing via port scan, lockout-bypass attempts.
   This needs an actual deployed instance to attack meaningfully rather than
   a same-machine simulation — see `roadmap/` for this as its own phase.
-- **TLS / reverse proxy** (e.g. Caddy with automatic certs for a DuckDNS
-  domain) — the PIN currently travels over plaintext HTTP once forwarded
-  publicly; flagged clearly in the security doc, not yet built.
+- ~~**TLS / reverse proxy**~~ — **built** (Week 2 Phase B). `deploy/` has
+  validated Caddy and nginx configs, a `docker-compose.caddy.yml` bundle,
+  a self-signed LAN fallback, systemd units and a post-deploy smoke test;
+  the backend gained trusted-proxy `X-Forwarded-For` handling so the PIN
+  gate's per-IP lockout survives a proxy, a conditional `Secure` cookie
+  flag, opt-in HSTS/HTTPS-redirect, and a `/healthz` probe. See
+  `docs/deployment.md`. **Still not done:** no certificate has ever been
+  issued from Let's Encrypt against a real domain, and no unit has been
+  started on a real Linux host — the configs are validated by
+  `caddy validate` / `nginx -t` / `systemd-analyze verify`, which is not
+  the same as having run them in anger.
 - **Tailscale is the currently-recommended path** for anyone who doesn't
   need public access at all — no code changes needed, just documented
   setup steps.

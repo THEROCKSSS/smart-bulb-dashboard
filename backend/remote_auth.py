@@ -62,7 +62,13 @@ DEFAULT_LOGIN_RATE_LIMIT_WINDOW_S = int(os.environ.get("SBD_LOGIN_RATE_LIMIT_WIN
 # "/" here means the browser gets a raw 401 JSON response instead of the
 # HTML page that contains the PIN form -- a real chicken-and-egg lockout,
 # not a hypothetical one. Every other route is gated once enabled.
-OPEN_PATHS = {"/", "/api/auth/login", "/api/auth/status", "/api/system/health"}
+#
+# "/healthz" is the infrastructure liveness probe (see main.healthz) and
+# has to stay open for the same class of reason: a reverse proxy or Docker
+# HEALTHCHECK has no session cookie, so gating it would make the container
+# report itself permanently unhealthy the moment the PIN gate is turned
+# on -- and it deliberately returns nothing worth protecting.
+OPEN_PATHS = {"/", "/healthz", "/api/auth/login", "/api/auth/status", "/api/system/health"}
 OPEN_PREFIXES = ("/static/",)
 
 _lock = threading.Lock()
