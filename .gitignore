@@ -1,8 +1,18 @@
 # Secrets / local device credentials — NEVER commit real device_id/local_key
 backend/config.json
 
+# Env-var secrets (W2-215). `.env.example` IS committed; a real `.env` never is.
+# CI enforces this beyond .gitignore — see .github/workflows/secret-scan.yml,
+# because `git add -f` bypasses this file without a word.
+.env
+.env.local
+
 # Runtime data (favorites, schedules, history, discovery state)
 backend/data/
+
+# Backup archives — every one contains device local_keys, encrypted or not.
+# See docs/backup-restore.md for storage and secure-deletion guidance.
+backend/backups/
 
 # tinytuya writes this as a side effect of every deviceScan() call
 # (used by both /rescan and the network auto-discovery feature)

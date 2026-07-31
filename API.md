@@ -337,6 +337,87 @@ curl -X POST http://localhost:8500/api/system/discovery/<device_id>/unignore
 curl -X DELETE http://localhost:8500/api/system/discovery/<device_id>
 ```
 
+## Security audit log
+
+See `docs/security-secrets.md` for severities, alerting defaults and the
+incident-response checklist. Distinct from `/api/devices/<id>/history`,
+which is what the *bulbs* did.
+
+```bash
+# Search/filter. All filters AND together; `q` is a substring match over
+# the whole entry, which is how "find everything about 10.0.0.5" works.
+curl "http://localhost:8500/api/security/events?limit=100&min_severity=warning"
+curl "http://localhost:8500/api/security/events?event=login_lockout&q=10.0.0.5"
+curl "http://localhost:8500/api/security/events?include_rotated=true"
+
+# Export for external review. JSON keeps the prev/hmac chain fields, so the
+# export can still be verified independently.
+curl "http://localhost:8500/api/security/events/export?format=csv" -o events.csv
+
+# Tamper check. Read-only by design -- there is deliberately no "re-seal"
+# button, since that would let tampering be papered over with one click.
+curl http://localhost:8500/api/security/verify
+# -> {"ok": true, "complete": true, "entries": 42, "first_bad_seq": null, ...}
+#    ok=true + complete=false means retention pruned old segments (normal),
+#    not that anything was tampered with.
+
+curl -X POST http://localhost:8500/api/security/events/rotate
+curl -X POST http://localhost:8500/api/security/self-test   # canary + wiring report
+curl "http://localhost:8500/api/security/digest?days=7"     # reports even a quiet week
+
+# Alerts (local queue; the webhook is off by default)
+curl http://localhost:8500/api/security/alerts
+curl -X POST http://localhost:8500/api/security/alerts/ack
+
+# Settings
+curl http://localhost:8500/api/security/config
+curl -X POST http://localhost:8500/api/security/config \
+  -H "Content-Type: application/json" \
+  -d '{"alert_min_severity": "warning", "webhook_enabled": true,
+       "webhook_url": "https://example.com/hook", "retention_days": 90}'
+
+# Where each secret lives and what it's worth -- never any values
+curl http://localhost:8500/api/security/secrets
+```
+
+## Backup & restore
+
+**A backup contains every bulb's `local_key` in plaintext.** Read
+`docs/backup-restore.md` before automating any of this.
+
+```bash
+# Encrypted (recommended). Omitting `password` produces a plain zip AND an
+# explicit `warning` field in the response -- there is no silent default.
+curl -X POST http://localhost:8500/api/backups \
+  -H "Content-Type: application/json" \
+  -d '{"password": "…", "note": "before the move", "exclude": ["lightshows"]}'
+
+curl http://localhost:8500/api/backups          # newest first, + retention setting
+curl http://localhost:8500/api/backups/options  # what can be excluded / selectively restored
+curl -o backup.zip http://localhost:8500/api/backups/<name>/download
+
+# Passwords go in a POST body, never a query string: a query string lands in
+# access logs, browser history and referrer headers.
+curl -X POST http://localhost:8500/api/backups/<name>/verify \
+  -H "Content-Type: application/json" -d '{"password": "…"}'
+curl -X POST http://localhost:8500/api/backups/<name>/preflight \
+  -H "Content-Type: application/json" -d '{"password": "…"}'
+curl -X POST http://localhost:8500/api/backups/<name>/diff \
+  -H "Content-Type: application/json" -d '{"password": "…"}'
+
+# Restore. `confirm` is required (409 without it); a pre-restore safety
+# backup is always taken first. `sections` omitted = full restore.
+curl -X POST http://localhost:8500/api/backups/<name>/restore \
+  -H "Content-Type: application/json" \
+  -d '{"password": "…", "confirm": true, "sections": ["favorites", "schedules"]}'
+# -> includes {"remote_access": {"enabled_before": …, "enabled_after": …,
+#              "changed": false}} -- a restore can never flip the PIN gate.
+
+curl -X DELETE http://localhost:8500/api/backups/<name>   # overwritten, then unlinked
+curl -X POST http://localhost:8500/api/backups/settings \
+  -H "Content-Type: application/json" -d '{"keep": 10}'
+```
+
 ## Interactive docs
 
 FastAPI auto-generates Swagger UI at `http://localhost:8500/docs` — useful

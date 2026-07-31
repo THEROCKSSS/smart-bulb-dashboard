@@ -445,6 +445,34 @@ tr:hover td { background: rgba(255,255,255,0.02); }
 .tag.on { background: rgba(74,222,128,0.15); color: var(--success); }
 .tag.off { background: rgba(255,255,255,0.08); color: var(--text-dim); }
 .tag.error { background: rgba(255,92,92,0.15); color: var(--danger); }
+/* Security-log severities need a fourth step between "fine" and "alarming":
+   warning is actionable but not an emergency, and painting it the same red as
+   critical is how a critical stops standing out. */
+.tag.warn { background: rgba(251,191,36,0.15); color: var(--warning); }
+
+/* A consequence someone has to read before acting — an unencrypted backup
+   holding device keys, an overwrite confirmation, a failed tamper check.
+   Deliberately not a toast: a toast disappears, and these must not. */
+.callout {
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--accent);
+  background: var(--bg-card);
+  border-radius: var(--radius);
+  padding: 14px 16px;
+  margin-bottom: 16px;
+  line-height: 1.55;
+  color: var(--text-dim);
+}
+.callout b { color: var(--text); }
+.callout.danger {
+  border-color: rgba(255,92,92,0.35);
+  border-left-color: var(--danger);
+  background: rgba(255,92,92,0.06);
+}
+
+/* Actionable audit rows get a left edge rather than a background wash, so a
+   long log stays readable when many rows are marked. */
+tr.sec-actionable td:first-child { box-shadow: inset 2px 0 0 var(--warning); }
 
 .band-meter {
   display: flex;

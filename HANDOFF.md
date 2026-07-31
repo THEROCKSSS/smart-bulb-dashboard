@@ -576,6 +576,94 @@ same split so it doesn't get lost.
 - Whether audio-reactive lighting survives the systemd sandboxing on a real
   machine (the unit documents the `PrivateDevices` / `SupplementaryGroups=audio`
   caveats, but they weren't exercised).
+## Round 6 — Week 2 Phase C: audit logging, backups, secrets (2026-07-31)
+
+Tracked in issue #71 (W2-141–160, W2-161–175, W2-211–225). Built on a
+worktree branch off `master`. **481/481 backend tests pass** (353 before,
+128 new); CLI suite still 22/22.
+
+### What was built
+
+- **`backend/security_audit.py`** — a security-events log distinct from
+  both the per-device history and the existing `data/auth_audit.log`. That
+  auth log is unchanged; `remote_auth.log_audit_event()` now *forwards*
+  into the new one, so a future auth event can't be added to one and
+  forgotten in the other. Four severities, per-event overrides, size-based
+  rotation + age/count retention, JSON/CSV export, search/filter, local
+  alert queue + optional (default-off) webhook, rate-based thresholds,
+  canary self-test, digest.
+- **Tamper-evidence**: every line is HMAC-chained to the previous one, with
+  the head recorded in a separate state file. Detects an edited entry, a
+  removed entry, a truncated tail, and a deleted file. **Limit, stated
+  plainly:** an attacker holding both the key file and the state file can
+  rebuild a consistent forged chain — that's inherent to keeping the anchor
+  on the same host, and the webhook is the honest off-box upgrade path.
+- **`backend/backup_restore.py`** — encrypted (AES-256-GCM, PBKDF2 200k) or
+  plain zip; per-file SHA-256 manifest; integrity check before any restore
+  is offered; explicit confirm flag; automatic pre-restore safety backup;
+  selective restore; keep-last-N with overwrite-before-delete.
+- **`backend/secrets_env.py`** — `.env` / env-var `local_key`s (never
+  written back into `config.json`), the shared redaction helper, and the
+  per-secret sensitivity table that `GET /api/security/secrets` serves.
+- **Redaction hardening in `bulb_manager`**: every exception string that
+  leaves `BulbController` is scrubbed of that device's own key first. This
+  closed a real (unexploited) hole — `status()` passed raw tinytuya
+  exception text straight into an API response *and* the history log, so a
+  tinytuya version that echoed the key it was constructed with would have
+  leaked it with nothing else in the app to catch it.
+- **CI secret scan** (`.github/workflows/secret-scan.yml`) — `.gitignore`
+  is a default, not a control; `git add -f` bypasses it silently.
+- Dashboard: two new System tabs, **Security Log** and **Backup**.
+- Docs: `docs/security-secrets.md` (secret sensitivity table, incident-
+  response checklist, secure deletion, quarterly review) and
+  `docs/backup-restore.md` (migration, test-your-restore).
+
+### Verified for real (not claimed)
+
+Against a live `uvicorn` on `127.0.0.1:8577` with a throwaway config:
+
+- Full backup → verify → preflight → restore cycle, plain and encrypted.
+  Wrong password reports the same message as a modified archive (no oracle).
+- **W2-175 live**: PIN gate enabled, restored an archive taken while it was
+  *disabled*, gate stayed enabled (`{"enabled_before": true,
+  "enabled_after": true, "changed": false}`). Structurally guaranteed —
+  nothing in `backup_restore.py` writes `remote_auth.json`.
+- Tamper detection, all three shapes, against the running server: edited
+  entry → `hmac mismatch at seq 4`; deleted middle entry → `broken link at
+  seq 5`; wiped file → `log is empty but state records 10 entries`.
+- Confirmed the plain archive's decompressed `config.json` really does
+  contain the key (so the warning isn't theatre) and the encrypted one is
+  not even a readable zip.
+- Swept the whole live log + all responses for the test `local_key`, the
+  test PIN and the backup password: none present.
+- Disabling the gate produced a `critical` event and an alert.
+
+### Known gaps / next
+
+- **No scheduled anything.** No automatic backup timer and no periodic
+  audit digest job — deliberately, rather than adding another background
+  thread. `POST /api/security/self-test` and `POST /api/backups` are
+  cron-shaped; `docs/backup-restore.md` shows the invocation.
+- **No upload-a-backup endpoint** — that needs `python-multipart`, and a
+  new dependency wasn't worth it for this pass. Restoring a file from
+  elsewhere means dropping it into `backend/backups/` first.
+- **`keyring` / encrypted-at-rest `config.json` (W2-212, W2-213) not
+  built** — env vars cover the same threat with no new dependency.
+  Discord alert integration (W2-148) is Week 3's, and the webhook is the
+  seam it will plug into.
+- **Pre-existing test-isolation gap, not fixed here:** the audio modules
+  (`audio_reactive`, `audio_safety`, `audio_presets`) still write
+  `audio_last_session.json`, `audio_safety.json` and
+  `audio_session_presets.json` into the *real* `backend/data/` during a
+  test run. The auth audit log had the same problem and is fixed
+  (`conftest.auth_reset` now redirects `AUDIT_LOG_PATH` too); the audio
+  ones need the same treatment and are out of this phase's scope.
+- **Pre-existing latent deadlock, fixed in passing:** `config.load_config()`
+  called `save_config()` while already holding a non-reentrant `_lock`.
+  Only reachable when *both* `config.json` and `config.example.json` are
+  missing, which never happens in a checkout — now writes directly instead.
+- The browser UI for both new tabs has not been through a real browser
+  pass; the JS parses and the assets serve, but a human should click it.
 
 ## Repo
 
