@@ -205,7 +205,8 @@ returned 200. A wrong password reports `wrong password, or the archive has
 been modified`, identical to a tampered archive (distinguishing them would
 be an oracle). Restore without `confirm` → 409. Checked the archives on
 disk: the plain one's *decompressed* `config.json` really does contain
-`LiveTestKey12345` (so the warning isn't theatre), and the encrypted one
+the throwaway key that config held (so the warning isn't theatre; the
+whole config was synthetic and deleted afterwards), and the encrypted one
 isn't a readable zip at all (`BadZipFile`).
 
 **W2-175, live** — enabled the PIN gate, logged in, then restored an archive
