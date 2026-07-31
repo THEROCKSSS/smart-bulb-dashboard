@@ -13,6 +13,9 @@ import os
 import pytest
 from fastapi.testclient import TestClient
 
+import network_health
+import observability
+import remote_access_status
 import remote_auth
 import main
 
@@ -25,10 +28,23 @@ def _isolated_auth_paths(tmp_path_factory):
     throwaway directory for the whole test session, so these tests never
     touch (or get contaminated by) a real backend/data/ directory. Safe to
     do once at session scope since every test also resets file contents
-    via the per-test `reset_auth_state` fixture below."""
+    via the per-test `reset_auth_state` fixture below.
+
+    The Week 2 Phase D state files are redirected here too, at *session*
+    scope specifically. conftest's `observability_reset` already covers
+    them per test, but this module is the only one that enters TestClient
+    as a context manager -- which runs the real `main.on_startup()`, which
+    spawns the network monitor and discovery scheduler threads. Those
+    outlive any per-test monkeypatch window, so without a session-scoped
+    redirect the monitor's first poll lands in the real backend/data/.
+    Found by noticing a real network_state.json appear after a suite run.
+    """
     tmp_dir = tmp_path_factory.mktemp("remote_auth_tests")
     remote_auth.AUTH_PATH = str(tmp_dir / "remote_auth.json")
     remote_auth.AUDIT_LOG_PATH = str(tmp_dir / "auth_audit.log")
+    network_health.NETWORK_STATE_PATH = str(tmp_dir / "network_state.json")
+    remote_access_status.REMOTE_ACCESS_PATH = str(tmp_dir / "remote_access.json")
+    observability.SETTINGS_PATH = str(tmp_dir / "observability.json")
     return tmp_dir
 
 

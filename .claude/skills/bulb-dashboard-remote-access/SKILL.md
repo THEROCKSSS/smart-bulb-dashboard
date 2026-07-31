@@ -185,6 +185,39 @@ cannot silently turn the gate on or off. The corollary is that a
 migrated/restored install has **no PIN set** and needs one set explicitly.
 See `docs/backup-restore.md`.
 
+## Checking what you're actually exposing
+
+Added in Week 2 Phase D. Full picture in `docs/remote-access-security.md`
+and the formal model in `docs/pin-gate-threat-model.md`.
+
+```bash
+# Public IP (cached), DuckDNS last sync, exposure state, and the warnings
+# the dashboard is currently showing
+curl http://localhost:8500/api/system/remote-access/status
+
+# Is Tailscale actually running on this host? Returns the tailnet URL.
+curl http://localhost:8500/api/system/remote-access/tailscale
+
+# The only outbound internet request this project makes -- on demand only
+curl -X POST http://localhost:8500/api/system/remote-access/detect-public-ip
+```
+
+Two warning conditions to know about, both surfaced as a persistent,
+non-dismissable banner in the UI:
+
+- `public_client_observed` — a request genuinely arrived from a
+  globally-routable IP while the PIN gate was off. This is evidence, not a
+  heuristic.
+- `exposure_configured_gate_disabled` — the fail-safe. Once exposure is
+  recorded (a successful DuckDNS sync reports in, or the user declares a
+  port forward in Settings), turning the PIN gate off *later* re-raises
+  this and it survives restarts. Clearing it requires re-enabling the gate
+  or explicitly retracting exposure — don't retract it as a way to silence
+  the banner while the port forward is still live.
+
+Tailnet addresses (100.64.0.0/10) never count as public, so normal
+Tailscale use doesn't trip either warning.
+
 ## Verification
 After enabling, confirm the gate is actually enforcing, not just reporting
 `enabled: true`:

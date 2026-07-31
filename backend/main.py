@@ -4,7 +4,7 @@ import time
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, Response
+from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, RedirectResponse, Response
 from pydantic import BaseModel
 
 import secrets_env
@@ -35,6 +35,9 @@ import reverse_proxy  # noqa: E402
 import analytics  # noqa: E402
 import security_audit  # noqa: E402
 import backup_restore  # noqa: E402
+import observability  # noqa: E402
+import network_health  # noqa: E402
+import remote_access_status  # noqa: E402
 from scenes_presets import PRESET_COLORS, SCENES, EFFECTS  # noqa: E402
 
 APP_VERSION = "0.3.0"
@@ -113,6 +116,43 @@ async def api_rate_limiter(request: Request, call_next):
             headers={"Retry-After": str(int(retry_after) + 1)},
         )
     return await call_next(request)
+
+
+# Added LAST of all, so it is the outermost middleware: it therefore observes
+# everything the others do, including the gate's 401s AND the rate limiter's
+# 429s. A burst of either is exactly the signal you want on the metrics page,
+# and a limiter that silently dropped traffic before it was counted would make
+# an attack look like a traffic lull.
+@app.middleware("http")
+async def observe_request(request: Request, call_next):
+    """Per-request observability: adopt or mint a correlation id, time the
+    request, and record it against its route *template* for the metrics
+    endpoint. Also the one place that notices a request arriving from a
+    globally-routable address, which is what arms the "you're exposed and
+    the PIN gate is off" banner."""
+    correlation_id = observability.adopt_correlation_id(
+        request.headers.get(observability.CORRELATION_HEADER))
+    started = time.perf_counter()
+    status_code = 500
+    try:
+        response = await call_next(request)
+        status_code = response.status_code
+        response.headers[observability.CORRELATION_HEADER] = correlation_id
+        return response
+    finally:
+        duration = time.perf_counter() - started
+        template = observability.route_template(app.routes, request.method, request.url.path)
+        observability.record_request(request.method, template, status_code, duration)
+        if request.client:
+            # Best-effort: a bookkeeping failure here must never affect the
+            # response the client already got. Proxy-aware for the same reason
+            # the limiter is -- behind a proxy the raw peer is the proxy's own
+            # (usually private) address, so exposure detection would never see
+            # the public client this check exists to notice.
+            try:
+                remote_access_status.note_client_ip(reverse_proxy.client_ip(request))
+            except Exception:
+                pass
 
 
 def get_controller_or_404(device_id):
@@ -465,6 +505,20 @@ class ApiRateLimitBody(BaseModel):
     enabled: bool | None = None
     exempt_local: bool | None = None
     limits: dict[str, int] | None = None
+class LogLevelBody(BaseModel):
+    level: str
+
+
+class DuckDnsSyncBody(BaseModel):
+    domain: str
+    ip: str | None = None
+    ok: bool = True
+    detail: str | None = None
+
+
+class ExposureBody(BaseModel):
+    configured: bool
+    source: str | None = None
 
 
 # --------------------------------------------------------------- system ---
@@ -533,6 +587,170 @@ def set_api_rate_limit_config(body: ApiRateLimitBody):
         return api_rate_limit.configure(body.enabled, body.exempt_local, body.limits)
     except ValueError as e:
         raise HTTPException(400, str(e))
+
+
+# --------------------------------------------------------- observability --
+# Note on auth: /metrics is NOT in remote_auth.OPEN_PATHS, so it is gated
+# along with everything else once the PIN gate is on. Endpoint names, call
+# counts and error rates are a decent map of the install for anyone
+# probing it, and the LAN-only default (gate off) already leaves it open
+# for a local Prometheus. Scraping through an enabled gate needs a session
+# cookie -- documented in SECURITY.md rather than silently exempted here.
+@app.get("/metrics", response_class=PlainTextResponse)
+def metrics():
+    return PlainTextResponse(observability.prometheus_text(version=APP_VERSION),
+                              media_type="text/plain; version=0.0.4; charset=utf-8")
+
+
+@app.get("/api/system/metrics")
+def metrics_json():
+    return observability.metrics_snapshot()
+
+
+@app.get("/api/system/dependencies")
+def system_dependencies(refresh: bool = False):
+    return observability.dependency_summary(force=refresh)
+
+
+@app.get("/api/system/health-summary")
+def health_summary():
+    """The dashboard-level health page -- deliberately distinct from the
+    per-device Diagnostics tab, which answers "is THIS bulb reachable".
+    This one answers "is the backend itself healthy": uptime, dependency
+    state, request/error rates, network mode, and whether anything is
+    shouting in the logs."""
+    metrics = observability.metrics_snapshot()
+    dependencies = observability.dependency_summary()
+    connectivity = network_health.connectivity_summary()
+    recent_errors = observability.recent_logs(limit=20, level="ERROR")
+    slowest = max(
+        (e for e in metrics["endpoints"] if e["p95_ms"] is not None),
+        key=lambda e: e["p95_ms"], default=None,
+    )
+    problems = []
+    if not dependencies["ok"]:
+        problems.append("a required dependency is missing or broken")
+    if dependencies["degraded"]:
+        problems.append(f"degraded: {', '.join(dependencies['degraded'])} unavailable")
+    if not connectivity["bulb_control_available"]:
+        problems.append("no LAN address -- bulb control cannot work")
+    if metrics["totals"]["error_rate"] > 0.05:
+        problems.append(f"server error rate is {metrics['totals']['error_rate']:.1%}")
+    if recent_errors:
+        problems.append(f"{len(recent_errors)} recent error log entr{'y' if len(recent_errors) == 1 else 'ies'}")
+
+    return {
+        "data_source": "LIVE DATA",
+        "healthy": not problems,
+        "problems": problems,
+        "process": {
+            "version": APP_VERSION,
+            "uptime_seconds": round(time.time() - START_TIME, 1),
+            "started_at": observability.STARTED_AT_ISO,
+            "python": observability._python_version(),
+            "log_level": observability.get_log_level(),
+        },
+        "dependencies": dependencies,
+        "requests": metrics["totals"],
+        "status_classes": metrics["status_classes"],
+        "slowest_endpoint": slowest,
+        "endpoints": metrics["endpoints"],
+        "network": connectivity,
+        "bulb_latency": network_health.all_latency_summaries(),
+        "recent_errors": recent_errors,
+    }
+
+
+@app.get("/api/system/logs")
+def system_logs(limit: int = 100, level: str | None = None):
+    try:
+        return {"data_source": "LIVE DATA", "log_level": observability.get_log_level(),
+                "buffer_size": observability.LOG_BUFFER_SIZE,
+                "entries": observability.recent_logs(limit=limit, level=level)}
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+
+@app.get("/api/system/log-level")
+def get_log_level():
+    return {"log_level": observability.get_log_level(), "levels": list(observability.LOG_LEVELS)}
+
+
+@app.post("/api/system/log-level")
+def set_log_level(body: LogLevelBody):
+    try:
+        return observability.set_log_level(body.level)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+
+@app.get("/api/system/diagnostic-report")
+def diagnostic_report(log_limit: int = 200, history_limit: int = 20):
+    """A shareable "here's my install" bundle with every secret stripped.
+    Returned to the caller only -- never written to disk, so nothing
+    generated here can end up sitting in the repo waiting to be committed."""
+    return observability.diagnostic_report(log_limit=log_limit, history_limit=history_limit,
+                                            version=APP_VERSION)
+
+
+# ---------------------------------------------------------- network state -
+@app.get("/api/system/network")
+def system_network():
+    return {
+        "data_source": "LIVE DATA",
+        "state": network_health.get_state(),
+        "connectivity": network_health.connectivity_summary(),
+        "firewall": {
+            "lan_only_ports": network_health.LAN_ONLY_PORTS,
+            "note": ("For LAN-only operation nothing needs to be open to the internet. "
+                     "See docs/remote-access-security.md."),
+        },
+    }
+
+
+@app.post("/api/system/network/refresh")
+def system_network_refresh():
+    """Take a reading now instead of waiting for the monitor's next tick --
+    what you press after plugging the ethernet back in."""
+    return network_health.poll()
+
+
+@app.get("/api/devices/{device_id}/latency-history")
+def device_latency_history(device_id: str, limit: int = 100):
+    get_controller_or_404(device_id)
+    return network_health.latency_history(device_id, limit=limit)
+
+
+# --------------------------------------------------- remote-access status -
+@app.get("/api/system/remote-access/status")
+def remote_access_status_route(check_tailscale: bool = False):
+    return remote_access_status.status(include_live_lookups=check_tailscale)
+
+
+@app.get("/api/system/remote-access/tailscale")
+def remote_access_tailscale():
+    return remote_access_status.tailscale_status()
+
+
+@app.post("/api/system/remote-access/detect-public-ip")
+def remote_access_detect_public_ip():
+    """The only outbound internet request this project makes, and only when
+    a user explicitly asks for it. See SECURITY.md's no-telemetry section."""
+    return remote_access_status.detect_public_ip()
+
+
+@app.post("/api/system/remote-access/duckdns-sync")
+def remote_access_duckdns_sync(body: DuckDnsSyncBody):
+    """Called by whatever updates the user's DuckDNS record, so Settings can
+    show a real "last synced" time. This project runs no updater itself."""
+    remote_access_status.record_duckdns_sync(body.domain, body.ip, body.ok, body.detail)
+    return remote_access_status.status()
+
+
+@app.post("/api/system/remote-access/exposure")
+def remote_access_set_exposure(body: ExposureBody):
+    remote_access_status.mark_exposure(body.configured, body.source)
+    return remote_access_status.status()
 
 
 # ----------------------------------------------------------- pin auth ---
@@ -1683,6 +1901,15 @@ def delete_orchestration_preset_route(preset_id: str):
 
 @app.on_event("startup")
 def on_startup():
+    # Dependency check FIRST, before any thread is spawned: a missing
+    # tinytuya should stop the process here with a message naming the fix,
+    # not surface twenty minutes later as an opaque 500 on the first bulb
+    # command. Raises DependencyError, which aborts startup.
+    observability.startup_dependency_check()
+    logger = observability.get_logger()
+    logger.info("smart-bulb-dashboard %s starting (log level %s)",
+                APP_VERSION, observability.get_log_level())
+    network_health.start_monitor()
     schedule_engine.start_scheduler(bm.get_controller)
     discovery.start_scheduler()
 

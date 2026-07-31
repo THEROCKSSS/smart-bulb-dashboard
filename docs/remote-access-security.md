@@ -103,6 +103,12 @@ below), and understand its limits (also below) before relying on it.
 
 ### What the PIN gate does and doesn't protect against
 
+> The full, formal version of this — assets, trust boundaries, an attacker
+> table, and the gaps stated bluntly — is in
+> [`pin-gate-threat-model.md`](pin-gate-threat-model.md). Read that one
+> before deciding to expose this publicly. The summary below is the short
+> form.
+
 Does:
 - Blocks casual/automated discovery from immediately controlling your
   bulbs or reading your device inventory.
@@ -206,6 +212,109 @@ rate limiting limits how often a *client* may call the HTTP API. They never
 interact: the audio engine's per-bulb sender dispatches from an in-process
 queue and never enters the HTTP stack, so a lightshow running at dozens of
 updates a second consumes exactly zero of the API budget.
+
+## What the dashboard now tells you about your own exposure
+
+Week 2 Phase D added surfacing, so you don't have to remember what you
+configured six months ago.
+
+**Settings → Remote Access — Exposure** shows:
+
+- the **currently detected public IP**, and when it was last checked. This
+  is the only outbound internet request this project makes anywhere, and it
+  runs *only* when you press the button — see `SECURITY.md`;
+- your **DuckDNS domain and last successful sync time**. This project
+  deliberately doesn't run a DuckDNS updater (the provider's own cron job
+  or container already does that well); your updater reports in with
+  `POST /api/system/remote-access/duckdns-sync`, e.g.
+
+  ```bash
+  # after your normal duckdns update call succeeds
+  curl -s -X POST http://localhost:8500/api/system/remote-access/duckdns-sync \
+    -H 'Content-Type: application/json' \
+    -d '{"domain":"yourname.duckdns.org","ip":"'"$(curl -s https://api.ipify.org)"'","ok":true}'
+  ```
+
+  With no updater wired up it simply reads "never", which is honest rather
+  than blank;
+- whether **public exposure is configured**, and whether the dashboard has
+  ever actually **been reached from a public IP**.
+
+**Diagnostics → Tailscale** runs `tailscale status --json` on the host and
+reports whether Tailscale is even installed, whether the daemon is running,
+and — if it is — the **tailnet-reachable URL** (MagicDNS name, falling back
+to the 100.x address), with a copy button. If the CLI isn't on PATH it says
+so instead of failing.
+
+> The tailnet URL is built with port **8500** by default. If you run on a
+> different port, set `SBD_PORT` in the backend's environment so the URL it
+> prints is the one you can actually open.
+
+### The warning banner
+
+A persistent, non-dismissable banner appears at the top of every page when
+either of these is true:
+
+1. **A request actually arrived from a globally-routable IP while the PIN
+   gate is off.** This is evidence, not a guess: the dashboard demonstrably
+   *is* reachable from outside your LAN and is currently unauthenticated.
+2. **Public exposure is configured and the PIN gate is off.** This is the
+   fail-safe. If you set up a port forward *with* the gate on (correctly, no
+   warning) and turn the gate off months later, the warning comes back — and
+   survives restarts — until you either re-enable the gate or explicitly
+   retract the exposure declaration in Settings after taking the forward
+   down. A dismiss-once banner would never catch that case, which is exactly
+   the one that gets people.
+
+Tailnet addresses (100.64.0.0/10) are *not* treated as public, so normal
+Tailscale use never trips it.
+
+## Firewall rules for LAN-only operation
+
+Short version: **for LAN-only use, nothing needs to be open to the
+internet.** Full table (ports, direction, what each is for, what's safe to
+close) is in [`observability.md`](observability.md#firewall-guidance-for-lan-only-operation),
+and served as live data from `GET /api/system/network` so the docs and the
+UI can't drift apart.
+
+The one-line summary: TCP 8500 inbound **from your LAN only**, TCP 6668
+outbound to the bulbs, and UDP 6666/6667 inbound only if you want network
+auto-discovery. Everything else stays closed.
+
+## When one path is up and the other isn't
+
+The dashboard now reports a connectivity **mode** (System → Health, and
+`GET /api/system/network`):
+
+- **`lan_only`** — LAN works, no Tailscale address on the host. Local
+  control is fine; tailnet remote access is down. Check `tailscale status`.
+- **`tailscale_only`** — the tailnet is up but the host has no LAN address.
+  You can *reach* the dashboard from your phone, and it will load — but it
+  **cannot reach any bulb**, so every command would fail. It says so
+  plainly rather than letting each call time out with its own opaque error.
+  Usually means the host's Wi-Fi/ethernet dropped while Tailscale stayed up
+  over another interface.
+- **`offline`** — neither. Nothing can be controlled.
+
+The backend also notices when its own IP changes (DHCP moved it, new
+router, new subnet) and logs it with a timestamp — which is the thing you
+actually want when "remote access stopped working yesterday" and your
+port-forward rule still points at the old address. After connectivity
+returns, or after an IP change, every cached bulb connection is dropped and
+rebuilt: a router reboot leaves those sockets dead, and without this they
+keep failing until something forces a reconnect.
+
+## Tailscale troubleshooting
+
+| Symptom | Likely cause | Check |
+|---|---|---|
+| Diagnostics says "tailscale CLI not found on PATH" | Not installed, or installed for a different user | `tailscale version` in the same shell that runs the backend |
+| "installed but its backend state is 'Stopped'" | Daemon not connected / logged out | `tailscale up` |
+| `BackendState: NeedsLogin` | Auth key expired, or node key expired (default 180 days) | `tailscale up` again; consider disabling key expiry for this node in the admin console |
+| Tailnet URL loads on the host but not from the phone | Phone isn't actually on the tailnet, or an exit node is routing oddly | `tailscale status` on the phone; try the raw `100.x` address before the MagicDNS name |
+| MagicDNS name doesn't resolve, IP works | MagicDNS off for the tailnet | Enable MagicDNS in the Tailscale admin console DNS settings |
+| Works on LAN, 401 over the tailnet | Expected if the PIN gate is on — the tailnet is just another network to it | Log in with the PIN; the session cookie then works over both paths |
+| Dashboard reachable, all bulb commands fail | `tailscale_only` mode — host has no LAN | System → Health, check the connectivity mode |
 
 ## Still planned: a dedicated adversarial security-test phase
 

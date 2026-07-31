@@ -192,6 +192,11 @@ const PAGES = {
     label: "System",
     tabs: [
       { id: "history", label: "History", render: renderHistory },
+      // Health is the BACKEND's own health (uptime, dependencies, request
+      // latency, logs); Diagnostics stays what it always was — "is this
+      // one bulb reachable". Two genuinely different questions, so two
+      // tabs rather than one crowded one.
+      { id: "health", label: "Health", render: renderHealth },
       { id: "diagnostics", label: "Diagnostics", render: renderDiagnostics },
       // Security sits next to History deliberately: History is "what did the
       // bulbs do", Security is "what happened to this install". Same page,
@@ -217,6 +222,7 @@ const LEGACY_ROUTES = {
   groups: "rooms",
   zones: "rooms",
   history: "system/history",
+  health: "system/health",
   diagnostics: "system/diagnostics",
   settings: "system/settings",
   security: "system/security",
@@ -308,6 +314,46 @@ async function router() {
     const target = main.querySelector("#subtab-panel") || main;
     target.innerHTML = `<div class="empty-state">Failed to load this panel: ${e.message}</div>`;
   }
+  // Every panel replaces #main's contents, so the exposure banner has to be
+  // re-inserted after each render rather than living in the shell. It stays
+  // deliberately un-dismissable: the condition it reports (an unauthenticated
+  // dashboard on a public IP) is not something to hide behind an X.
+  paintExposureBanner();
+}
+
+// ------------------------------------------------- exposure warning banner --
+// Populated from GET /api/system/remote-access/status. Uses a bare fetch
+// rather than api() so a failure here degrades to "no banner" instead of
+// spraying error toasts over an otherwise-working dashboard.
+async function refreshExposureWarnings() {
+  try {
+    const res = await fetch("/api/system/remote-access/status");
+    state.exposureWarnings = res.ok ? (await res.json()).warnings || [] : [];
+  } catch (e) {
+    state.exposureWarnings = [];
+  }
+  paintExposureBanner();
+}
+
+function paintExposureBanner() {
+  const main = document.getElementById("main");
+  if (!main) return;
+  const existing = main.querySelector("#exposure-banner");
+  if (existing) existing.remove();
+  const warnings = state.exposureWarnings || [];
+  if (!warnings.length) return;
+  const banner = el(
+    `<div id="exposure-banner">` +
+    warnings.map(w =>
+      `<div class="exposure-warning ${escAttr(w.severity)}">
+         <div class="ew-title">${escHtml(w.title)}</div>
+         <div class="ew-detail">${escHtml(w.detail)}</div>
+         <div class="ew-action">What to do: ${escHtml(w.action)}</div>
+       </div>`
+    ).join("") +
+    `</div>`
+  );
+  main.insertBefore(banner, main.firstChild);
 }
 
 window.addEventListener("hashchange", router);
@@ -1406,6 +1452,192 @@ async function renderHistory(main) {
   `;
 }
 
+// ------------------------------------------------------ system health ----
+// The backend's own health, deliberately separate from the per-device
+// Diagnostics tab. Everything here is one round trip to
+// /api/system/health-summary plus an on-demand log tail.
+function fmtUptime(seconds) {
+  const s = Math.max(0, Math.round(seconds));
+  const d = Math.floor(s / 86400), h = Math.floor((s % 86400) / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  if (d) return `${d}d ${h}h ${m}m`;
+  if (h) return `${h}h ${m}m`;
+  if (m) return `${m}m ${s % 60}s`;
+  return `${s}s`;
+}
+
+function fmtMs(value) {
+  return value == null ? "—" : `${value} ms`;
+}
+
+async function renderHealth(main) {
+  const health = await get("/api/system/health-summary");
+  const levels = (await get("/api/system/log-level")).levels;
+  const p = health.process;
+
+  main.innerHTML = `
+    <h1 class="panel-title">System Health</h1>
+    <p class="panel-subtitle">
+      How the <b>backend</b> itself is doing — uptime, dependencies, request latency and logs.
+      For "is this one bulb reachable", use the Diagnostics tab.
+    </p>
+
+    <div class="card">
+      <h3>
+        Backend <span class="tag ${health.healthy ? "on" : "error"}">${health.healthy ? "HEALTHY" : "ATTENTION"}</span>
+        <span class="tag on">LIVE DATA</span>
+      </h3>
+      ${health.problems.length === 0
+        ? `<p class="panel-subtitle">No problems detected.</p>`
+        : `<ul class="health-problems">${health.problems.map(x => `<li>${escHtml(x)}</li>`).join("")}</ul>`}
+      <table><tbody>
+        <tr><td>Version</td><td>${escHtml(p.version)}</td></tr>
+        <tr><td>Uptime</td><td>${fmtUptime(p.uptime_seconds)}</td></tr>
+        <tr><td>Started</td><td>${new Date(p.started_at).toLocaleString()}</td></tr>
+        <tr><td>Python</td><td>${escHtml(p.python)}</td></tr>
+        <tr><td>Log level</td><td>${escHtml(p.log_level)}</td></tr>
+      </tbody></table>
+    </div>
+
+    <div class="card">
+      <h3>Dependencies</h3>
+      <p class="panel-subtitle">
+        Checked at startup, not just imported — a package that imports fine and then fails
+        on first real use is the failure mode worth catching.
+      </p>
+      <table>
+        <thead><tr><th>Package</th><th>Required</th><th>State</th><th>Detail</th></tr></thead>
+        <tbody>${health.dependencies.checks.map(c => `
+          <tr>
+            <td>${escHtml(c.name)}${c.version ? ` <span class="dim">${escHtml(c.version)}</span>` : ""}</td>
+            <td>${c.required ? "yes" : "optional"}</td>
+            <td><span class="tag ${c.ok ? "on" : (c.required ? "error" : "off")}">${c.ok ? "OK" : "UNAVAILABLE"}</span></td>
+            <td class="dim">${escHtml(c.detail || c.why)}</td>
+          </tr>`).join("")}
+        </tbody>
+      </table>
+    </div>
+
+    <div class="card">
+      <h3>Requests</h3>
+      <p class="panel-subtitle">
+        ${health.requests.requests} handled · ${health.requests.errors} server error(s)
+        (${(health.requests.error_rate * 100).toFixed(1)}%) ·
+        ${health.requests.client_errors} client error(s).
+        Percentiles are over a rolling window of recent requests per endpoint, so they
+        answer "is it slow now", not "was it ever slow".
+      </p>
+      ${health.endpoints.length === 0 ? `
+        <p class="panel-subtitle">No requests recorded yet this run.</p>
+      ` : `
+        <table>
+          <thead><tr><th>Endpoint</th><th>Calls</th><th>p50</th><th>p95</th><th>p99</th><th>Errors</th></tr></thead>
+          <tbody>${health.endpoints.slice(0, 25).map(e => `
+            <tr>
+              <td><code class="inline">${escHtml(e.method)} ${escHtml(e.endpoint)}</code></td>
+              <td>${e.requests}</td>
+              <td>${fmtMs(e.p50_ms)}</td>
+              <td>${fmtMs(e.p95_ms)}</td>
+              <td>${fmtMs(e.p99_ms)}</td>
+              <td>${e.errors ? `<span class="tag error">${e.errors}</span>` : "0"}</td>
+            </tr>`).join("")}
+          </tbody>
+        </table>
+      `}
+      <p class="panel-subtitle" style="margin-top:10px;">
+        Raw Prometheus metrics: <code class="inline">GET /metrics</code>
+      </p>
+    </div>
+
+    <div class="card">
+      <h3>Network <span class="tag ${health.network.bulb_control_available ? "on" : "error"}">${escHtml(health.network.mode)}</span></h3>
+      <p class="panel-subtitle">${escHtml(health.network.message)}</p>
+      <table><tbody>${health.network.host_ips.map(h => `
+        <tr><td><code class="inline">${escHtml(h.ip)}</code></td><td>${escHtml(h.class)}</td></tr>
+      `).join("")}</tbody></table>
+    </div>
+
+    <div class="card">
+      <h3>Bulb Latency Over Time</h3>
+      ${health.bulb_latency.length === 0 ? `
+        <p class="panel-subtitle">No samples yet — latency is recorded from real status calls, so this fills in as the dashboard is used.</p>
+      ` : `
+        <table>
+          <thead><tr><th>Device</th><th>Samples</th><th>p50</th><th>p95</th><th>Max</th><th>Failures</th></tr></thead>
+          <tbody>${health.bulb_latency.map(b => `
+            <tr>
+              <td>${escHtml(b.device_id)}</td>
+              <td>${b.sample_count}</td>
+              <td>${fmtMs(b.p50_ms)}</td>
+              <td>${fmtMs(b.p95_ms)}</td>
+              <td>${fmtMs(b.max_ms)}</td>
+              <td>${b.failure_count ? `<span class="tag error">${(b.failure_rate * 100).toFixed(0)}%</span>` : "0"}</td>
+            </tr>`).join("")}
+          </tbody>
+        </table>
+      `}
+    </div>
+
+    <div class="card">
+      <h3>Logs</h3>
+      <div class="row">
+        <label class="inline-label">Show
+          <select id="log-filter">
+            <option value="">everything</option>
+            ${levels.map(l => `<option value="${escAttr(l)}">${escHtml(l)} and above</option>`).join("")}
+          </select>
+        </label>
+        <button id="log-refresh">Refresh</button>
+        <button id="diag-report">Download Diagnostic Report</button>
+      </div>
+      <p class="panel-subtitle" style="margin-top:8px;">
+        The diagnostic report bundles config shape, dependency state, metrics and recent
+        logs with every secret stripped — for attaching to a bug report. Skim it before
+        sharing anyway: IPs and device names are left intact on purpose.
+      </p>
+      <div id="log-view" class="log-view">Loading…</div>
+    </div>
+  `;
+
+  async function loadLogs() {
+    const level = main.querySelector("#log-filter").value;
+    const body = await get(`/api/system/logs?limit=100${level ? `&level=${encodeURIComponent(level)}` : ""}`);
+    const view = main.querySelector("#log-view");
+    if (!body.entries.length) {
+      view.innerHTML = `<div class="empty-state">No log entries buffered at this level yet.</div>`;
+      return;
+    }
+    view.innerHTML = body.entries.map(e => `
+      <div class="log-line ${escAttr(e.level.toLowerCase())}">
+        <span class="log-ts">${new Date(e.timestamp).toLocaleTimeString()}</span>
+        <span class="log-level">${escHtml(e.level)}</span>
+        <span class="log-cid">${escHtml(e.correlation_id || "—")}</span>
+        <span class="log-msg">${escHtml(e.message)}</span>
+      </div>`).join("");
+  }
+
+  main.querySelector("#log-filter").onchange = loadLogs;
+  main.querySelector("#log-refresh").onclick = loadLogs;
+  main.querySelector("#diag-report").onclick = async (e) => {
+    e.target.disabled = true;
+    try {
+      const report = await get("/api/system/diagnostic-report");
+      const blob = new Blob([JSON.stringify(report, null, 2)], { type: "application/json" });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = `smart-bulb-diagnostic-${new Date().toISOString().slice(0, 19).replace(/:/g, "")}.json`;
+      link.click();
+      URL.revokeObjectURL(url);
+      toast("Diagnostic report downloaded (secrets redacted)", "success");
+    } finally {
+      e.target.disabled = false;
+    }
+  };
+  await loadLogs();
+}
+
+
 async function renderDiagnostics(main) {
   const device = state.devices.find(d => d.id === state.deviceId) || {};
   main.innerHTML = `
@@ -1435,6 +1667,25 @@ async function renderDiagnostics(main) {
       </div>
       <div id="diag-result" style="margin-top:16px;"></div>
     </div>
+    <div class="card">
+      <h3>Latency Over Time <span class="tag on">LIVE DATA</span></h3>
+      <p class="panel-subtitle">
+        Recorded from every real status call to this bulb, so it builds up as the
+        dashboard is used — no extra probe traffic. In-memory: resets on backend restart.
+      </p>
+      <div id="latency-history">Loading…</div>
+    </div>
+
+    <div class="card">
+      <h3>Tailscale</h3>
+      <p class="panel-subtitle">
+        Whether Tailscale is actually running on the machine hosting this dashboard,
+        and what URL that makes it reachable at from your phone. Checked on demand.
+      </p>
+      <button id="tailscale-check">Check Tailscale Status</button>
+      <div id="tailscale-result" style="margin-top:12px;"></div>
+    </div>
+
     <div class="card">
       <h3>System Info</h3>
       <div id="sys-info">Loading…</div>
@@ -1472,6 +1723,53 @@ async function renderDiagnostics(main) {
       ? `<div class="empty-state">Found device at new IP: <b>${r.ip}</b> — config updated.</div>`
       : `<div class="empty-state">Device not found on network. ${r.error || "Check power/Wi-Fi."}</div>`;
   };
+  main.querySelector("#tailscale-check").onclick = async (e) => {
+    const target = main.querySelector("#tailscale-result");
+    e.target.disabled = true;
+    target.innerHTML = "Checking…";
+    try {
+      const ts = await get("/api/system/remote-access/tailscale");
+      target.innerHTML = `
+        <table><tbody>
+          <tr><td>Installed on host</td><td><span class="tag ${ts.installed ? "on" : "off"}">${ts.installed}</span></td></tr>
+          <tr><td>Running</td><td><span class="tag ${ts.running ? "on" : "off"}">${ts.running}</span></td></tr>
+          <tr><td>Backend state</td><td>${escHtml(ts.backend_state || "—")}</td></tr>
+          <tr><td>MagicDNS name</td><td><code class="inline">${escHtml(ts.magic_dns_name || "—")}</code></td></tr>
+          <tr><td>Tailnet IPs</td><td><code class="inline">${escHtml(ts.tailscale_ips.join(", ") || "—")}</code></td></tr>
+          <tr><td>Peers</td><td>${ts.peer_count == null ? "—" : ts.peer_count}</td></tr>
+          ${ts.tailnet_url ? `
+            <tr><td>Reachable at</td><td>
+              <code class="inline">${escHtml(ts.tailnet_url)}</code>
+              <button type="button" class="copy-btn" data-copy-text="${escAttr(ts.tailnet_url)}">Copy</button>
+            </td></tr>` : ""}
+          ${ts.error ? `<tr><td>Note</td><td class="dim">${escHtml(ts.error)}</td></tr>` : ""}
+        </tbody></table>`;
+    } finally {
+      e.target.disabled = false;
+    }
+  };
+
+  const latency = await get(`/api/devices/${state.deviceId}/latency-history?limit=25`);
+  main.querySelector("#latency-history").innerHTML = latency.sample_count === 0 ? `
+    <div class="empty-state">No samples yet. Run a connection test above, or just use the dashboard — every status call adds one.</div>
+  ` : `
+    <table><tbody>
+      <tr><td>Samples</td><td>${latency.sample_count} (window ${latency.window})</td></tr>
+      <tr><td>p50 / p95</td><td>${fmtMs(latency.p50_ms)} / ${fmtMs(latency.p95_ms)}</td></tr>
+      <tr><td>Min / Max</td><td>${fmtMs(latency.min_ms)} / ${fmtMs(latency.max_ms)}</td></tr>
+      <tr><td>Failures</td><td>${latency.failure_count} (${(latency.failure_rate * 100).toFixed(0)}%)</td></tr>
+    </tbody></table>
+    <table style="margin-top:12px;">
+      <thead><tr><th>When</th><th>Latency</th><th>Result</th></tr></thead>
+      <tbody>${latency.samples.map(s => `
+        <tr>
+          <td>${new Date(s.at).toLocaleTimeString()}</td>
+          <td>${fmtMs(s.latency_ms)}</td>
+          <td><span class="tag ${s.ok ? "on" : "error"}">${s.ok ? "ok" : "failed"}</span></td>
+        </tr>`).join("")}
+      </tbody>
+    </table>`;
+
   const info = await get("/api/system/info");
   main.querySelector("#sys-info").innerHTML = `
     <table><tbody>
@@ -2113,6 +2411,9 @@ async function renderSettings(main) {
   const disco = await get("/api/system/discovery");
   const remoteAuth = await get("/api/system/remote-auth/status");
   const guestPins = remoteAuth.enabled ? (await get("/api/system/remote-auth/pins")).pins : [];
+  const remoteAccess = await get("/api/system/remote-access/status");
+  const logLevel = await get("/api/system/log-level");
+  const never = `<span class="dim">never</span>`;
 
   main.innerHTML = `
     <h1 class="panel-title">Settings</h1>
@@ -2282,6 +2583,75 @@ async function renderSettings(main) {
       <button id="save-lockout-policy" class="primary" style="margin-top:10px;">Save Policy</button>
       <button id="revoke-all-sessions" class="danger" style="margin-left:8px;">Sign Out All Devices</button>
     </div>
+
+    <div class="card">
+      <h3>Remote Access — Exposure</h3>
+      <p class="panel-subtitle">
+        What this install currently looks like from outside. The public-IP lookup is the
+        <b>only</b> outbound internet request this project makes anywhere, and it only
+        happens when you press the button below — see <code class="inline">SECURITY.md</code>.
+      </p>
+      <table><tbody>
+        <tr>
+          <td>Detected public IP</td>
+          <td>
+            <code class="inline">${escHtml(remoteAccess.public_ip.ip || "not checked")}</code>
+            ${remoteAccess.public_ip.checked_at
+              ? `<span class="dim">— checked ${new Date(remoteAccess.public_ip.checked_at).toLocaleString()}</span>`
+              : ""}
+            ${remoteAccess.public_ip.error ? `<span class="tag error">lookup failed</span>` : ""}
+          </td>
+        </tr>
+        <tr><td>DuckDNS domain</td><td><code class="inline">${escHtml(remoteAccess.duckdns.domain || "—")}</code></td></tr>
+        <tr>
+          <td>Last DuckDNS sync</td>
+          <td>${remoteAccess.duckdns.last_sync_at
+                ? `${new Date(remoteAccess.duckdns.last_sync_at).toLocaleString()}
+                   <span class="tag ${remoteAccess.duckdns.last_sync_ok ? "on" : "error"}">${remoteAccess.duckdns.last_sync_ok ? "ok" : "failed"}</span>`
+                : never}</td>
+        </tr>
+        <tr>
+          <td>Public exposure</td>
+          <td><span class="tag ${remoteAccess.exposure.configured ? "error" : "off"}">${remoteAccess.exposure.configured ? "CONFIGURED" : "not configured"}</span>
+            ${remoteAccess.exposure.source ? `<span class="dim">${escHtml(remoteAccess.exposure.source)}</span>` : ""}</td>
+        </tr>
+        <tr>
+          <td>Seen from a public IP</td>
+          <td>${remoteAccess.exposure.public_client_seen_at
+                ? `<code class="inline">${escHtml(remoteAccess.exposure.public_client_ip)}</code>
+                   <span class="dim">${new Date(remoteAccess.exposure.public_client_seen_at).toLocaleString()}</span>`
+                : never}</td>
+        </tr>
+      </tbody></table>
+      <div class="row" style="margin-top:12px;">
+        <button id="detect-public-ip">Detect Public IP Now</button>
+        ${remoteAccess.exposure.configured
+          ? `<button id="exposure-clear" class="danger">Retract Exposure Declaration</button>`
+          : `<button id="exposure-set">I have a port forward set up</button>`}
+      </div>
+      <p class="panel-subtitle" style="margin-top:10px;">
+        Your DuckDNS updater can report its sync time here with
+        <code class="inline">POST /api/system/remote-access/duckdns-sync</code>. This project
+        deliberately does not run an updater of its own.
+      </p>
+    </div>
+
+    <div class="card">
+      <h3>Logging</h3>
+      <p class="panel-subtitle">
+        Backend log verbosity — no code edit, no restart. Persisted. View the resulting
+        lines under System → Health.
+      </p>
+      <div class="form-grid">
+        <label>Log level
+          <select id="log-level-select">
+            ${logLevel.levels.map(l =>
+              `<option value="${escAttr(l)}" ${l === logLevel.log_level ? "selected" : ""}>${escHtml(l)}</option>`
+            ).join("")}
+          </select>
+        </label>
+      </div>
+    </div>
   `;
 
   main.querySelector("#add-device").onclick = async () => {
@@ -2379,6 +2749,40 @@ async function renderSettings(main) {
     disableBtn.onclick = async () => {
       await post("/api/system/remote-auth/disable");
       toast("PIN gate disabled");
+      // Disabling the gate is exactly the moment the fail-safe warning is
+      // supposed to reappear if exposure is configured, so re-check now
+      // rather than waiting for the next page load.
+      await refreshExposureWarnings();
+      renderSettings(main);
+    };
+  }
+
+  main.querySelector("#detect-public-ip").onclick = async (e) => {
+    e.target.disabled = true;
+    e.target.textContent = "Checking…";
+    const result = await post("/api/system/remote-access/detect-public-ip");
+    toast(result.public_ip ? `Public IP: ${result.public_ip}` : `Lookup failed: ${result.error}`,
+          result.public_ip ? "success" : "error");
+    await refreshExposureWarnings();
+    renderSettings(main);
+  };
+
+  const exposureSet = main.querySelector("#exposure-set");
+  if (exposureSet) {
+    exposureSet.onclick = async () => {
+      await post("/api/system/remote-access/exposure",
+                 { configured: true, source: "declared in Settings" });
+      toast("Exposure recorded — the PIN gate warning now stays until the gate is on", "success");
+      await refreshExposureWarnings();
+      renderSettings(main);
+    };
+  }
+  const exposureClear = main.querySelector("#exposure-clear");
+  if (exposureClear) {
+    exposureClear.onclick = async () => {
+      await post("/api/system/remote-access/exposure", { configured: false });
+      toast("Exposure retracted — only do this once the port forward is actually removed");
+      await refreshExposureWarnings();
       renderSettings(main);
     };
   }
@@ -2436,6 +2840,11 @@ async function renderSettings(main) {
   main.querySelector("#revoke-all-sessions").onclick = async () => {
     const result = await post("/api/auth/sessions/revoke-all");
     toast(`${result.revoked} session(s) signed out — every device must re-enter the PIN`, "success");
+  };
+
+  main.querySelector("#log-level-select").onchange = async (e) => {
+    await post("/api/system/log-level", { level: e.target.value });
+    toast(`Log level set to ${e.target.value}`, "success");
   };
 }
 
@@ -2811,6 +3220,9 @@ async function bootDashboard() {
     location.hash = "#/" + (savedRoute && routeExists(savedRoute) ? savedRoute : DEFAULT_ROUTE);
   }
   router();
+  // Deliberately not awaited: a banner about remote exposure must not hold up
+  // first paint of the dashboard itself.
+  refreshExposureWarnings();
 }
 
 // ---------------------------------------------------------------- init --

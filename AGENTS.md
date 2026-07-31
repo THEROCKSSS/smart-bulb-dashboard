@@ -109,6 +109,28 @@ env-var secrets, a stdlib CLI (`cli/bulbctl.py`), and a real pytest suite
   silently flip the PIN gate (W2-175); restoring the audit log would rewind
   the tamper-evidence. Both exclusions are structural in
   `backup_restore.py` — don't "helpfully" add them back.
+  commit, a log line, or a doc.** `config.json` and `backend/data/` are
+  git-ignored for exactly this reason — check `.gitignore` before adding
+  any new file that might carry a secret, and confirm via a Forgejo/GitHub
+  API readback after pushing (this project has done that check after
+  every push so far) rather than assuming `.gitignore` alone is proof.
+  Anything that *emits* data (a new log line, a new API response, the
+  diagnostic report) goes through `observability.redact_obj` /
+  `redact_text`, and gets a test that plants a real-shaped secret and
+  asserts it's absent — see `test_observability.py`. "It shouldn't contain
+  secrets" is not a claim this project accepts unasserted.
+- **Any test that touches process-global or disk-backed state must isolate
+  it in `conftest.py`.** `backend/data/*.json` is real machine state; a
+  test reading or overwriting it produces failures that depend on what the
+  developer's own install happens to be doing. `auth_reset` and
+  `observability_reset` exist for exactly this, and every new state file
+  needs adding to one of them.
+- **Nothing may make an outbound internet request without an explicit user
+  action.** `SECURITY.md` promises this project doesn't phone home, and
+  that promise is only worth something if the code genuinely has no
+  background caller. The single exception (the opt-in public-IP lookup in
+  `remote_access_status.py`) is documented and tested to have exactly one
+  caller — see `test_status_never_performs_the_public_ip_lookup_itself`.
 
 ## Definition of done, on this project
 

@@ -16,7 +16,7 @@ No cloud round-trip for day-to-day control.
 
 ## What's here
 
-- **159 working features** — see `FEATURES.md` for the full itemized list
+- **186 working features** — see `FEATURES.md` for the full itemized list
   (power/brightness/color control, 25 color presets, 15 mood scenes, 7
   animated effects, sleep/wake timers, a recurring schedule engine,
   multi-bulb groups, history, diagnostics, a CLI, usage analytics, and more).
@@ -28,7 +28,11 @@ No cloud round-trip for day-to-day control.
 - **A PIN-gated remote-access path** for reaching the dashboard safely
   from outside your LAN (Tailscale recommended, DuckDNS+PIN as the public
   alternative) — see `docs/remote-access-security.md`.
-- A FastAPI backend (`backend/`) exposing a 55+-route REST API.
+- **Observability built in** — a Prometheus `/metrics` endpoint, per-endpoint
+  latency percentiles, a System Health page, a log viewer with correlation
+  IDs, and a secrets-redacted self-diagnostic report — see
+  `docs/observability.md`.
+- A FastAPI backend (`backend/`) exposing a 70+-route REST API.
 - A vanilla-JS dark-themed dashboard (`frontend/`) — no build step, no
   framework.
 - Project-local Claude Code skills (`.claude/skills/`) that teach an agent
@@ -72,7 +76,10 @@ Full step-by-step instructions, including how to obtain your bulb's
 | `roadmap/` | The month-long, ~1000-item phased backlog with a dependency graph |
 | `docs/music-reactive-lighting.md` | The 14 audio-reactive modes, latency/dwell design, orchestration |
 | `docs/network-discovery.md` | Auto-scan and manual network discovery |
-| `docs/remote-access-security.md` | Tailscale vs. DuckDNS+PIN gate, session management, audit logging |
+| `docs/remote-access-security.md` | Tailscale vs. DuckDNS+PIN gate, session management, audit logging, firewall rules |
+| `SECURITY.md` | Responsible disclosure, no-telemetry guarantee, dependency scan findings |
+| `docs/pin-gate-threat-model.md` | Formal threat model: assets, attackers, what's defended and what explicitly isn't |
+| `docs/observability.md` | `/metrics`, the System Health page, log viewer, diagnostic report, network resilience |
 | `cli/bulbctl.py` | Stdlib-only CLI wrapping the full REST API — see `cli/tests/` and `cli/examples/` |
 | `HANDOFF.md` | How this was built, verified, and what's known-fragile |
 | `iterations/` | Real build-test-fix logs — what broke and how it was fixed, round by round |
@@ -95,12 +102,51 @@ already built and tested against fake controllers plus the real API with a
 1-bulb group — real multi-bulb visual testing is the first thing to do
 once a second bulb is purchased (see `ROADMAP.md`).
 
-## Security note
+## Security: what this does and doesn't claim to protect against
 
-`backend/config.json` holds your bulb's `local_key` in plaintext (that's
-what Tuya's local protocol requires). It's git-ignored and never leaves your
-network — the dashboard redacts it in every API response. Don't commit your
-real `config.json`; use `config.example.json` as the template.
+Read this before you expose the dashboard beyond your LAN. Full detail in
+[`SECURITY.md`](SECURITY.md) and the formal
+[PIN-gate threat model](docs/pin-gate-threat-model.md).
+
+**It does protect against:**
+
+- Casual/automated discovery of an internet-exposed dashboard — *when you
+  enable the PIN gate*, which is off by default.
+- PIN guessing: a per-IP lockout (5 wrong attempts → 5 minutes) plus an
+  independent per-IP rate limit on the login endpoint itself.
+- Session theft after logout — sessions are revoked server-side, listable,
+  and individually revocable, not just cookie-cleared.
+- Your bulb's `local_key` leaking through the API, the logs, or the
+  self-diagnostic report.
+- Silently ending up exposed: if the dashboard is ever reached from a public
+  IP with the PIN gate off — or the gate gets turned off *after* you set up
+  a port forward — it shows a persistent warning until you fix it.
+
+**It does NOT protect against, and does not claim to:**
+
+- **Anyone who can read your network traffic.** The dashboard speaks plain
+  HTTP. Forward a port to the internet without TLS in front and your PIN
+  crosses the wire in cleartext. Use Tailscale, or put Caddy in front.
+- **Anyone with an account on the machine running it.**
+  `backend/config.json` holds your bulb's `local_key` in plaintext — that's
+  what Tuya's local protocol requires. Anyone who can read that file
+  controls your bulbs directly, dashboard or not. It's git-ignored and the
+  dashboard redacts it in every API response; don't commit your real
+  `config.json`, use `config.example.json` as the template.
+- **Other devices on your LAN.** The default posture is LAN-only with *no*
+  authentication, on the assumption your home network is trusted.
+- **Multiple users at different trust levels.** There is exactly one PIN,
+  shared by everyone you give it to.
+- **Denial of service.**
+
+**No telemetry.** Nothing here phones home — no analytics, no crash
+reporting, no update check, no CDN, no external fonts. The single outbound
+internet request in the whole codebase is the public-IP lookup in Settings,
+which runs only when you press the button. See `SECURITY.md` for how to
+verify that yourself.
+
+Found a security problem? Report it privately — see
+[`SECURITY.md`](SECURITY.md).
 
 ## License
 

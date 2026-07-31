@@ -664,6 +664,64 @@ Against a live `uvicorn` on `127.0.0.1:8577` with a throwaway config:
   missing, which never happens in a checkout — now writes directly instead.
 - The browser UI for both new tabs has not been through a real browser
   pass; the JS parses and the assets serve, but a human should click it.
+## Round 6 — Week 2 Phase D: observability, network resilience, security docs (2026-07-31)
+
+Tracking issue `THEROCKSSS/smart-bulb-dashboard#72`. Full write-up in
+`iterations/005-observability-network-resilience/README.md`.
+
+**Three new backend modules**, deliberately standalone (a broken audio
+stack must not take the observability layer down with it):
+
+- `backend/observability.py` — `/metrics` in Prometheus text format,
+  per-endpoint p50/p95/p99 latency and error rates, request correlation
+  IDs, a level-configurable in-memory log buffer the UI can tail, startup
+  dependency probes, and the secrets-redacted self-diagnostic report.
+- `backend/network_health.py` — host-IP change detection, connectivity
+  loss/regain with an automatic bulb-reconnect hook, per-bulb latency
+  history over time, and `full`/`lan_only`/`tailscale_only`/`offline`
+  connectivity modes.
+- `backend/remote_access_status.py` — public IP (opt-in lookup only),
+  DuckDNS last-sync, Tailscale status + tailnet URL, and the exposure
+  warning banner including the persistent fail-safe.
+
+**New docs:** `SECURITY.md` (disclosure process, no-telemetry guarantee,
+real `pip-audit` findings), `docs/pin-gate-threat-model.md` (formal, blunt
+about the ten things it doesn't defend), `docs/observability.md`.
+
+**Tests:** 353 → **472 passing**. New `conftest.py` `observability_reset`
+fixture isolates all three new state files at a tmp path — the first run
+had been reading/writing the real `backend/data/`.
+
+### Real bugs found
+
+1. **Pre-existing, user-visible:** `frontend/app.js` `bootDashboard()`
+   referenced a `ROUTES` map that stopped existing when the eleven panels
+   were consolidated into five `PAGES`. On a **first visit with no `#` in
+   the URL** it threw a `ReferenceError` before `router()` ran, so the
+   dashboard rendered nothing at all. Fixed.
+2. My own: route-template resolution collapsed
+   `/api/devices/{id}/power` onto `/api/devices` via a prefix fallback
+   meant for static mounts. Caught by its own test; fallback removed.
+
+### What a reviewer must check by hand
+
+- **The frontend has not been opened in a browser.** It was verified at
+  the data-contract level only (every endpoint the new UI calls returns
+  200 with the expected shape) plus `node --check`. The Health tab, log
+  viewer, latency tables, Tailscale card and exposure banner need visual
+  confirmation.
+- The `pip-audit` findings in `SECURITY.md` are **not fixed** — reaching a
+  patched `starlette` needs a FastAPI upgrade past `0.115.6`, which
+  deserves its own verified pass. Two of the seven advisories genuinely
+  apply to this project's configuration.
+- The tailnet URL is built with port **8500** unless `SBD_PORT` is set.
+
+### Known gap, pre-existing
+
+The *existing* test suite still writes `backend/data/audio_safety.json`,
+`audio_last_session.json`, `audio_session_presets.json` and
+`auth_audit.log` on the real install. Same class of problem the new
+`observability_reset` fixture solves; out of scope for this phase.
 
 ## Repo
 

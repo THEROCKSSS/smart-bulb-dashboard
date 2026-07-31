@@ -11,6 +11,7 @@ import tinytuya
 
 import config as cfgmod
 import secrets_env
+import network_health
 from scenes_presets import PRESET_COLORS, SCENES, find_preset, find_scene
 
 # Real bug found while testing Week 1 live: tinytuya's default connection
@@ -141,6 +142,10 @@ class BulbController:
 
     # -- core status --------------------------------------------------
     def status(self):
+        # Every status() already pays for a real round trip, so timing it
+        # here is where the per-bulb latency history (surfaced in
+        # Diagnostics) comes from for free -- no extra probe traffic.
+        started = time.time()
         with self._device_lock:
             try:
                 dev = self._get_device()
@@ -148,16 +153,28 @@ class BulbController:
                 if isinstance(raw, dict) and raw.get("Error"):
                     self._last_error = self._safe_error(raw.get("Error"))
                     self._log("status", ok=False, error=raw.get("Error"))
+                    self._record_latency(started, ok=False)
                     return {"online": False, "error": self._last_error, "raw": self._safe_raw(raw)}
                 dps = raw.get("dps", {})
                 self._last_dps.update(dps)
                 parsed = self._parse_dps(self._last_dps)
                 self._last_error = None
+                self._record_latency(started, ok=True)
                 return {"online": True, "raw": raw, **parsed}
             except Exception as e:
                 self._last_error = self._safe_error(str(e))
                 self._log("status", ok=False, error=str(e))
+                self._record_latency(started, ok=False)
                 return {"online": False, "error": self._last_error}
+
+    def _record_latency(self, started, ok):
+        """Feed one observation into the rolling per-bulb latency window.
+        Best-effort: a bookkeeping failure must never turn a working bulb
+        command into an error."""
+        try:
+            network_health.record_latency(self.cfg["id"], (time.time() - started) * 1000, ok=ok)
+        except Exception:
+            pass
 
     def _parse_dps(self, dps):
         power = dps.get("20")
@@ -571,6 +588,23 @@ def refresh_controller(device_id):
     with _controllers_lock:
         _controllers.pop(device_id, None)
     return get_controller(device_id)
+
+
+def reset_all_connections():
+    """Drop every cached tinytuya socket without discarding the controllers
+    themselves (so history, timers and effect state all survive).
+
+    Called after the host loses and regains network connectivity -- e.g. a
+    router reboot. `set_socketPersistent(True)` means each controller is
+    holding a TCP connection that died with the old link; without this they
+    keep failing until something forces a reconnect. Returns how many
+    controllers were reset so the caller can log something meaningful.
+    """
+    with _controllers_lock:
+        controllers = list(_controllers.values())
+    for controller in controllers:
+        controller.reset_connection()
+    return len(controllers)
 
 
 def all_controllers():
