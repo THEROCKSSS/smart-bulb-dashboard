@@ -6,9 +6,25 @@ Replace `bulb-1` with your device's `id` from `config.json`.
 ## System
 
 ```bash
-curl http://localhost:8500/api/system/health
+curl http://localhost:8500/healthz            # {"status": "ok"} -- nothing else
+curl http://localhost:8500/api/system/health  # {"ok": true, "uptime_seconds": ...}
 curl http://localhost:8500/api/system/info
+curl http://localhost:8500/api/system/proxy-status
 ```
+
+`/healthz` is the **infrastructure** liveness probe: for a reverse proxy's
+upstream check, a Docker `HEALTHCHECK`, or an uptime monitor. It stays
+reachable when the PIN gate is enabled, is never caught by the
+redirect-to-HTTPS setting, and deliberately returns nothing that
+fingerprints the install — it's the endpoint most likely to end up publicly
+reachable. `/api/system/health` remains the app's own richer status route.
+
+`/api/system/proxy-status` (gated like the rest of `/api/system/`) reports
+what the backend believes about a request's real client IP and TLS state,
+and the trusted-proxy/HSTS/redirect settings behind that belief. Use it to
+verify a reverse-proxy deployment: `client_ip` must be your real address,
+not the proxy's, or the PIN gate's per-IP lockout is keying every remote
+user into one bucket. See [docs/deployment.md](docs/deployment.md).
 
 ## Devices
 
@@ -214,7 +230,97 @@ curl http://localhost:8500/api/auth/status   # {"enabled": bool, "authenticated"
 
 5 wrong PIN attempts from the same client locks that IP out for 5 minutes,
 even for a subsequently-correct PIN — see `iterations/004-pin-gate-remote-auth/`
-for what was tested.
+for what was tested. Repeat lockouts for the same IP double that wait (up to
+24h by default), and both the threshold and the durations are configurable.
+
+Weak PINs are refused outright, not warned about: under 6 characters, a
+well-known PIN (`1234`, `0000`, …), any of the development/test PINs, a
+single repeated character, a straight sequence, or a short pattern padded
+out by repetition.
+
+```bash
+# Grade a candidate PIN without committing to it (what the Settings UI shows)
+curl -X POST http://localhost:8500/api/system/remote-auth/pin-strength \
+  -H "Content-Type: application/json" -d '{"pin": "1234"}'
+# -> {"ok": false, "strength": "weak", "issues": [...], "hints": [...]}
+
+# Change the household PIN. Revokes every existing session and rotates the
+# signing key; the response carries a fresh cookie for the caller.
+curl -X POST http://localhost:8500/api/system/remote-auth/pin \
+  -H "Content-Type: application/json" -d '{"pin": "your-new-pin"}'
+
+# Guest PINs — open the same gate, revocable on their own (max 5 active)
+curl http://localhost:8500/api/system/remote-auth/pins
+curl -X POST http://localhost:8500/api/system/remote-auth/pins \
+  -H "Content-Type: application/json" \
+  -d '{"pin": "guest-pin", "label": "Dog sitter", "expires_in_s": 604800}'
+# Revoking a guest PIN also signs out the sessions it opened -- and only those
+curl -X DELETE http://localhost:8500/api/system/remote-auth/pins/<pin_id>
+
+# Session TTL and lockout policy (both also in Settings)
+curl -X POST http://localhost:8500/api/system/remote-auth/session-ttl \
+  -H "Content-Type: application/json" -d '{"session_ttl_s": 28800}'
+curl -X POST http://localhost:8500/api/system/remote-auth/lockout-policy \
+  -H "Content-Type: application/json" \
+  -d '{"max_attempts": 5, "base_seconds": 300, "max_seconds": 86400}'
+
+# Sessions
+curl http://localhost:8500/api/auth/sessions
+curl -X POST http://localhost:8500/api/auth/sessions/revoke \
+  -H "Content-Type: application/json" -d '{"session_id": "<id>"}'
+curl -X POST http://localhost:8500/api/auth/sessions/revoke-all
+```
+
+## API rate limiting
+
+Separate from the PIN gate's lockout: a per-IP cap on overall request volume
+to the public HTTP surface, with different allowances by endpoint
+sensitivity. Loopback and LAN clients are exempt by default, so a local-only
+setup is unaffected. Over-limit requests get `429` with a `Retry-After`
+header. Counters and config are in-memory and reset on restart — the env
+vars are the durable way to change a default.
+
+```bash
+curl http://localhost:8500/api/system/rate-limit
+# -> {"enabled":true,"exempt_local":true,"window_s":60.0,
+#     "limits":{"poll":600,"read":240,"write":120,"expensive":10}}
+
+curl -X POST http://localhost:8500/api/system/rate-limit \
+  -H "Content-Type: application/json" \
+  -d '{"exempt_local": false, "limits": {"write": 60}}'
+
+# How often limits are actually being hit, and by whom (also in Diagnostics)
+curl http://localhost:8500/api/system/diagnostics/rate-limit
+```
+
+Tiers: `poll` covers the endpoints the dashboard polls on a timer (the audio
+panel alone polls 200×/minute, so this budget is deliberately large), `read`
+every other safe method, `write` every state-changing method, and
+`expensive` the handful of routes that each kick off seconds of real network
+I/O (`/api/system/scan`, `/rescan`, `/test-connection`, `/api/audio/calibrate`).
+Env overrides: `SBD_RATE_LIMIT_POLL`, `_READ`, `_WRITE`, `_EXPENSIVE`,
+`SBD_RATE_LIMIT_EXEMPT_LOCAL=0`.
+
+This is enforced only in the HTTP middleware, so the audio-reactive engine's
+internal per-bulb dispatch — which never enters the HTTP stack — can't spend
+the budget. That's also why `min_dwell_ms` (how often a *bulb* is written to)
+and these limits (how often a *client* may call the API) are separate
+concerns that don't interact.
+
+**Behind a reverse proxy**, "the same client" is only meaningful if the
+backend can see past the proxy. Set `SBD_TRUSTED_PROXIES` (e.g.
+`127.0.0.1,::1`) or every remote user shares one lockout bucket. It is
+opt-in and defaults to trusting nothing: `X-Forwarded-For` is attacker
+input otherwise, and believing it unconditionally would let anyone forge a
+fresh source IP per guess. Full detail and the other TLS-related env vars
+(`SBD_HSTS*`, `SBD_HTTPS_REDIRECT`) are in
+[docs/deployment.md](docs/deployment.md).
+
+The session cookie is `HttpOnly` and `SameSite=Lax` always, and picks up
+`Secure` automatically when the request is actually HTTPS (direct TLS, or
+`X-Forwarded-Proto: https` from a trusted proxy). It is deliberately *not*
+set over plain HTTP — browsers discard a `Secure` cookie delivered over
+plaintext, which would lock LAN users out of their own dashboard.
 
 ## Network auto-discovery
 
@@ -229,6 +335,163 @@ curl -X POST http://localhost:8500/api/system/discovery/interval \
 curl -X POST http://localhost:8500/api/system/discovery/<device_id>/ignore
 curl -X POST http://localhost:8500/api/system/discovery/<device_id>/unignore
 curl -X DELETE http://localhost:8500/api/system/discovery/<device_id>
+```
+
+## Security audit log
+
+See `docs/security-secrets.md` for severities, alerting defaults and the
+incident-response checklist. Distinct from `/api/devices/<id>/history`,
+which is what the *bulbs* did.
+
+```bash
+# Search/filter. All filters AND together; `q` is a substring match over
+# the whole entry, which is how "find everything about 10.0.0.5" works.
+curl "http://localhost:8500/api/security/events?limit=100&min_severity=warning"
+curl "http://localhost:8500/api/security/events?event=login_lockout&q=10.0.0.5"
+curl "http://localhost:8500/api/security/events?include_rotated=true"
+
+# Export for external review. JSON keeps the prev/hmac chain fields, so the
+# export can still be verified independently.
+curl "http://localhost:8500/api/security/events/export?format=csv" -o events.csv
+
+# Tamper check. Read-only by design -- there is deliberately no "re-seal"
+# button, since that would let tampering be papered over with one click.
+curl http://localhost:8500/api/security/verify
+# -> {"ok": true, "complete": true, "entries": 42, "first_bad_seq": null, ...}
+#    ok=true + complete=false means retention pruned old segments (normal),
+#    not that anything was tampered with.
+
+curl -X POST http://localhost:8500/api/security/events/rotate
+curl -X POST http://localhost:8500/api/security/self-test   # canary + wiring report
+curl "http://localhost:8500/api/security/digest?days=7"     # reports even a quiet week
+
+# Alerts (local queue; the webhook is off by default)
+curl http://localhost:8500/api/security/alerts
+curl -X POST http://localhost:8500/api/security/alerts/ack
+
+# Settings
+curl http://localhost:8500/api/security/config
+curl -X POST http://localhost:8500/api/security/config \
+  -H "Content-Type: application/json" \
+  -d '{"alert_min_severity": "warning", "webhook_enabled": true,
+       "webhook_url": "https://example.com/hook", "retention_days": 90}'
+
+# Where each secret lives and what it's worth -- never any values
+curl http://localhost:8500/api/security/secrets
+```
+
+## Backup & restore
+
+**A backup contains every bulb's `local_key` in plaintext.** Read
+`docs/backup-restore.md` before automating any of this.
+
+```bash
+# Encrypted (recommended). Omitting `password` produces a plain zip AND an
+# explicit `warning` field in the response -- there is no silent default.
+curl -X POST http://localhost:8500/api/backups \
+  -H "Content-Type: application/json" \
+  -d '{"password": "…", "note": "before the move", "exclude": ["lightshows"]}'
+
+curl http://localhost:8500/api/backups          # newest first, + retention setting
+curl http://localhost:8500/api/backups/options  # what can be excluded / selectively restored
+curl -o backup.zip http://localhost:8500/api/backups/<name>/download
+
+# Passwords go in a POST body, never a query string: a query string lands in
+# access logs, browser history and referrer headers.
+curl -X POST http://localhost:8500/api/backups/<name>/verify \
+  -H "Content-Type: application/json" -d '{"password": "…"}'
+curl -X POST http://localhost:8500/api/backups/<name>/preflight \
+  -H "Content-Type: application/json" -d '{"password": "…"}'
+curl -X POST http://localhost:8500/api/backups/<name>/diff \
+  -H "Content-Type: application/json" -d '{"password": "…"}'
+
+# Restore. `confirm` is required (409 without it); a pre-restore safety
+# backup is always taken first. `sections` omitted = full restore.
+curl -X POST http://localhost:8500/api/backups/<name>/restore \
+  -H "Content-Type: application/json" \
+  -d '{"password": "…", "confirm": true, "sections": ["favorites", "schedules"]}'
+# -> includes {"remote_access": {"enabled_before": …, "enabled_after": …,
+#              "changed": false}} -- a restore can never flip the PIN gate.
+
+curl -X DELETE http://localhost:8500/api/backups/<name>   # overwritten, then unlinked
+curl -X POST http://localhost:8500/api/backups/settings \
+  -H "Content-Type: application/json" -d '{"keep": 10}'
+## Observability & system health
+
+See `docs/observability.md` for the metric list, the documented "healthy"
+baseline, and how redaction in the diagnostic report works.
+
+```bash
+# Prometheus text exposition format. NOT exempt from the PIN gate.
+curl http://localhost:8500/metrics
+
+# Same numbers as JSON, for the dashboard's own Health page
+curl http://localhost:8500/api/system/metrics
+
+# Backend-level health: uptime, dependencies, request/error rates,
+# network mode, per-bulb latency, recent errors. Distinct from the
+# per-device Diagnostics tab.
+curl http://localhost:8500/api/system/health-summary
+
+# Startup dependency probes (add ?refresh=true to re-probe)
+curl http://localhost:8500/api/system/dependencies
+
+# Log level — persisted, applied without a restart
+curl http://localhost:8500/api/system/log-level
+curl -X POST http://localhost:8500/api/system/log-level \
+  -H "Content-Type: application/json" -d '{"level": "DEBUG"}'
+
+# Tail the in-memory log buffer (level filters to that severity AND ABOVE)
+curl "http://localhost:8500/api/system/logs?limit=50&level=WARNING"
+
+# Shareable support bundle, every secret stripped. Returned to the caller
+# only -- never written to disk.
+curl http://localhost:8500/api/system/diagnostic-report
+```
+
+Every request carries an `X-Correlation-ID` response header. Send your own
+to keep one id end-to-end (it must match `^[A-Za-z0-9._:-]{1,64}$`,
+otherwise it's replaced):
+
+```bash
+curl -i -H "X-Correlation-ID: my-trace-1" http://localhost:8500/api/system/health
+```
+
+## Network resilience
+
+```bash
+# Host IP + change log, connectivity mode, LAN-only firewall guidance
+curl http://localhost:8500/api/system/network
+
+# Take a reading now instead of waiting for the 60s monitor tick
+curl -X POST http://localhost:8500/api/system/network/refresh
+
+# Per-bulb latency over time (rolling 200-sample window, in memory)
+curl "http://localhost:8500/api/devices/bulb-1/latency-history?limit=50"
+```
+
+## Remote-access surfacing
+
+```bash
+# Public IP (cached), DuckDNS last sync, exposure state, warnings
+curl http://localhost:8500/api/system/remote-access/status
+
+# Is Tailscale running on this host? Returns the tailnet-reachable URL.
+curl http://localhost:8500/api/system/remote-access/tailscale
+
+# The ONE outbound internet request this project makes, on demand only.
+curl -X POST http://localhost:8500/api/system/remote-access/detect-public-ip
+
+# Your own DuckDNS updater reports its sync here
+curl -X POST http://localhost:8500/api/system/remote-access/duckdns-sync \
+  -H "Content-Type: application/json" \
+  -d '{"domain":"yourname.duckdns.org","ip":"203.0.113.9","ok":true}'
+
+# Declare (or retract) that a port forward exists. A successful DuckDNS
+# sync sets this automatically. While set, turning the PIN gate off
+# re-raises a persistent warning banner.
+curl -X POST http://localhost:8500/api/system/remote-access/exposure \
+  -H "Content-Type: application/json" -d '{"configured": true, "source": "port forward 48213"}'
 ```
 
 ## Interactive docs

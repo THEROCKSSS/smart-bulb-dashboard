@@ -192,7 +192,17 @@ const PAGES = {
     label: "System",
     tabs: [
       { id: "history", label: "History", render: renderHistory },
+      // Health is the BACKEND's own health (uptime, dependencies, request
+      // latency, logs); Diagnostics stays what it always was — "is this
+      // one bulb reachable". Two genuinely different questions, so two
+      // tabs rather than one crowded one.
+      { id: "health", label: "Health", render: renderHealth },
       { id: "diagnostics", label: "Diagnostics", render: renderDiagnostics },
+      // Security sits next to History deliberately: History is "what did the
+      // bulbs do", Security is "what happened to this install". Same page,
+      // two different questions, never merged into one noisy feed.
+      { id: "security", label: "Security Log", render: renderSecurity },
+      { id: "backup", label: "Backup", render: renderBackup },
       { id: "settings", label: "Settings", render: renderSettings },
     ],
   },
@@ -212,8 +222,11 @@ const LEGACY_ROUTES = {
   groups: "rooms",
   zones: "rooms",
   history: "system/history",
+  health: "system/health",
   diagnostics: "system/diagnostics",
   settings: "system/settings",
+  security: "system/security",
+  backup: "system/backup",
 };
 
 const DEFAULT_ROUTE = "light/control";
@@ -301,6 +314,46 @@ async function router() {
     const target = main.querySelector("#subtab-panel") || main;
     target.innerHTML = `<div class="empty-state">Failed to load this panel: ${e.message}</div>`;
   }
+  // Every panel replaces #main's contents, so the exposure banner has to be
+  // re-inserted after each render rather than living in the shell. It stays
+  // deliberately un-dismissable: the condition it reports (an unauthenticated
+  // dashboard on a public IP) is not something to hide behind an X.
+  paintExposureBanner();
+}
+
+// ------------------------------------------------- exposure warning banner --
+// Populated from GET /api/system/remote-access/status. Uses a bare fetch
+// rather than api() so a failure here degrades to "no banner" instead of
+// spraying error toasts over an otherwise-working dashboard.
+async function refreshExposureWarnings() {
+  try {
+    const res = await fetch("/api/system/remote-access/status");
+    state.exposureWarnings = res.ok ? (await res.json()).warnings || [] : [];
+  } catch (e) {
+    state.exposureWarnings = [];
+  }
+  paintExposureBanner();
+}
+
+function paintExposureBanner() {
+  const main = document.getElementById("main");
+  if (!main) return;
+  const existing = main.querySelector("#exposure-banner");
+  if (existing) existing.remove();
+  const warnings = state.exposureWarnings || [];
+  if (!warnings.length) return;
+  const banner = el(
+    `<div id="exposure-banner">` +
+    warnings.map(w =>
+      `<div class="exposure-warning ${escAttr(w.severity)}">
+         <div class="ew-title">${escHtml(w.title)}</div>
+         <div class="ew-detail">${escHtml(w.detail)}</div>
+         <div class="ew-action">What to do: ${escHtml(w.action)}</div>
+       </div>`
+    ).join("") +
+    `</div>`
+  );
+  main.insertBefore(banner, main.firstChild);
 }
 
 window.addEventListener("hashchange", router);
@@ -1399,6 +1452,192 @@ async function renderHistory(main) {
   `;
 }
 
+// ------------------------------------------------------ system health ----
+// The backend's own health, deliberately separate from the per-device
+// Diagnostics tab. Everything here is one round trip to
+// /api/system/health-summary plus an on-demand log tail.
+function fmtUptime(seconds) {
+  const s = Math.max(0, Math.round(seconds));
+  const d = Math.floor(s / 86400), h = Math.floor((s % 86400) / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  if (d) return `${d}d ${h}h ${m}m`;
+  if (h) return `${h}h ${m}m`;
+  if (m) return `${m}m ${s % 60}s`;
+  return `${s}s`;
+}
+
+function fmtMs(value) {
+  return value == null ? "—" : `${value} ms`;
+}
+
+async function renderHealth(main) {
+  const health = await get("/api/system/health-summary");
+  const levels = (await get("/api/system/log-level")).levels;
+  const p = health.process;
+
+  main.innerHTML = `
+    <h1 class="panel-title">System Health</h1>
+    <p class="panel-subtitle">
+      How the <b>backend</b> itself is doing — uptime, dependencies, request latency and logs.
+      For "is this one bulb reachable", use the Diagnostics tab.
+    </p>
+
+    <div class="card">
+      <h3>
+        Backend <span class="tag ${health.healthy ? "on" : "error"}">${health.healthy ? "HEALTHY" : "ATTENTION"}</span>
+        <span class="tag on">LIVE DATA</span>
+      </h3>
+      ${health.problems.length === 0
+        ? `<p class="panel-subtitle">No problems detected.</p>`
+        : `<ul class="health-problems">${health.problems.map(x => `<li>${escHtml(x)}</li>`).join("")}</ul>`}
+      <table><tbody>
+        <tr><td>Version</td><td>${escHtml(p.version)}</td></tr>
+        <tr><td>Uptime</td><td>${fmtUptime(p.uptime_seconds)}</td></tr>
+        <tr><td>Started</td><td>${new Date(p.started_at).toLocaleString()}</td></tr>
+        <tr><td>Python</td><td>${escHtml(p.python)}</td></tr>
+        <tr><td>Log level</td><td>${escHtml(p.log_level)}</td></tr>
+      </tbody></table>
+    </div>
+
+    <div class="card">
+      <h3>Dependencies</h3>
+      <p class="panel-subtitle">
+        Checked at startup, not just imported — a package that imports fine and then fails
+        on first real use is the failure mode worth catching.
+      </p>
+      <table>
+        <thead><tr><th>Package</th><th>Required</th><th>State</th><th>Detail</th></tr></thead>
+        <tbody>${health.dependencies.checks.map(c => `
+          <tr>
+            <td>${escHtml(c.name)}${c.version ? ` <span class="dim">${escHtml(c.version)}</span>` : ""}</td>
+            <td>${c.required ? "yes" : "optional"}</td>
+            <td><span class="tag ${c.ok ? "on" : (c.required ? "error" : "off")}">${c.ok ? "OK" : "UNAVAILABLE"}</span></td>
+            <td class="dim">${escHtml(c.detail || c.why)}</td>
+          </tr>`).join("")}
+        </tbody>
+      </table>
+    </div>
+
+    <div class="card">
+      <h3>Requests</h3>
+      <p class="panel-subtitle">
+        ${health.requests.requests} handled · ${health.requests.errors} server error(s)
+        (${(health.requests.error_rate * 100).toFixed(1)}%) ·
+        ${health.requests.client_errors} client error(s).
+        Percentiles are over a rolling window of recent requests per endpoint, so they
+        answer "is it slow now", not "was it ever slow".
+      </p>
+      ${health.endpoints.length === 0 ? `
+        <p class="panel-subtitle">No requests recorded yet this run.</p>
+      ` : `
+        <table>
+          <thead><tr><th>Endpoint</th><th>Calls</th><th>p50</th><th>p95</th><th>p99</th><th>Errors</th></tr></thead>
+          <tbody>${health.endpoints.slice(0, 25).map(e => `
+            <tr>
+              <td><code class="inline">${escHtml(e.method)} ${escHtml(e.endpoint)}</code></td>
+              <td>${e.requests}</td>
+              <td>${fmtMs(e.p50_ms)}</td>
+              <td>${fmtMs(e.p95_ms)}</td>
+              <td>${fmtMs(e.p99_ms)}</td>
+              <td>${e.errors ? `<span class="tag error">${e.errors}</span>` : "0"}</td>
+            </tr>`).join("")}
+          </tbody>
+        </table>
+      `}
+      <p class="panel-subtitle" style="margin-top:10px;">
+        Raw Prometheus metrics: <code class="inline">GET /metrics</code>
+      </p>
+    </div>
+
+    <div class="card">
+      <h3>Network <span class="tag ${health.network.bulb_control_available ? "on" : "error"}">${escHtml(health.network.mode)}</span></h3>
+      <p class="panel-subtitle">${escHtml(health.network.message)}</p>
+      <table><tbody>${health.network.host_ips.map(h => `
+        <tr><td><code class="inline">${escHtml(h.ip)}</code></td><td>${escHtml(h.class)}</td></tr>
+      `).join("")}</tbody></table>
+    </div>
+
+    <div class="card">
+      <h3>Bulb Latency Over Time</h3>
+      ${health.bulb_latency.length === 0 ? `
+        <p class="panel-subtitle">No samples yet — latency is recorded from real status calls, so this fills in as the dashboard is used.</p>
+      ` : `
+        <table>
+          <thead><tr><th>Device</th><th>Samples</th><th>p50</th><th>p95</th><th>Max</th><th>Failures</th></tr></thead>
+          <tbody>${health.bulb_latency.map(b => `
+            <tr>
+              <td>${escHtml(b.device_id)}</td>
+              <td>${b.sample_count}</td>
+              <td>${fmtMs(b.p50_ms)}</td>
+              <td>${fmtMs(b.p95_ms)}</td>
+              <td>${fmtMs(b.max_ms)}</td>
+              <td>${b.failure_count ? `<span class="tag error">${(b.failure_rate * 100).toFixed(0)}%</span>` : "0"}</td>
+            </tr>`).join("")}
+          </tbody>
+        </table>
+      `}
+    </div>
+
+    <div class="card">
+      <h3>Logs</h3>
+      <div class="row">
+        <label class="inline-label">Show
+          <select id="log-filter">
+            <option value="">everything</option>
+            ${levels.map(l => `<option value="${escAttr(l)}">${escHtml(l)} and above</option>`).join("")}
+          </select>
+        </label>
+        <button id="log-refresh">Refresh</button>
+        <button id="diag-report">Download Diagnostic Report</button>
+      </div>
+      <p class="panel-subtitle" style="margin-top:8px;">
+        The diagnostic report bundles config shape, dependency state, metrics and recent
+        logs with every secret stripped — for attaching to a bug report. Skim it before
+        sharing anyway: IPs and device names are left intact on purpose.
+      </p>
+      <div id="log-view" class="log-view">Loading…</div>
+    </div>
+  `;
+
+  async function loadLogs() {
+    const level = main.querySelector("#log-filter").value;
+    const body = await get(`/api/system/logs?limit=100${level ? `&level=${encodeURIComponent(level)}` : ""}`);
+    const view = main.querySelector("#log-view");
+    if (!body.entries.length) {
+      view.innerHTML = `<div class="empty-state">No log entries buffered at this level yet.</div>`;
+      return;
+    }
+    view.innerHTML = body.entries.map(e => `
+      <div class="log-line ${escAttr(e.level.toLowerCase())}">
+        <span class="log-ts">${new Date(e.timestamp).toLocaleTimeString()}</span>
+        <span class="log-level">${escHtml(e.level)}</span>
+        <span class="log-cid">${escHtml(e.correlation_id || "—")}</span>
+        <span class="log-msg">${escHtml(e.message)}</span>
+      </div>`).join("");
+  }
+
+  main.querySelector("#log-filter").onchange = loadLogs;
+  main.querySelector("#log-refresh").onclick = loadLogs;
+  main.querySelector("#diag-report").onclick = async (e) => {
+    e.target.disabled = true;
+    try {
+      const report = await get("/api/system/diagnostic-report");
+      const blob = new Blob([JSON.stringify(report, null, 2)], { type: "application/json" });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = `smart-bulb-diagnostic-${new Date().toISOString().slice(0, 19).replace(/:/g, "")}.json`;
+      link.click();
+      URL.revokeObjectURL(url);
+      toast("Diagnostic report downloaded (secrets redacted)", "success");
+    } finally {
+      e.target.disabled = false;
+    }
+  };
+  await loadLogs();
+}
+
+
 async function renderDiagnostics(main) {
   const device = state.devices.find(d => d.id === state.deviceId) || {};
   main.innerHTML = `
@@ -1429,8 +1668,37 @@ async function renderDiagnostics(main) {
       <div id="diag-result" style="margin-top:16px;"></div>
     </div>
     <div class="card">
+      <h3>Latency Over Time <span class="tag on">LIVE DATA</span></h3>
+      <p class="panel-subtitle">
+        Recorded from every real status call to this bulb, so it builds up as the
+        dashboard is used — no extra probe traffic. In-memory: resets on backend restart.
+      </p>
+      <div id="latency-history">Loading…</div>
+    </div>
+
+    <div class="card">
+      <h3>Tailscale</h3>
+      <p class="panel-subtitle">
+        Whether Tailscale is actually running on the machine hosting this dashboard,
+        and what URL that makes it reachable at from your phone. Checked on demand.
+      </p>
+      <button id="tailscale-check">Check Tailscale Status</button>
+      <div id="tailscale-result" style="margin-top:12px;"></div>
+    </div>
+
+    <div class="card">
       <h3>System Info</h3>
       <div id="sys-info">Loading…</div>
+    </div>
+    <div class="card">
+      <h3>Rate limiting <span class="tag on">LIVE DATA</span></h3>
+      <p class="panel-subtitle">
+        Per-IP limits on the public API, and the PIN gate's own lockout counters.
+        Two separate mechanisms. Counters are in-memory and reset when the
+        backend restarts. LAN and loopback clients are exempt by default, so
+        these usually read zero on a local-only setup — that's correct, not broken.
+      </p>
+      <div id="rate-limit-info">Loading…</div>
     </div>
   `;
   main.querySelector("#test-conn").onclick = async () => {
@@ -1455,6 +1723,53 @@ async function renderDiagnostics(main) {
       ? `<div class="empty-state">Found device at new IP: <b>${r.ip}</b> — config updated.</div>`
       : `<div class="empty-state">Device not found on network. ${r.error || "Check power/Wi-Fi."}</div>`;
   };
+  main.querySelector("#tailscale-check").onclick = async (e) => {
+    const target = main.querySelector("#tailscale-result");
+    e.target.disabled = true;
+    target.innerHTML = "Checking…";
+    try {
+      const ts = await get("/api/system/remote-access/tailscale");
+      target.innerHTML = `
+        <table><tbody>
+          <tr><td>Installed on host</td><td><span class="tag ${ts.installed ? "on" : "off"}">${ts.installed}</span></td></tr>
+          <tr><td>Running</td><td><span class="tag ${ts.running ? "on" : "off"}">${ts.running}</span></td></tr>
+          <tr><td>Backend state</td><td>${escHtml(ts.backend_state || "—")}</td></tr>
+          <tr><td>MagicDNS name</td><td><code class="inline">${escHtml(ts.magic_dns_name || "—")}</code></td></tr>
+          <tr><td>Tailnet IPs</td><td><code class="inline">${escHtml(ts.tailscale_ips.join(", ") || "—")}</code></td></tr>
+          <tr><td>Peers</td><td>${ts.peer_count == null ? "—" : ts.peer_count}</td></tr>
+          ${ts.tailnet_url ? `
+            <tr><td>Reachable at</td><td>
+              <code class="inline">${escHtml(ts.tailnet_url)}</code>
+              <button type="button" class="copy-btn" data-copy-text="${escAttr(ts.tailnet_url)}">Copy</button>
+            </td></tr>` : ""}
+          ${ts.error ? `<tr><td>Note</td><td class="dim">${escHtml(ts.error)}</td></tr>` : ""}
+        </tbody></table>`;
+    } finally {
+      e.target.disabled = false;
+    }
+  };
+
+  const latency = await get(`/api/devices/${state.deviceId}/latency-history?limit=25`);
+  main.querySelector("#latency-history").innerHTML = latency.sample_count === 0 ? `
+    <div class="empty-state">No samples yet. Run a connection test above, or just use the dashboard — every status call adds one.</div>
+  ` : `
+    <table><tbody>
+      <tr><td>Samples</td><td>${latency.sample_count} (window ${latency.window})</td></tr>
+      <tr><td>p50 / p95</td><td>${fmtMs(latency.p50_ms)} / ${fmtMs(latency.p95_ms)}</td></tr>
+      <tr><td>Min / Max</td><td>${fmtMs(latency.min_ms)} / ${fmtMs(latency.max_ms)}</td></tr>
+      <tr><td>Failures</td><td>${latency.failure_count} (${(latency.failure_rate * 100).toFixed(0)}%)</td></tr>
+    </tbody></table>
+    <table style="margin-top:12px;">
+      <thead><tr><th>When</th><th>Latency</th><th>Result</th></tr></thead>
+      <tbody>${latency.samples.map(s => `
+        <tr>
+          <td>${new Date(s.at).toLocaleTimeString()}</td>
+          <td>${fmtMs(s.latency_ms)}</td>
+          <td><span class="tag ${s.ok ? "on" : "error"}">${s.ok ? "ok" : "failed"}</span></td>
+        </tr>`).join("")}
+      </tbody>
+    </table>`;
+
   const info = await get("/api/system/info");
   main.querySelector("#sys-info").innerHTML = `
     <table><tbody>
@@ -1464,11 +1779,641 @@ async function renderDiagnostics(main) {
       <tr><td>Scenes</td><td>${info.scenes_count}</td></tr>
       <tr><td>Effects</td><td>${info.effects_count}</td></tr>
     </tbody></table>`;
+
+  const rl = await get("/api/system/diagnostics/rate-limit");
+  const limits = rl.api.config.limits;
+  const busiest = rl.api.current_window_usage;
+  main.querySelector("#rate-limit-info").innerHTML = `
+    <table><tbody>
+      <tr><td>Enforcement</td><td><span class="tag ${rl.api.config.enabled ? "on" : "off"}">${rl.api.config.enabled ? "ON" : "OFF"}</span></td></tr>
+      <tr><td>LAN/loopback exempt</td><td>${rl.api.config.exempt_local ? "yes" : "no"}</td></tr>
+      <tr><td>Per-minute allowance</td><td>poll ${limits.poll} · read ${limits.read} · write ${limits.write} · expensive ${limits.expensive}</td></tr>
+      <tr><td>Requests counted / exempted</td><td>${rl.api.allowed} / ${rl.api.exempt}</td></tr>
+      <tr><td>Requests rejected (429)</td><td><span class="tag ${rl.api.blocked ? "error" : "on"}">${rl.api.blocked}</span></td></tr>
+      <tr><td>Last rejection</td><td>${rl.api.last_blocked_at ? `${new Date(rl.api.last_blocked_at * 1000).toLocaleString()} — <code class="inline">${escHtml(rl.api.last_blocked_path || "")}</code>` : "never"}</td></tr>
+      <tr><td>Failed logins</td><td>${rl.auth.login_failure}</td></tr>
+      <tr><td>PIN lockouts triggered</td><td><span class="tag ${rl.auth.lockouts_triggered ? "error" : "on"}">${rl.auth.lockouts_triggered}</span></td></tr>
+      <tr><td>IPs locked out right now</td><td>${rl.auth.locked_out_now}</td></tr>
+      <tr><td>Login endpoint throttles</td><td>${rl.auth.login_rate_limit_blocks}</td></tr>
+    </tbody></table>
+    ${busiest.length ? `
+      <p class="panel-subtitle" style="margin-top:14px;">Busiest clients in the current 60s window</p>
+      <table>
+        <thead><tr><th>Client / tier</th><th>Requests</th></tr></thead>
+        <tbody>${busiest.map(u => `<tr><td><code class="inline">${escHtml(u.client)}</code></td><td>${u.requests}</td></tr>`).join("")}</tbody>
+      </table>` : `<p class="panel-subtitle" style="margin-top:14px;">No non-exempt clients have made a request in the last 60 seconds.</p>`}
+  `;
+}
+
+// Grades the PIN the user is typing against the backend's own rules, so the
+// Settings form says why a PIN will be refused before the request is sent.
+// Debounced because it fires per keystroke; the server applies the same
+// rules regardless of what this said, so it is advisory only.
+function wirePinStrengthMeter(input, output) {
+  if (!input || !output) return;
+  let timer = null;
+  input.addEventListener("input", () => {
+    const pin = input.value;
+    clearTimeout(timer);
+    if (!pin) { output.innerHTML = ""; return; }
+    timer = setTimeout(async () => {
+      let verdict;
+      try {
+        verdict = await post("/api/system/remote-auth/pin-strength", { pin });
+      } catch (e) { return; }
+      if (input.value !== pin) return;  // typed on while in flight
+      const notes = verdict.issues.length ? verdict.issues : verdict.hints;
+      output.innerHTML =
+        `<span class="tag ${verdict.ok ? "on" : "error"}">${verdict.ok ? verdict.strength.toUpperCase() : "REJECTED"}</span>` +
+        (notes.length ? ` ${escHtml(notes.map(n => (verdict.ok ? n : "PIN " + n)).join("; "))}` : "");
+    }, 250);
+  });
+}
+
+// ---------------------------------------------------------- security log --
+// Distinct from History (per-device actions). This is the install's own
+// security record: auth events, config changes, backups, tamper checks.
+
+const SEVERITY_ORDER = ["info", "notice", "warning", "critical"];
+
+// Remembered across re-renders so a filter survives hitting Refresh — the
+// whole point of a search UI is iterating on the query.
+const securityFilters = { q: "", event: "", min_severity: "", limit: 100, include_rotated: false };
+
+function severityTag(sev) {
+  const cls = { info: "off", notice: "on", warning: "warn", critical: "error" }[sev] || "off";
+  return `<span class="tag ${cls}">${escHtml(sev)}</span>`;
+}
+
+function fmtTs(ts) {
+  return ts ? new Date(ts * 1000).toLocaleString() : "—";
+}
+
+async function renderSecurity(main) {
+  const [cfg, verification, alertsBody] = await Promise.all([
+    get("/api/security/config"),
+    get("/api/security/verify"),
+    get("/api/security/alerts?limit=20"),
+  ]);
+  const params = new URLSearchParams({
+    limit: String(securityFilters.limit),
+    include_rotated: String(securityFilters.include_rotated),
+  });
+  if (securityFilters.q) params.set("q", securityFilters.q);
+  if (securityFilters.event) params.set("event", securityFilters.event);
+  if (securityFilters.min_severity) params.set("min_severity", securityFilters.min_severity);
+  const body = await get(`/api/security/events?${params.toString()}`);
+  const alerts = alertsBody.alerts || [];
+
+  // Three states, not two: a chain that verifies but can't reach the start
+  // (because retention pruned an old segment) is normal housekeeping, and
+  // showing it as a failure would train you to ignore a real one.
+  const chainState = !verification.ok ? "error" : (verification.complete ? "on" : "off");
+  const chainLabel = !verification.ok ? "TAMPERING DETECTED"
+    : (verification.complete ? "VERIFIED" : "VERIFIED (PARTIAL)");
+
+  main.innerHTML = `
+    <h1 class="panel-title">Security Log</h1>
+    <p class="panel-subtitle">
+      Security-relevant events for this install — logins, lockouts, config changes,
+      devices appearing, backups and restores. Separate from the per-device
+      <b>History</b> tab, which records what the bulbs did.
+    </p>
+
+    ${!verification.ok ? `
+      <div class="callout danger">
+        <b>The security log failed its integrity check.</b>
+        ${escHtml(verification.reason || "")}
+        <br>Treat this as an incident: see <code class="inline">docs/security-secrets.md</code>
+        for the response checklist. Do not "fix" it by clearing the log — the
+        broken chain is the evidence.
+      </div>` : ""}
+
+    <div class="card">
+      <h3>Tamper Check <span class="tag ${chainState}">${chainLabel}</span></h3>
+      <p class="panel-subtitle">
+        Every entry is HMAC-chained to the one before it, and the head is
+        recorded separately — so an edited, removed or truncated entry shows up
+        here. Checked ${verification.entries} entr${verification.entries === 1 ? "y" : "ies"}.
+        ${verification.reason && verification.ok ? escHtml(verification.reason) : ""}
+      </p>
+      <div class="row">
+        <button id="sec-verify" class="primary">Re-verify Now</button>
+        <button id="sec-selftest">Run Self-Test</button>
+        <button id="sec-rotate">Rotate &amp; Apply Retention</button>
+        <button id="sec-export-json">Export JSON</button>
+        <button id="sec-export-csv">Export CSV</button>
+      </div>
+      <div id="sec-selftest-result" style="margin-top:12px;"></div>
+    </div>
+
+    <div class="card">
+      <h3>Alerts ${alerts.length ? `<span class="tag warn">${alerts.length}</span>` : `<span class="tag off">none</span>`}</h3>
+      <p class="panel-subtitle">
+        Raised at <b>${escHtml(cfg.alert_min_severity)}</b> and above. Ordinary daily
+        use (logging in, changing a colour, taking a backup) is below that line on
+        purpose — an alert you see every day is an alert you stop reading.
+      </p>
+      ${alerts.length === 0 ? `<div class="empty-state">No alerts. Nothing has crossed the threshold.</div>` : `
+        <table>
+          <thead><tr><th>When</th><th>Severity</th><th>Event</th><th>Detail</th><th></th></tr></thead>
+          <tbody>${alerts.map(a => `
+            <tr>
+              <td>${fmtTs(a.ts)}</td>
+              <td>${severityTag(a.severity)}</td>
+              <td>${escHtml(a.event)}</td>
+              <td>${escHtml(a.message || "")}</td>
+              <td>${a.acknowledged ? `<span class="tag off">seen</span>` : `<span class="tag warn">new</span>`}</td>
+            </tr>`).join("")}
+          </tbody>
+        </table>
+        <div class="row" style="margin-top:12px;">
+          <button id="sec-ack">Mark All Seen</button>
+          <button id="sec-notify">Enable Browser Notifications</button>
+        </div>
+      `}
+    </div>
+
+    <div class="card">
+      <h3>Search</h3>
+      <div class="form-grid">
+        <label>Text search
+          <input type="text" id="sec-q" value="${escAttr(securityFilters.q)}" placeholder="an IP, a device id, anything">
+        </label>
+        <label>Event type
+          <select id="sec-event">
+            <option value="">All events</option>
+            ${body.known_events.map(e => `
+              <option value="${escAttr(e)}" ${securityFilters.event === e ? "selected" : ""}>${escHtml(e)}</option>
+            `).join("")}
+          </select>
+        </label>
+        <label>Minimum severity
+          <select id="sec-sev">
+            <option value="">Any</option>
+            ${SEVERITY_ORDER.map(s => `
+              <option value="${s}" ${securityFilters.min_severity === s ? "selected" : ""}>${s}</option>
+            `).join("")}
+          </select>
+        </label>
+        <label>Show
+          <select id="sec-limit">
+            ${[50, 100, 250, 1000].map(n => `
+              <option value="${n}" ${securityFilters.limit === n ? "selected" : ""}>last ${n}</option>
+            `).join("")}
+          </select>
+        </label>
+      </div>
+      <div class="row" style="margin-top:10px;">
+        <label style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--text-dim);">
+          <input type="checkbox" id="sec-rotated" ${securityFilters.include_rotated ? "checked" : ""}>
+          include rotated (older) segments
+        </label>
+        <button id="sec-search" class="primary">Search</button>
+        <button id="sec-clear">Clear Filters</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <h3>Events <span class="tag on">LIVE DATA</span></h3>
+      <p class="panel-subtitle">${body.count} matching entr${body.count === 1 ? "y" : "ies"}, newest first. Rows marked <b>action</b> are the ones worth looking at.</p>
+      ${body.count === 0 ? `<div class="empty-state">No events match these filters.</div>` : `
+        <table>
+          <thead><tr><th>#</th><th>When</th><th>Severity</th><th>Event</th><th>Outcome</th><th>Source</th><th>Detail</th></tr></thead>
+          <tbody>${body.events.map(e => `
+            <tr class="${e.actionable ? "sec-actionable" : ""}">
+              <td>${e.seq}</td>
+              <td>${fmtTs(e.ts)}</td>
+              <td>${severityTag(e.severity)} ${e.actionable ? `<span class="tag warn">action</span>` : ""}</td>
+              <td>${escHtml(e.event)}</td>
+              <td>${escHtml(e.outcome || "")}</td>
+              <td>${escHtml(e.source || "")}</td>
+              <td><code class="inline">${escHtml(JSON.stringify(e.detail || {}))}</code></td>
+            </tr>`).join("")}
+          </tbody>
+        </table>`}
+    </div>
+
+    <div class="card">
+      <h3>Alerting &amp; Retention</h3>
+      <p class="panel-subtitle">
+        A webhook is the only way anything leaves this machine, and it is off by
+        default. Local alerts need no external service at all.
+      </p>
+      <div class="form-grid">
+        <label>Log everything at or above
+          <select id="cfg-min-sev">
+            ${SEVERITY_ORDER.map(s => `<option value="${s}" ${cfg.min_severity === s ? "selected" : ""}>${s}</option>`).join("")}
+          </select>
+        </label>
+        <label>Raise an alert at or above
+          <select id="cfg-alert-sev">
+            ${SEVERITY_ORDER.map(s => `<option value="${s}" ${cfg.alert_min_severity === s ? "selected" : ""}>${s}</option>`).join("")}
+          </select>
+        </label>
+        <label>Webhook URL (optional)
+          <input type="text" id="cfg-webhook-url" value="${escAttr(cfg.webhook_url || "")}" placeholder="https://…">
+        </label>
+        <label>Keep rotated segments
+          <input type="number" id="cfg-rotate-keep" min="1" value="${cfg.rotate_keep}">
+        </label>
+        <label>Rotate at (bytes)
+          <input type="number" id="cfg-max-bytes" min="1024" value="${cfg.max_log_bytes}">
+        </label>
+        <label>Retention (days)
+          <input type="number" id="cfg-retention" min="1" value="${cfg.retention_days}">
+        </label>
+      </div>
+      <div class="row" style="margin-top:10px;">
+        <label style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--text-dim);">
+          <input type="checkbox" id="cfg-webhook-enabled" ${cfg.webhook_enabled ? "checked" : ""}>
+          send alerts to the webhook
+        </label>
+        <label style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--text-dim);">
+          <input type="checkbox" id="cfg-local-alerts" ${cfg.local_alerts_enabled ? "checked" : ""}>
+          keep alerts locally (no external service)
+        </label>
+        <button id="cfg-save" class="primary">Save</button>
+      </div>
+    </div>
+  `;
+
+  const applyFilters = () => {
+    securityFilters.q = main.querySelector("#sec-q").value.trim();
+    securityFilters.event = main.querySelector("#sec-event").value;
+    securityFilters.min_severity = main.querySelector("#sec-sev").value;
+    securityFilters.limit = parseInt(main.querySelector("#sec-limit").value, 10);
+    securityFilters.include_rotated = main.querySelector("#sec-rotated").checked;
+    renderSecurity(main);
+  };
+  main.querySelector("#sec-search").onclick = applyFilters;
+  main.querySelector("#sec-q").onkeydown = (e) => { if (e.key === "Enter") applyFilters(); };
+  main.querySelector("#sec-clear").onclick = () => {
+    Object.assign(securityFilters,
+      { q: "", event: "", min_severity: "", limit: 100, include_rotated: false });
+    renderSecurity(main);
+  };
+
+  main.querySelector("#sec-verify").onclick = async () => {
+    const r = await get("/api/security/verify");
+    toast(r.ok ? (r.complete ? "Chain verified — no tampering" : "Chain verified (older segments pruned)")
+               : `Integrity check FAILED: ${r.reason}`, r.ok ? "success" : "error");
+    renderSecurity(main);
+  };
+  main.querySelector("#sec-selftest").onclick = async () => {
+    const r = await post("/api/security/self-test");
+    main.querySelector("#sec-selftest-result").innerHTML = `
+      <table><tbody>
+        <tr><td>Wrote canary event</td><td><span class="tag ${r.wrote_event ? "on" : "error"}">${r.wrote_event}</span></td></tr>
+        <tr><td>Chain verified</td><td><span class="tag ${r.verification.ok ? "on" : "error"}">${r.verification.ok}</span></td></tr>
+        <tr><td>Local alerts</td><td><span class="tag ${r.alerting.local_alerts_enabled ? "on" : "off"}">${r.alerting.local_alerts_enabled}</span></td></tr>
+        <tr><td>Webhook</td><td><span class="tag ${r.alerting.webhook_enabled ? "on" : "off"}">${r.alerting.webhook_enabled ? (r.alerting.webhook_configured ? "enabled" : "enabled but no URL set") : "off"}</span></td></tr>
+      </tbody></table>`;
+  };
+  main.querySelector("#sec-rotate").onclick = async () => {
+    const r = await post("/api/security/events/rotate");
+    toast(`Rotated. Removed ${r.removed.length} old segment(s).`, "success");
+    renderSecurity(main);
+  };
+  const exportUrl = (fmt) => {
+    const p = new URLSearchParams({ format: fmt, include_rotated: "true", limit: "0" });
+    if (securityFilters.q) p.set("q", securityFilters.q);
+    if (securityFilters.event) p.set("event", securityFilters.event);
+    if (securityFilters.min_severity) p.set("min_severity", securityFilters.min_severity);
+    return `${API}/api/security/events/export?${p.toString()}`;
+  };
+  main.querySelector("#sec-export-json").onclick = () => { window.location = exportUrl("json"); };
+  main.querySelector("#sec-export-csv").onclick = () => { window.location = exportUrl("csv"); };
+
+  const ackBtn = main.querySelector("#sec-ack");
+  if (ackBtn) {
+    ackBtn.onclick = async () => {
+      const r = await post("/api/security/alerts/ack");
+      toast(`${r.acknowledged} alert(s) marked seen`);
+      renderSecurity(main);
+    };
+  }
+  const notifyBtn = main.querySelector("#sec-notify");
+  if (notifyBtn) {
+    // W2-149: browser notifications, so alerting works for someone who
+    // wants nothing leaving the machine. Permission is only ever requested
+    // from this explicit click — never on page load.
+    notifyBtn.onclick = async () => {
+      if (!("Notification" in window)) { toast("This browser has no notification API", "error"); return; }
+      const permission = await Notification.requestPermission();
+      if (permission !== "granted") { toast("Notifications not permitted", "error"); return; }
+      const unseen = alerts.filter(a => !a.acknowledged);
+      new Notification("Smart Bulb Dashboard — security", {
+        body: unseen.length
+          ? `${unseen.length} unseen alert(s). Most recent: ${unseen[0].message}`
+          : "Notifications enabled. Nothing outstanding.",
+      });
+      toast("Browser notifications enabled", "success");
+    };
+  }
+
+  main.querySelector("#cfg-save").onclick = async () => {
+    await post("/api/security/config", {
+      min_severity: main.querySelector("#cfg-min-sev").value,
+      alert_min_severity: main.querySelector("#cfg-alert-sev").value,
+      webhook_enabled: main.querySelector("#cfg-webhook-enabled").checked,
+      webhook_url: main.querySelector("#cfg-webhook-url").value.trim() || null,
+      local_alerts_enabled: main.querySelector("#cfg-local-alerts").checked,
+      rotate_keep: parseInt(main.querySelector("#cfg-rotate-keep").value, 10),
+      max_log_bytes: parseInt(main.querySelector("#cfg-max-bytes").value, 10),
+      retention_days: parseInt(main.querySelector("#cfg-retention").value, 10),
+    });
+    toast("Security settings saved", "success");
+    renderSecurity(main);
+  };
+}
+
+// ------------------------------------------------------- backup & restore --
+async function renderBackup(main) {
+  const [listing, options] = await Promise.all([
+    get("/api/backups"),
+    get("/api/backups/options"),
+  ]);
+  const backups = listing.backups || [];
+
+  main.innerHTML = `
+    <h1 class="panel-title">Backup &amp; Restore</h1>
+    <p class="panel-subtitle">
+      One archive holding <code class="inline">config.json</code> and everything under
+      <code class="inline">data/</code> — favourites, schedules, lightshows, audio
+      presets, discovery state.
+    </p>
+
+    <div class="callout danger">
+      <b>A backup contains every bulb's <code class="inline">local_key</code>.</b>
+      That key is permanent local control of the bulb for anyone on your network,
+      and it cannot be revoked without re-pairing the bulb. Encrypt the archive
+      unless you are certain of where it is going to live.
+    </div>
+
+    <div class="card">
+      <h3>Create a Backup</h3>
+      <div class="form-grid">
+        <label>Encryption
+          <select id="bk-mode">
+            <option value="encrypted">Encrypt with a password (recommended)</option>
+            <option value="plain">No encryption</option>
+          </select>
+        </label>
+        <label id="bk-pass-wrap">Password
+          <input type="password" id="bk-password" autocomplete="new-password" placeholder="you cannot recover this later">
+        </label>
+        <label>Note (optional)
+          <input type="text" id="bk-note" placeholder="before moving to the new NUC">
+        </label>
+      </div>
+
+      <div id="bk-plain-warning" style="display:none;">
+        <div class="callout danger" style="margin-top:12px;">
+          <b>Unencrypted archive.</b> Anyone who gets this file can control your bulbs
+          from your LAN — indefinitely. Only reasonable if it stays on an
+          encrypted disk you control.
+          <label style="display:flex;align-items:center;gap:8px;margin-top:10px;color:var(--text);">
+            <input type="checkbox" id="bk-ack">
+            I understand this file will contain my device keys in plaintext.
+          </label>
+        </div>
+      </div>
+
+      <p class="panel-subtitle" style="margin-top:14px;">Leave out (optional, keeps the archive small):</p>
+      <div class="row">
+        ${options.exclusions.map(e => `
+          <label style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--text-dim);">
+            <input type="checkbox" class="bk-exclude" value="${escAttr(e.name)}">
+            ${escHtml(e.name)} <span class="tag off">${Math.round(e.bytes / 1024)} KB</span>
+          </label>`).join("")}
+      </div>
+
+      <p class="panel-subtitle" style="margin-top:14px;">
+        Never included, whatever you pick:
+        ${options.never_included.map(n => `<code class="inline">${escHtml(n)}</code>`).join(" ")}
+        — the PIN hash and session signing key, and the security log's own
+        tamper-evidence chain. Restoring those would let a restore rewrite your
+        access controls and erase the audit trail.
+      </p>
+
+      <button id="bk-create" class="primary" style="margin-top:10px;">Create Backup</button>
+    </div>
+
+    <div class="card">
+      <h3>Backups <span class="tag on">${backups.length}</span></h3>
+      <p class="panel-subtitle">
+        Keeping the newest <b>${listing.settings.keep}</b>; older ones are deleted
+        automatically. A restore never changes whether the PIN gate is on or off.
+      </p>
+      ${backups.length === 0 ? `<div class="empty-state">No backups yet.</div>` : `
+        <table>
+          <thead><tr><th>Name</th><th>When</th><th>Size</th><th>Encrypted</th><th>Note</th><th></th></tr></thead>
+          <tbody>${backups.map(b => `
+            <tr>
+              <td><code class="inline">${escHtml(b.name)}</code></td>
+              <td>${new Date(b.modified_at * 1000).toLocaleString()}</td>
+              <td>${Math.round(b.bytes / 1024)} KB</td>
+              <td><span class="tag ${b.encrypted ? "on" : "error"}">${b.encrypted ? "yes" : "NO — plaintext keys"}</span></td>
+              <td>${escHtml((b.manifest && b.manifest.note) || "—")}</td>
+              <td>
+                <button class="bk-download" data-name="${escAttr(b.name)}">Download</button>
+                <button class="bk-restore" data-name="${escAttr(b.name)}" data-enc="${b.encrypted}">Restore…</button>
+                <button class="danger bk-delete" data-name="${escAttr(b.name)}">Delete</button>
+              </td>
+            </tr>`).join("")}
+          </tbody>
+        </table>`}
+      <div class="form-grid" style="margin-top:14px;">
+        <label>Keep this many backups
+          <input type="number" id="bk-keep" min="1" value="${listing.settings.keep}">
+        </label>
+      </div>
+      <button id="bk-save-settings" style="margin-top:10px;">Save</button>
+    </div>
+
+    <div class="card" id="bk-restore-panel" style="display:none;">
+      <h3>Restore — <span id="bk-restore-name"></span></h3>
+      <div id="bk-restore-body"></div>
+    </div>
+  `;
+
+  const modeSelect = main.querySelector("#bk-mode");
+  const syncMode = () => {
+    const plain = modeSelect.value === "plain";
+    main.querySelector("#bk-plain-warning").style.display = plain ? "" : "none";
+    main.querySelector("#bk-pass-wrap").style.display = plain ? "none" : "";
+  };
+  modeSelect.onchange = syncMode;
+  syncMode();
+
+  main.querySelector("#bk-create").onclick = async () => {
+    const plain = modeSelect.value === "plain";
+    const password = main.querySelector("#bk-password").value;
+    if (plain && !main.querySelector("#bk-ack").checked) {
+      toast("Tick the acknowledgement, or choose an encrypted backup", "error");
+      return;
+    }
+    if (!plain && password.length < 8) {
+      toast("Use a password of at least 8 characters", "error");
+      return;
+    }
+    const exclude = [...main.querySelectorAll(".bk-exclude:checked")].map(c => c.value);
+    const result = await post("/api/backups", {
+      password: plain ? null : password,
+      exclude,
+      note: main.querySelector("#bk-note").value.trim() || null,
+    });
+    toast(result.warning ? "Backup created — UNENCRYPTED, contains device keys"
+                         : "Encrypted backup created", result.warning ? "error" : "success");
+    renderBackup(main);
+  };
+
+  main.querySelector("#bk-save-settings").onclick = async () => {
+    await post("/api/backups/settings", { keep: parseInt(main.querySelector("#bk-keep").value, 10) });
+    toast("Retention updated", "success");
+    renderBackup(main);
+  };
+
+  main.querySelectorAll(".bk-download").forEach(b => {
+    b.onclick = () => { window.location = `${API}/api/backups/${encodeURIComponent(b.dataset.name)}/download`; };
+  });
+
+  main.querySelectorAll(".bk-delete").forEach(b => {
+    b.onclick = async () => {
+      if (!window.confirm(`Delete ${b.dataset.name}? The file is overwritten before removal.`)) return;
+      await del(`/api/backups/${encodeURIComponent(b.dataset.name)}`);
+      toast("Backup deleted");
+      renderBackup(main);
+    };
+  });
+
+  main.querySelectorAll(".bk-restore").forEach(b => {
+    b.onclick = () => showRestorePanel(main, b.dataset.name, b.dataset.enc === "true", options);
+  });
+}
+
+// Restore is a two-step flow on purpose: nothing is written until the
+// archive has passed its integrity check, you've seen what would change, and
+// you've explicitly ticked the overwrite box.
+async function showRestorePanel(main, name, encrypted, options) {
+  const panel = main.querySelector("#bk-restore-panel");
+  const bodyEl = main.querySelector("#bk-restore-body");
+  main.querySelector("#bk-restore-name").textContent = name;
+  panel.style.display = "";
+  panel.scrollIntoView({ behavior: "smooth", block: "start" });
+
+  let password = null;
+  if (encrypted) {
+    password = window.prompt(`"${name}" is encrypted. Enter its password:`);
+    if (password === null) { panel.style.display = "none"; return; }
+  }
+
+  bodyEl.innerHTML = `<div class="empty-state loading">Checking integrity…</div>`;
+  const pre = await post(`/api/backups/${encodeURIComponent(name)}/preflight`, { password });
+
+  if (!pre.verification.ok) {
+    bodyEl.innerHTML = `
+      <div class="callout danger">
+        <b>This backup did not pass its integrity check, so it will not be offered
+        for restore.</b><br>${escHtml(pre.verification.reason || "")}
+      </div>`;
+    return;
+  }
+
+  const diff = pre.diff || {};
+  const devices = diff.devices || { added: [], removed: [], changed: [] };
+  bodyEl.innerHTML = `
+    <p class="panel-subtitle">
+      Integrity check passed (${pre.verification.files_checked} files).
+      Taken ${pre.verification.manifest ? new Date(pre.verification.manifest.created_at * 1000).toLocaleString() : "—"}.
+    </p>
+
+    <h3>What would change</h3>
+    ${!diff.config_in_backup ? `<div class="empty-state">This archive has no config.json.</div>` : `
+      <table>
+        <tbody>
+          <tr><td>Devices added by this restore</td><td>${devices.added.length ? escHtml(devices.added.join(", ")) : "—"}</td></tr>
+          <tr><td>Devices removed by this restore</td><td>${devices.removed.length ? escHtml(devices.removed.join(", ")) : "—"}</td></tr>
+          <tr><td>Devices changed</td><td>${devices.changed.length ? devices.changed.map(c =>
+            `${escHtml(c.id)}${c.local_key_changed ? " <span class=\"tag warn\">key differs</span>" : ""}`).join(", ") : "—"}</td></tr>
+          <tr><td>Groups added / removed</td><td>${escHtml((diff.groups.added.join(", ") || "—") + " / " + (diff.groups.removed.join(", ") || "—"))}</td></tr>
+          <tr><td>Remote access (PIN gate)</td><td><span class="tag on">unchanged by any restore</span></td></tr>
+        </tbody>
+      </table>
+      <p class="panel-subtitle">Key values are never shown here — only whether they differ.</p>`}
+
+    <h3 style="margin-top:18px;">What to restore</h3>
+    <div class="row">
+      <label style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--text-dim);">
+        <input type="radio" name="bk-scope" value="all" checked> Everything
+      </label>
+      <label style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--text-dim);">
+        <input type="radio" name="bk-scope" value="some"> Only what I pick
+      </label>
+    </div>
+    <div id="bk-sections" style="display:none;margin-top:10px;">
+      ${pre.sections.map(s => `
+        <label style="display:flex;align-items:center;gap:8px;font-size:12px;color:var(--text-dim);padding:3px 0;">
+          <input type="checkbox" class="bk-section" value="${escAttr(s.id)}">
+          ${escHtml(s.label)}
+          ${s.touches_credentials ? `<span class="tag error">overwrites device keys</span>` : ""}
+        </label>`).join("")}
+    </div>
+
+    <div class="callout danger" style="margin-top:16px;">
+      <b>This overwrites your current configuration and data.</b>
+      A safety backup of the current state is taken automatically first, so this
+      is undoable — but only if you can find that file afterwards.
+      <label style="display:flex;align-items:center;gap:8px;margin-top:10px;color:var(--text);">
+        <input type="checkbox" id="bk-confirm">
+        Yes, overwrite the current configuration with this backup.
+      </label>
+    </div>
+    <div class="row" style="margin-top:12px;">
+      <button id="bk-do-restore" class="danger">Restore Now</button>
+      <button id="bk-cancel-restore">Cancel</button>
+    </div>
+    <div id="bk-restore-result" style="margin-top:14px;"></div>
+  `;
+
+  const sectionsBox = bodyEl.querySelector("#bk-sections");
+  bodyEl.querySelectorAll('input[name="bk-scope"]').forEach(r => {
+    r.onchange = () => { sectionsBox.style.display = r.value === "some" && r.checked ? "" : "none"; };
+  });
+  bodyEl.querySelector("#bk-cancel-restore").onclick = () => { panel.style.display = "none"; };
+
+  bodyEl.querySelector("#bk-do-restore").onclick = async () => {
+    if (!bodyEl.querySelector("#bk-confirm").checked) {
+      toast("Tick the overwrite confirmation first", "error");
+      return;
+    }
+    const scoped = bodyEl.querySelector('input[name="bk-scope"]:checked').value === "some";
+    const sections = [...bodyEl.querySelectorAll(".bk-section:checked")].map(c => c.value);
+    if (scoped && sections.length === 0) { toast("Pick at least one section", "error"); return; }
+
+    const result = await post(`/api/backups/${encodeURIComponent(name)}/restore`, {
+      password, confirm: true, sections: scoped ? sections : null,
+    });
+    bodyEl.querySelector("#bk-restore-result").innerHTML = `
+      <table><tbody>
+        <tr><td>Files restored</td><td>${result.restored_files.length}</td></tr>
+        <tr><td>Device credentials touched</td><td><span class="tag ${result.touched_device_credentials ? "warn" : "on"}">${result.touched_device_credentials}</span></td></tr>
+        <tr><td>Safety backup taken first</td><td><code class="inline">${escHtml(result.safety_backup || "—")}</code></td></tr>
+        <tr><td>Remote access changed</td><td><span class="tag ${result.remote_access.changed ? "error" : "on"}">${result.remote_access.changed}</span></td></tr>
+      </tbody></table>`;
+    toast("Restore complete — reload to pick up the restored devices", "success");
+    await loadDevices();
+  };
 }
 
 async function renderSettings(main) {
   const disco = await get("/api/system/discovery");
   const remoteAuth = await get("/api/system/remote-auth/status");
+  const guestPins = remoteAuth.enabled ? (await get("/api/system/remote-auth/pins")).pins : [];
+  const remoteAccess = await get("/api/system/remote-access/status");
+  const logLevel = await get("/api/system/log-level");
+  const never = `<span class="dim">never</span>`;
 
   main.innerHTML = `
     <h1 class="panel-title">Settings</h1>
@@ -1554,17 +2499,158 @@ async function renderSettings(main) {
       <p class="panel-subtitle">
         Required if you expose this dashboard beyond your LAN (DuckDNS, port
         forwarding, etc.) — see <code class="inline">docs/remote-access-security.md</code>.
-        Local-only setups can safely leave this disabled. Locks out an IP for
-        5 minutes after 5 wrong PIN attempts.
+        Local-only setups can safely leave this disabled. After
+        ${remoteAuth.lockout_max_attempts} wrong attempts an IP is locked out for
+        ${Math.round(remoteAuth.lockout_base_s / 60)} minutes, doubling on each
+        repeat lockout up to ${Math.round(remoteAuth.lockout_max_s / 3600)}h.
       </p>
       ${remoteAuth.enabled ? `
-        <button id="remote-auth-disable" class="danger">Disable PIN Gate</button>
+        <div class="form-grid">
+          <label>Change household PIN<input type="password" id="remote-auth-new-pin" autocomplete="new-password"></label>
+        </div>
+        <p class="panel-subtitle" id="remote-auth-new-pin-strength" style="min-height:20px;"></p>
+        <p class="panel-subtitle">Changing the PIN signs every device out, including this one — you stay signed in here, everything else re-authenticates.</p>
+        <button id="remote-auth-change-pin" class="primary">Change PIN</button>
+        <button id="remote-auth-disable" class="danger" style="margin-left:8px;">Disable PIN Gate</button>
       ` : `
         <div class="form-grid">
-          <label>New PIN (min. 4 characters)<input type="password" id="remote-auth-pin" autocomplete="off"></label>
+          <label>New PIN (6+ characters, not a common or test PIN)<input type="password" id="remote-auth-pin" autocomplete="new-password"></label>
         </div>
+        <p class="panel-subtitle" id="remote-auth-pin-strength" style="min-height:20px;"></p>
         <button id="remote-auth-enable" class="primary" style="margin-top:10px;">Enable PIN Gate</button>
       `}
+    </div>
+
+    ${remoteAuth.enabled ? `
+    <div class="card">
+      <h3>Guest PINs</h3>
+      <p class="panel-subtitle">
+        A second way into the same dashboard that you can take back on its own.
+        Revoking one signs out only the devices that used it — the household PIN
+        and its sessions are untouched. Up to 5 active at a time.
+      </p>
+      ${guestPins.filter(p => p.kind === "guest").length === 0 ? `
+        <p class="panel-subtitle">No guest PINs issued.</p>
+      ` : `
+        <table>
+          <thead><tr><th>Label</th><th>Issued</th><th>Expires</th><th>Last used</th><th></th></tr></thead>
+          <tbody>${guestPins.filter(p => p.kind === "guest").map(p => `
+            <tr>
+              <td>${escHtml(p.label || "Guest")}</td>
+              <td>${p.created_at ? new Date(p.created_at * 1000).toLocaleDateString() : "—"}</td>
+              <td>${p.expires_at ? new Date(p.expires_at * 1000).toLocaleString() : "never"}</td>
+              <td>${p.last_used_at ? new Date(p.last_used_at * 1000).toLocaleString() : "never"}</td>
+              <td><button data-id="${escAttr(p.id)}" class="danger revoke-guest-pin">Revoke</button></td>
+            </tr>`).join("")}
+          </tbody>
+        </table>
+      `}
+      <div class="form-grid" style="margin-top:14px;">
+        <label>Guest PIN<input type="password" id="guest-pin" autocomplete="new-password"></label>
+        <label>Label<input type="text" id="guest-pin-label" placeholder="Dog sitter"></label>
+        <label>Expires after
+          <select id="guest-pin-expiry">
+            <option value="">Never</option>
+            <option value="86400">1 day</option>
+            <option value="604800">1 week</option>
+            <option value="2592000">30 days</option>
+          </select>
+        </label>
+      </div>
+      <p class="panel-subtitle" id="guest-pin-strength" style="min-height:20px;"></p>
+      <button id="add-guest-pin" class="primary">Issue Guest PIN</button>
+    </div>
+    ` : ""}
+
+    <div class="card">
+      <h3>Session &amp; Lockout Policy</h3>
+      <p class="panel-subtitle">
+        Applies to the PIN gate. A shorter session means more PIN prompts but a
+        smaller window for a stolen cookie. Changing the session length affects
+        new sign-ins only — use Sign Out All Devices to cut existing ones short.
+      </p>
+      <div class="form-grid">
+        <label>Session length
+          <select id="session-ttl">
+            ${[["3600", "1 hour"], ["28800", "8 hours"], ["86400", "1 day"], ["604800", "1 week"], ["2592000", "30 days"]].map(([v, l]) =>
+              `<option value="${v}" ${String(remoteAuth.session_ttl_s) === v ? "selected" : ""}>${l}</option>`).join("")}
+          </select>
+        </label>
+        <label>Wrong attempts before lockout<input type="number" id="lockout-attempts" min="1" value="${remoteAuth.lockout_max_attempts}"></label>
+        <label>First lockout (seconds)<input type="number" id="lockout-base" min="1" value="${remoteAuth.lockout_base_s}"></label>
+        <label>Longest lockout (seconds)<input type="number" id="lockout-max" min="1" value="${remoteAuth.lockout_max_s}"></label>
+      </div>
+      <button id="save-lockout-policy" class="primary" style="margin-top:10px;">Save Policy</button>
+      <button id="revoke-all-sessions" class="danger" style="margin-left:8px;">Sign Out All Devices</button>
+    </div>
+
+    <div class="card">
+      <h3>Remote Access — Exposure</h3>
+      <p class="panel-subtitle">
+        What this install currently looks like from outside. The public-IP lookup is the
+        <b>only</b> outbound internet request this project makes anywhere, and it only
+        happens when you press the button below — see <code class="inline">SECURITY.md</code>.
+      </p>
+      <table><tbody>
+        <tr>
+          <td>Detected public IP</td>
+          <td>
+            <code class="inline">${escHtml(remoteAccess.public_ip.ip || "not checked")}</code>
+            ${remoteAccess.public_ip.checked_at
+              ? `<span class="dim">— checked ${new Date(remoteAccess.public_ip.checked_at).toLocaleString()}</span>`
+              : ""}
+            ${remoteAccess.public_ip.error ? `<span class="tag error">lookup failed</span>` : ""}
+          </td>
+        </tr>
+        <tr><td>DuckDNS domain</td><td><code class="inline">${escHtml(remoteAccess.duckdns.domain || "—")}</code></td></tr>
+        <tr>
+          <td>Last DuckDNS sync</td>
+          <td>${remoteAccess.duckdns.last_sync_at
+                ? `${new Date(remoteAccess.duckdns.last_sync_at).toLocaleString()}
+                   <span class="tag ${remoteAccess.duckdns.last_sync_ok ? "on" : "error"}">${remoteAccess.duckdns.last_sync_ok ? "ok" : "failed"}</span>`
+                : never}</td>
+        </tr>
+        <tr>
+          <td>Public exposure</td>
+          <td><span class="tag ${remoteAccess.exposure.configured ? "error" : "off"}">${remoteAccess.exposure.configured ? "CONFIGURED" : "not configured"}</span>
+            ${remoteAccess.exposure.source ? `<span class="dim">${escHtml(remoteAccess.exposure.source)}</span>` : ""}</td>
+        </tr>
+        <tr>
+          <td>Seen from a public IP</td>
+          <td>${remoteAccess.exposure.public_client_seen_at
+                ? `<code class="inline">${escHtml(remoteAccess.exposure.public_client_ip)}</code>
+                   <span class="dim">${new Date(remoteAccess.exposure.public_client_seen_at).toLocaleString()}</span>`
+                : never}</td>
+        </tr>
+      </tbody></table>
+      <div class="row" style="margin-top:12px;">
+        <button id="detect-public-ip">Detect Public IP Now</button>
+        ${remoteAccess.exposure.configured
+          ? `<button id="exposure-clear" class="danger">Retract Exposure Declaration</button>`
+          : `<button id="exposure-set">I have a port forward set up</button>`}
+      </div>
+      <p class="panel-subtitle" style="margin-top:10px;">
+        Your DuckDNS updater can report its sync time here with
+        <code class="inline">POST /api/system/remote-access/duckdns-sync</code>. This project
+        deliberately does not run an updater of its own.
+      </p>
+    </div>
+
+    <div class="card">
+      <h3>Logging</h3>
+      <p class="panel-subtitle">
+        Backend log verbosity — no code edit, no restart. Persisted. View the resulting
+        lines under System → Health.
+      </p>
+      <div class="form-grid">
+        <label>Log level
+          <select id="log-level-select">
+            ${logLevel.levels.map(l =>
+              `<option value="${escAttr(l)}" ${l === logLevel.log_level ? "selected" : ""}>${escHtml(l)}</option>`
+            ).join("")}
+          </select>
+        </label>
+      </div>
     </div>
   `;
 
@@ -1639,11 +2725,20 @@ async function renderSettings(main) {
     };
   });
 
+  wirePinStrengthMeter(
+    main.querySelector("#remote-auth-pin"), main.querySelector("#remote-auth-pin-strength"));
+  wirePinStrengthMeter(
+    main.querySelector("#remote-auth-new-pin"), main.querySelector("#remote-auth-new-pin-strength"));
+  wirePinStrengthMeter(
+    main.querySelector("#guest-pin"), main.querySelector("#guest-pin-strength"));
+
   const enableBtn = main.querySelector("#remote-auth-enable");
   if (enableBtn) {
     enableBtn.onclick = async () => {
       const pin = main.querySelector("#remote-auth-pin").value;
-      if (pin.length < 4) { toast("PIN must be at least 4 characters", "error"); return; }
+      // The server enforces the real rules; this only avoids a pointless
+      // round-trip on an obviously-empty field.
+      if (!pin) { toast("Enter a PIN first", "error"); return; }
       await post("/api/system/remote-auth/enable", { pin });
       toast("PIN gate enabled — you'll need it on your next visit", "success");
       renderSettings(main);
@@ -1654,9 +2749,103 @@ async function renderSettings(main) {
     disableBtn.onclick = async () => {
       await post("/api/system/remote-auth/disable");
       toast("PIN gate disabled");
+      // Disabling the gate is exactly the moment the fail-safe warning is
+      // supposed to reappear if exposure is configured, so re-check now
+      // rather than waiting for the next page load.
+      await refreshExposureWarnings();
       renderSettings(main);
     };
   }
+
+  main.querySelector("#detect-public-ip").onclick = async (e) => {
+    e.target.disabled = true;
+    e.target.textContent = "Checking…";
+    const result = await post("/api/system/remote-access/detect-public-ip");
+    toast(result.public_ip ? `Public IP: ${result.public_ip}` : `Lookup failed: ${result.error}`,
+          result.public_ip ? "success" : "error");
+    await refreshExposureWarnings();
+    renderSettings(main);
+  };
+
+  const exposureSet = main.querySelector("#exposure-set");
+  if (exposureSet) {
+    exposureSet.onclick = async () => {
+      await post("/api/system/remote-access/exposure",
+                 { configured: true, source: "declared in Settings" });
+      toast("Exposure recorded — the PIN gate warning now stays until the gate is on", "success");
+      await refreshExposureWarnings();
+      renderSettings(main);
+    };
+  }
+  const exposureClear = main.querySelector("#exposure-clear");
+  if (exposureClear) {
+    exposureClear.onclick = async () => {
+      await post("/api/system/remote-access/exposure", { configured: false });
+      toast("Exposure retracted — only do this once the port forward is actually removed");
+      await refreshExposureWarnings();
+      renderSettings(main);
+    };
+  }
+
+  const changePinBtn = main.querySelector("#remote-auth-change-pin");
+  if (changePinBtn) {
+    changePinBtn.onclick = async () => {
+      const pin = main.querySelector("#remote-auth-new-pin").value;
+      if (!pin) { toast("Enter a new PIN first", "error"); return; }
+      const result = await post("/api/system/remote-auth/pin", { pin });
+      toast(`PIN changed — ${result.revoked_sessions} other session(s) signed out`, "success");
+      renderSettings(main);
+    };
+  }
+
+  const addGuestBtn = main.querySelector("#add-guest-pin");
+  if (addGuestBtn) {
+    addGuestBtn.onclick = async () => {
+      const pin = main.querySelector("#guest-pin").value;
+      if (!pin) { toast("Enter a guest PIN first", "error"); return; }
+      const expiry = main.querySelector("#guest-pin-expiry").value;
+      await post("/api/system/remote-auth/pins", {
+        pin,
+        label: main.querySelector("#guest-pin-label").value.trim() || null,
+        expires_in_s: expiry ? parseInt(expiry, 10) : null,
+      });
+      toast("Guest PIN issued", "success");
+      renderSettings(main);
+    };
+  }
+
+  main.querySelectorAll(".revoke-guest-pin").forEach(b => {
+    b.onclick = async () => {
+      const result = await del(`/api/system/remote-auth/pins/${b.dataset.id}`);
+      toast(`Guest PIN revoked — ${result.revoked_sessions} session(s) signed out`);
+      renderSettings(main);
+    };
+  });
+
+  main.querySelector("#session-ttl").onchange = async (e) => {
+    await post("/api/system/remote-auth/session-ttl", { session_ttl_s: parseInt(e.target.value, 10) });
+    toast("Session length updated — applies to new sign-ins", "success");
+  };
+
+  main.querySelector("#save-lockout-policy").onclick = async () => {
+    await post("/api/system/remote-auth/lockout-policy", {
+      max_attempts: parseInt(main.querySelector("#lockout-attempts").value, 10),
+      base_seconds: parseInt(main.querySelector("#lockout-base").value, 10),
+      max_seconds: parseInt(main.querySelector("#lockout-max").value, 10),
+    });
+    toast("Lockout policy saved", "success");
+    renderSettings(main);
+  };
+
+  main.querySelector("#revoke-all-sessions").onclick = async () => {
+    const result = await post("/api/auth/sessions/revoke-all");
+    toast(`${result.revoked} session(s) signed out — every device must re-enter the PIN`, "success");
+  };
+
+  main.querySelector("#log-level-select").onchange = async (e) => {
+    await post("/api/system/log-level", { level: e.target.value });
+    toast(`Log level set to ${e.target.value}`, "success");
+  };
 }
 
 // ------------------------------------------------ always-visible control --
@@ -2031,6 +3220,9 @@ async function bootDashboard() {
     location.hash = "#/" + (savedRoute && routeExists(savedRoute) ? savedRoute : DEFAULT_ROUTE);
   }
   router();
+  // Deliberately not awaited: a banner about remote exposure must not hold up
+  // first paint of the dashboard itself.
+  refreshExposureWarnings();
 }
 
 // ---------------------------------------------------------------- init --

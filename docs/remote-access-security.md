@@ -73,16 +73,27 @@ below), and understand its limits (also below) before relying on it.
   what was tested. Use a real PIN, not `1234` or `test1234` (the value used
   during this project's own testing — rotate it before exposing anything
   publicly).
-- **This is plain HTTP, not HTTPS.** The PIN and session cookie both
-  travel unencrypted between your phone and your house. On a trusted home
-  Wi-Fi this doesn't matter much; the moment you're forwarding a port to
-  the public internet, anyone positioned to intercept that specific
-  traffic path (a malicious/compromised Wi-Fi you're connecting from,
-  your ISP, etc.) can see the PIN in plaintext. If this matters to you,
-  put a reverse proxy (e.g. Caddy, which gets you free automatic TLS certs
-  for a DuckDNS domain with almost no config) in front of this dashboard
-  instead of forwarding straight to it. This is flagged as a roadmap item
-  rather than built now — see `roadmap/`.
+- **Put TLS in front of it — this is now built, not a roadmap item.**
+  Without a reverse proxy the PIN and session cookie travel unencrypted
+  between your phone and your house. On trusted home Wi-Fi that matters
+  little; the moment you forward a port to the public internet, anyone on
+  that traffic path (a compromised Wi-Fi you're connecting from, your ISP)
+  can read the PIN in plaintext. `deploy/caddy/Caddyfile` gets you
+  automatic Let's Encrypt certificates on a DuckDNS domain, renewal
+  included, in about five lines of config; `deploy/nginx/` is the
+  equivalent for people already running nginx. See
+  [deployment.md](deployment.md) and `deploy/README.md`.
+- **Set `SBD_TRUSTED_PROXIES` when you add that proxy.** Behind a proxy the
+  app's socket only ever sees the proxy, so the per-IP lockout below keys
+  every remote user into one bucket — one attacker's five wrong guesses
+  lock out everybody, and the rate limiter throttles legitimate users on
+  the attacker's behalf. `SBD_TRUSTED_PROXIES=127.0.0.1,::1` for a proxy
+  on the same host. It's opt-in and defaults to trusting nothing, because
+  `X-Forwarded-For` is just a request header: believed unconditionally,
+  anything that can reach the app directly forges a new source IP per
+  guess and the lockout stops existing. Verify with
+  `curl -s https://your-host/api/system/proxy-status` — `client_ip` must
+  be your real address, not the proxy's.
 - **Use a non-default external port.** Port 8500 (or any well-known
   default) gets found by internet-wide scanners fast. A random high port
   isn't real security on its own, but it cuts down drive-by scanning noise
@@ -91,6 +102,12 @@ below), and understand its limits (also below) before relying on it.
   port-forward rule doesn't silently break when its address changes.
 
 ### What the PIN gate does and doesn't protect against
+
+> The full, formal version of this — assets, trust boundaries, an attacker
+> table, and the gaps stated bluntly — is in
+> [`pin-gate-threat-model.md`](pin-gate-threat-model.md). Read that one
+> before deciding to expose this publicly. The summary below is the short
+> form.
 
 Does:
 - Blocks casual/automated discovery from immediately controlling your
@@ -110,15 +127,194 @@ Does:
 - **v0.3.0:** sessions can be listed (`GET /api/auth/sessions`) and revoked
   individually or all at once — a forgotten or compromised session doesn't
   have to just expire on its own.
+- **Week 2:** repeat lockouts for the same source double in length (300s,
+  600s, 1200s … capped at 24h by default), so sustained guessing gets more
+  expensive over time instead of costing a fixed price per batch. A quiet
+  source's escalation decays after 24h so one bad night doesn't brand an
+  address forever. Threshold and durations are configurable
+  (`POST /api/system/remote-auth/lockout-policy`, or Settings).
+- **Week 2:** weak PINs are refused, not warned about — under 6 characters,
+  well-known PINs, this project's own development/test PINs, repeated
+  characters, straight sequences, and short repeated patterns. There is
+  deliberately no override flag; the only thing an override ever gets used
+  for is shipping the dev PIN.
+- **Week 2:** IPv6 sources are tracked by /64 prefix and normalized across
+  spellings (compressed/expanded, bracketed, scope id, IPv4-mapped). Without
+  this, an IPv6 attacker walks out of every lockout for free by picking a
+  new address inside their own allocation — which SLAAC privacy extensions
+  do automatically, without any attacker effort.
+- **Week 2:** changing the PIN revokes every existing session and rotates
+  the signing key, so a cookie issued under the old PIN dies with it.
+- **Week 2:** guest PINs (up to 5) open the same gate and can be revoked
+  individually; revoking one signs out only the sessions it opened.
+- **Week 2:** a general per-IP API rate limit sits in front of everything —
+  see "Rate limiting" below.
+
+- **Week 2 Phase B:** attributes the lockout to the *real* client behind a
+  reverse proxy (`SBD_TRUSTED_PROXIES`), and only ever to a proxy that has
+  been explicitly named — a forged `X-Forwarded-For` from anything else is
+  ignored entirely, so the header cannot be used to farm fresh lockout
+  buckets. The session cookie also picks up `Secure` automatically once the
+  connection really is HTTPS (and deliberately not before, since browsers
+  discard a `Secure` cookie sent over plain HTTP and that would lock LAN
+  users out of their own dashboard).
 
 Doesn't:
 - Encrypt traffic on its own (see the HTTPS point above) — though Tailscale
-  Serve, above, sidesteps this for the tailnet path specifically.
+  Serve, above, sidesteps this for the tailnet path specifically, and
+  `deploy/` now covers the reverse-proxy path properly.
 - Defend against an attacker who can see your network traffic and doesn't
   need to guess the PIN because they can just read it off the wire.
-- Replace a real login/user system — there is exactly one PIN, shared by
-  anyone you give it to. The new audit log gives a trail of *what*
-  happened, not *which person* did it.
+- Replace a real login/user system. Guest PINs are a second *credential*,
+  not a second *account*: a guest has exactly the same powers as the
+  household, just a separately-revocable way in. The audit log records
+  which PIN opened a session, so you can tell "someone using the guest PIN"
+  from "someone using the household PIN" — but not which person that was.
+  Real per-user identity is Week 3's multi-user work.
+- Survive a restart with its lockout/rate-limit state intact. All per-IP
+  tracking is in-memory by design (the same accepted tradeoff since the gate
+  shipped), so restarting the backend clears every active lockout and
+  rate-limit counter. That's fine for a single-household dashboard and a
+  documented limitation, not an oversight — a persisted store is a roadmap
+  item if in-memory ever proves insufficient in practice.
+
+### Rate limiting
+
+Two separate things, easy to confuse:
+
+- **Login lockout / login rate limit** — auth-specific. Counts wrong PINs
+  and raw request volume to `/api/auth/login`.
+- **General API rate limit** — everything else. A per-IP cap on request
+  volume across the whole public HTTP surface, with different allowances by
+  endpoint sensitivity.
+
+**Loopback and LAN clients are exempt by default.** The point of the general
+limiter is unattended public exposure; throttling your own phone on your own
+Wi-Fi would be a bug, not a security win. This is why the Diagnostics
+rate-limit counters usually read zero on a local-only setup.
+
+Recommended defaults:
+
+| Setup | Suggestion |
+|---|---|
+| LAN-only (no port forward, no Tailscale) | Leave everything at defaults. The exemption means the limiter is effectively inert. |
+| Tailscale-only | Leave at defaults. Tailnet addresses (100.64.0.0/10) are private, so they're exempt too. |
+| DuckDNS + port forward | Keep the exemption on (your LAN still shouldn't be throttled) and consider lowering `write` to ~60/min. Watch Diagnostics → Rate limiting for a week before tightening further. |
+| Shared/untrusted LAN | Turn the exemption off (`SBD_RATE_LIMIT_EXEMPT_LOCAL=0`) so local clients are limited too. |
+
+Durable changes go in env vars (`SBD_RATE_LIMIT_READ`, `_WRITE`, `_POLL`,
+`_EXPENSIVE`, `SBD_RATE_LIMIT_EXEMPT_LOCAL`); `POST /api/system/rate-limit`
+is the runtime override and does not survive a restart.
+
+**Not the same as bulb pacing.** `min_dwell_ms` limits how often a *bulb* is
+written to, to protect the hardware and make colour changes visible. API
+rate limiting limits how often a *client* may call the HTTP API. They never
+interact: the audio engine's per-bulb sender dispatches from an in-process
+queue and never enters the HTTP stack, so a lightshow running at dozens of
+updates a second consumes exactly zero of the API budget.
+
+## What the dashboard now tells you about your own exposure
+
+Week 2 Phase D added surfacing, so you don't have to remember what you
+configured six months ago.
+
+**Settings → Remote Access — Exposure** shows:
+
+- the **currently detected public IP**, and when it was last checked. This
+  is the only outbound internet request this project makes anywhere, and it
+  runs *only* when you press the button — see `SECURITY.md`;
+- your **DuckDNS domain and last successful sync time**. This project
+  deliberately doesn't run a DuckDNS updater (the provider's own cron job
+  or container already does that well); your updater reports in with
+  `POST /api/system/remote-access/duckdns-sync`, e.g.
+
+  ```bash
+  # after your normal duckdns update call succeeds
+  curl -s -X POST http://localhost:8500/api/system/remote-access/duckdns-sync \
+    -H 'Content-Type: application/json' \
+    -d '{"domain":"yourname.duckdns.org","ip":"'"$(curl -s https://api.ipify.org)"'","ok":true}'
+  ```
+
+  With no updater wired up it simply reads "never", which is honest rather
+  than blank;
+- whether **public exposure is configured**, and whether the dashboard has
+  ever actually **been reached from a public IP**.
+
+**Diagnostics → Tailscale** runs `tailscale status --json` on the host and
+reports whether Tailscale is even installed, whether the daemon is running,
+and — if it is — the **tailnet-reachable URL** (MagicDNS name, falling back
+to the 100.x address), with a copy button. If the CLI isn't on PATH it says
+so instead of failing.
+
+> The tailnet URL is built with port **8500** by default. If you run on a
+> different port, set `SBD_PORT` in the backend's environment so the URL it
+> prints is the one you can actually open.
+
+### The warning banner
+
+A persistent, non-dismissable banner appears at the top of every page when
+either of these is true:
+
+1. **A request actually arrived from a globally-routable IP while the PIN
+   gate is off.** This is evidence, not a guess: the dashboard demonstrably
+   *is* reachable from outside your LAN and is currently unauthenticated.
+2. **Public exposure is configured and the PIN gate is off.** This is the
+   fail-safe. If you set up a port forward *with* the gate on (correctly, no
+   warning) and turn the gate off months later, the warning comes back — and
+   survives restarts — until you either re-enable the gate or explicitly
+   retract the exposure declaration in Settings after taking the forward
+   down. A dismiss-once banner would never catch that case, which is exactly
+   the one that gets people.
+
+Tailnet addresses (100.64.0.0/10) are *not* treated as public, so normal
+Tailscale use never trips it.
+
+## Firewall rules for LAN-only operation
+
+Short version: **for LAN-only use, nothing needs to be open to the
+internet.** Full table (ports, direction, what each is for, what's safe to
+close) is in [`observability.md`](observability.md#firewall-guidance-for-lan-only-operation),
+and served as live data from `GET /api/system/network` so the docs and the
+UI can't drift apart.
+
+The one-line summary: TCP 8500 inbound **from your LAN only**, TCP 6668
+outbound to the bulbs, and UDP 6666/6667 inbound only if you want network
+auto-discovery. Everything else stays closed.
+
+## When one path is up and the other isn't
+
+The dashboard now reports a connectivity **mode** (System → Health, and
+`GET /api/system/network`):
+
+- **`lan_only`** — LAN works, no Tailscale address on the host. Local
+  control is fine; tailnet remote access is down. Check `tailscale status`.
+- **`tailscale_only`** — the tailnet is up but the host has no LAN address.
+  You can *reach* the dashboard from your phone, and it will load — but it
+  **cannot reach any bulb**, so every command would fail. It says so
+  plainly rather than letting each call time out with its own opaque error.
+  Usually means the host's Wi-Fi/ethernet dropped while Tailscale stayed up
+  over another interface.
+- **`offline`** — neither. Nothing can be controlled.
+
+The backend also notices when its own IP changes (DHCP moved it, new
+router, new subnet) and logs it with a timestamp — which is the thing you
+actually want when "remote access stopped working yesterday" and your
+port-forward rule still points at the old address. After connectivity
+returns, or after an IP change, every cached bulb connection is dropped and
+rebuilt: a router reboot leaves those sockets dead, and without this they
+keep failing until something forces a reconnect.
+
+## Tailscale troubleshooting
+
+| Symptom | Likely cause | Check |
+|---|---|---|
+| Diagnostics says "tailscale CLI not found on PATH" | Not installed, or installed for a different user | `tailscale version` in the same shell that runs the backend |
+| "installed but its backend state is 'Stopped'" | Daemon not connected / logged out | `tailscale up` |
+| `BackendState: NeedsLogin` | Auth key expired, or node key expired (default 180 days) | `tailscale up` again; consider disabling key expiry for this node in the admin console |
+| Tailnet URL loads on the host but not from the phone | Phone isn't actually on the tailnet, or an exit node is routing oddly | `tailscale status` on the phone; try the raw `100.x` address before the MagicDNS name |
+| MagicDNS name doesn't resolve, IP works | MagicDNS off for the tailnet | Enable MagicDNS in the Tailscale admin console DNS settings |
+| Works on LAN, 401 over the tailnet | Expected if the PIN gate is on — the tailnet is just another network to it | Log in with the PIN; the session cookie then works over both paths |
+| Dashboard reachable, all bulb commands fail | `tailscale_only` mode — host has no LAN | System → Health, check the connectivity mode |
 
 ## Still planned: a dedicated adversarial security-test phase
 
@@ -140,8 +336,6 @@ than a same-machine simulation.
 
 ## Not doing (for now)
 
-- A reverse proxy / automatic TLS setup (Caddy or similar) — flagged above
-  as the real fix for the plaintext-PIN concern, scoped as a roadmap item.
 - Multi-user accounts — this is a single shared PIN by design; see
   `ROADMAP.md`'s existing note on multi-user auth as a separate, larger
   feature.

@@ -9,12 +9,19 @@ points — this file is deliberately terser and more directive.
 
 A local, cloud-independent dashboard + REST API for controlling Tuya-based
 Wi-Fi smart bulbs. FastAPI backend (`backend/`), vanilla-JS frontend
-(`frontend/`, no build step). 159 working features as of the last count in
+(`frontend/`, no build step). 170 working features as of the last count in
 `FEATURES.md` — audio-reactive lighting (14 modes, multi-bulb
 orchestration), network auto-discovery, scenes/effects/schedules, a
-PIN-gated remote-access path with session management and audit logging,
-a stdlib CLI (`cli/bulbctl.py`), and a real pytest suite (`backend/tests/`,
-`cli/tests/`).
+PIN-gated remote-access path with multi-PIN support, session management,
+audit logging and per-IP rate limiting, a stdlib CLI (`cli/bulbctl.py`),
+and a real pytest suite (`backend/tests/`, `cli/tests/`).
+(`frontend/`, no build step). 181 working features as of the last count in
+`FEATURES.md` — audio-reactive lighting (14 modes, multi-bulb
+orchestration), network auto-discovery, scenes/effects/schedules, a
+PIN-gated remote-access path with session management and audit logging, a
+tamper-evident security-event log with alerting, encrypted backup/restore,
+env-var secrets, a stdlib CLI (`cli/bulbctl.py`), and a real pytest suite
+(`backend/tests/`, `cli/tests/`).
 
 ## Do this first, in order
 
@@ -74,12 +81,56 @@ a stdlib CLI (`cli/bulbctl.py`), and a real pytest suite (`backend/tests/`,
   and had to fall back to synthetic-signal tests or mocked data instead of
   live-hardware verification — that's a legitimate, documented fallback,
   not a shortcut to feel bad about.
+- **The general API rate limiter (`api_rate_limit.check()`) must only ever
+  be called from the HTTP middleware in `main.py`.** Scoping it to the ASGI
+  layer is the only thing keeping the audio-reactive engine's internal
+  per-bulb dispatch out of a budget meant for external clients — call it
+  from service-layer code and a long lightshow starts 429-ing the user's own
+  browser. A test scans the backend source and fails on a second call site.
 - **Local `local_key` values and any real PIN must never end up in a
+  commit, a log line, or a doc.** `config.json`, `backend/data/`,
+  `backend/backups/` and `.env` are git-ignored for exactly this reason —
+  check `.gitignore` before adding any new file that might carry a secret,
+  and confirm via a Forgejo/GitHub API readback after pushing (this project
+  has done that check after every push so far) rather than assuming
+  `.gitignore` alone is proof. `.github/workflows/secret-scan.yml` now
+  enforces this in CI as well; run
+  `python .github/scripts/scan_secrets.py` locally before a push.
+- **Anything that can surface a secret needs a test, not a code read.**
+  `backend/tests/test_secrets.py` sweeps the *real* route table for
+  `local_key` values, so a new endpoint that echoes a device dict fails the
+  suite without anyone remembering to update a list. If you add an endpoint
+  that returns device data, run that file before claiming it's safe.
+  Exception text counts: `BulbController._safe_error()` exists because
+  `status()` used to pass raw tinytuya error strings straight into an API
+  response *and* the history log.
+- **Never back up or restore `backend/data/remote_auth.json` or the
+  security-audit chain files.** Restoring auth state would let a restore
+  silently flip the PIN gate (W2-175); restoring the audit log would rewind
+  the tamper-evidence. Both exclusions are structural in
+  `backup_restore.py` — don't "helpfully" add them back.
   commit, a log line, or a doc.** `config.json` and `backend/data/` are
   git-ignored for exactly this reason — check `.gitignore` before adding
   any new file that might carry a secret, and confirm via a Forgejo/GitHub
   API readback after pushing (this project has done that check after
   every push so far) rather than assuming `.gitignore` alone is proof.
+  Anything that *emits* data (a new log line, a new API response, the
+  diagnostic report) goes through `observability.redact_obj` /
+  `redact_text`, and gets a test that plants a real-shaped secret and
+  asserts it's absent — see `test_observability.py`. "It shouldn't contain
+  secrets" is not a claim this project accepts unasserted.
+- **Any test that touches process-global or disk-backed state must isolate
+  it in `conftest.py`.** `backend/data/*.json` is real machine state; a
+  test reading or overwriting it produces failures that depend on what the
+  developer's own install happens to be doing. `auth_reset` and
+  `observability_reset` exist for exactly this, and every new state file
+  needs adding to one of them.
+- **Nothing may make an outbound internet request without an explicit user
+  action.** `SECURITY.md` promises this project doesn't phone home, and
+  that promise is only worth something if the code genuinely has no
+  background caller. The single exception (the opt-in public-IP lookup in
+  `remote_access_status.py`) is documented and tested to have exactly one
+  caller — see `test_status_never_performs_the_public_ip_lookup_itself`.
 
 ## Definition of done, on this project
 

@@ -410,6 +410,319 @@ suite stayed green (353/353) throughout.
   yet, pending Owen's input on whether it's worth it.
 - PR #68 has not been merged to `master`.
 
+## Round 6 — Week 2 Phase A: PIN gate hardening + API rate limiting (issue #69)
+
+### Current state
+
+Built in an isolated worktree branched from `master`. **431/431 backend
+tests pass** (353 before this round), 22/22 CLI tests unchanged. Verified
+against a real `uvicorn` server on `127.0.0.1:8577` over real HTTP, not just
+the test client — full transcript in
+`iterations/005-pin-hardening-and-rate-limiting/README.md`.
+
+### What was done
+
+Covers `roadmap/week-2-remote-access-and-security.md` section 4
+(W2-051..070) and section 6 (W2-101..120):
+
+- **Lockout is configurable and escalates.** Threshold/base/ceiling live in
+  persisted state with env-var defaults; repeat lockouts for one source
+  double the wait, decaying after a quiet day.
+- **Weak PINs are refused, not warned about** — including this project's own
+  `test1234`-style dev PINs. No override flag, on purpose.
+- **Household + up to 5 guest PINs.** Revoking a guest PIN signs out only
+  the sessions it opened. The household PIN can't be revoked (that would be
+  a self-inflicted lockout); it's changed instead, which revokes every
+  session and rotates the signing key.
+- **New `backend/net_utils.py`** — shared client-IP normalization, so an
+  IPv6 attacker can't walk out of a lockout by picking a new address inside
+  their own /64.
+- **New `backend/api_rate_limit.py`** — per-IP sliding-window limiter with
+  four tiers (poll/read/write/expensive), 429 + `Retry-After`, LAN/loopback
+  exempt by default, metrics in Diagnostics.
+- Settings UI gained a live PIN strength meter, guest-PIN management,
+  session length, lockout policy, and a Sign Out All Devices button;
+  Diagnostics gained a rate-limiting card.
+
+### One real pre-existing bug found and fixed
+
+A session cookie containing any non-ASCII byte produced a **500 instead of a
+401**: `hmac.compare_digest`'s `str` form raises `TypeError` on non-ASCII,
+and Starlette decodes the `Cookie` header as latin-1. Present since the
+session allowlist shipped, in both `verify_session_token()` and
+`get_token_jti()`. Fixed by comparing UTF-8 bytes (`remote_auth._compare`).
+Reproduced against the real app with the old comparison restored before
+fixing — see the iteration entry.
+
+### Watch for
+
+- **`api_rate_limit.check()` must stay callable from the HTTP middleware
+  only.** That single call site is the entire W2-111 guarantee that a
+  running lightshow can't spend an HTTP budget. There's a test that fails if
+  a second call site appears.
+- Rate-limit **config** is in-memory like its counters — `SBD_RATE_LIMIT_*`
+  env vars are the durable path; the API is a runtime override that a
+  restart discards. This is documented but is a plausible surprise.
+
+### What's NOT done
+
+- Anything needing a reverse proxy in front: `X-Forwarded-For` handling
+  (W2-038/W2-112) can't be verified without one, so it wasn't guessed at.
+- Notifications on repeated failures (W2-053/W2-113), PIN rotation reminders
+  (W2-055), "remember this device" (W2-058), TOTP (W2-059), IP
+  allow/denylists and ban escalation (W2-107/108), abuse-pattern detection
+  (W2-105), a persisted rate-limit store (W2-116), load testing (W2-118).
+- The adversarial security-test phase (section 5) is still untouched and
+  still needs a real deployed target.
+## Week 2 Phase B — TLS / reverse proxy + deployment (issue #70)
+
+Roadmap sections 3 (W2-031..050) and 10 (W2-176..195). Branched from
+`master`; test suite went 353 → 395 passing.
+
+### Backend changes
+
+New module **`backend/reverse_proxy.py`** — everything about running behind
+a TLS-terminating proxy. Configured by env var only (`SBD_TRUSTED_PROXIES`,
+`SBD_HSTS*`, `SBD_HTTPS_REDIRECT`), deliberately *not* through the API: a
+runtime-flippable trust setting would let one session that got in once
+permanently disable brute-force protection for everyone.
+
+- **W2-038, the important one.** `remote_auth`'s per-IP lockout and login
+  rate limiter now key off the real client behind a proxy instead of the
+  proxy's own address. Opt-in and default-off: `X-Forwarded-For` is
+  attacker input unless a specific peer has been named, and believing it
+  unconditionally would let anyone forge a fresh source IP per guess and
+  delete the lockout. The chain is walked **right to left**, because both
+  nginx (`$proxy_add_x_forwarded_for`) and forwarding proxies generally
+  append the real peer to whatever the client sent — reading left-to-right
+  is the classic bug and hands the attacker their forged value.
+- **W2-036.** Session cookie gets `Secure` when the request really is
+  HTTPS, and *not* otherwise. Unconditional would be worse than absent:
+  browsers silently discard a `Secure` cookie over plain HTTP, so every LAN
+  user's login would appear to do nothing.
+- **W2-034/035.** HSTS and 307 redirect-to-HTTPS, both opt-in, both off by
+  default (reasoning in `docs/deployment.md` §3.3). Health paths are exempt
+  from the redirect so container probes don't 307.
+- **W2-044.** `/healthz`, added to `remote_auth.OPEN_PATHS`. Returns
+  `{"status":"ok"}` and nothing else — it's the endpoint most likely to be
+  publicly reachable.
+- `/api/system/proxy-status` (gated) — makes a proxy misconfiguration
+  visible instead of silent.
+
+### The pre-existing bug this turned up
+
+**uvicorn ships `ProxyHeadersMiddleware` enabled by default, trusting
+`127.0.0.1`.** It rewrites the request's client address from
+`X-Forwarded-For` *before the app runs*. With the app bound to loopback
+that matches every request, so any local process could hand itself an
+arbitrary source IP and a fresh lockout bucket — and this predates Phase B;
+the old `request.client.host` in `auth_login` was already reading a
+substituted value. Confirmed live: before the fix, a direct `curl` with
+`X-Forwarded-For: 198.51.100.42` made the app report that as `peer_ip`.
+
+Fixed by running uvicorn with `--no-proxy-headers` (`Dockerfile`,
+`deploy/systemd/`, `deploy/windows-service.md`) so this app's explicit trust
+list is the only thing deciding it. `/api/system/proxy-status` reports
+`peer_rewritten_by_server` to catch a start command that missed the flag.
+**Anyone running their own start command needs to add it.**
+
+### Reference artifacts (`deploy/`)
+
+Caddy (DuckDNS + automatic Let's Encrypt, and a LAN `tls internal`
+variant), nginx + certbot renewal automation, a self-signed cert
+generator, `docker-compose.caddy.yml`, systemd service + health-check
+timer, NSSM notes, and `deploy/smoke-test.py`. `docs/deployment.md` covers
+min Python/OS versions, measured resource footprint, update/rollback, and
+version pinning.
+
+### What was actually validated vs. only written
+
+Validated with real binaries: Caddyfiles via `caddy validate` (v2.11.4),
+nginx conf via `nginx -t` (1.27) with real certs in place, systemd units
+via `systemd-analyze verify` (Debian 12), compose via `docker compose
+config`, the cert script executed on Linux, and the smoke test run against
+a live instance — including **through a real Caddy container** proxying to
+it, confirming a forged header is ignored without trust and the real client
+IP comes through with it.
+
+**Not validated:** no Let's Encrypt cert issued against a real domain (needs
+a real domain + open ports), no systemd unit started on a real Linux host,
+NSSM instructions not executed, and the Raspberry Pi CPU guidance is
+extrapolated from desktop measurements. `deploy/README.md` carries this
+same split so it doesn't get lost.
+
+### Bugs found while building this
+
+1. **`SBD_TRUSTED_PROXIES=*` was silently inert** — the wildcard made every
+   forwarded entry look like a proxy hop to skip, so the right-to-left walk
+   fell off the end and returned the peer, collapsing `*` into the no-trust
+   behaviour it was set to escape. Caught by its own test. Fixed by
+   splitting "may I believe this peer" from "is this entry one of my own
+   proxies" (`is_trusted_proxy` vs `is_known_proxy_hop`).
+2. **`StartLimitIntervalSec` was in `[Service]`** in the systemd unit, where
+   systemd has silently ignored it since v229 — the crash-loop guard looked
+   present and did nothing. Caught by `systemd-analyze verify`.
+3. **The smoke test looked up response headers case-sensitively**, so it
+   reported the app wasn't setting `Content-Type` on static assets. The app
+   was fine; the script wasn't.
+
+### What a reviewer should check by hand
+
+- A real Let's Encrypt issuance on an actual DuckDNS domain with ports
+  80/443 forwarded — the one thing no amount of local validation covers.
+- Installing the systemd unit on a real Linux host, including whether the
+  `ProtectSystem=strict` + `ReadWritePaths` set is actually sufficient for
+  `backend/data/` and tinytuya's `snapshot.json`.
+- Whether audio-reactive lighting survives the systemd sandboxing on a real
+  machine (the unit documents the `PrivateDevices` / `SupplementaryGroups=audio`
+  caveats, but they weren't exercised).
+## Round 6 — Week 2 Phase C: audit logging, backups, secrets (2026-07-31)
+
+Tracked in issue #71 (W2-141–160, W2-161–175, W2-211–225). Built on a
+worktree branch off `master`. **481/481 backend tests pass** (353 before,
+128 new); CLI suite still 22/22.
+
+### What was built
+
+- **`backend/security_audit.py`** — a security-events log distinct from
+  both the per-device history and the existing `data/auth_audit.log`. That
+  auth log is unchanged; `remote_auth.log_audit_event()` now *forwards*
+  into the new one, so a future auth event can't be added to one and
+  forgotten in the other. Four severities, per-event overrides, size-based
+  rotation + age/count retention, JSON/CSV export, search/filter, local
+  alert queue + optional (default-off) webhook, rate-based thresholds,
+  canary self-test, digest.
+- **Tamper-evidence**: every line is HMAC-chained to the previous one, with
+  the head recorded in a separate state file. Detects an edited entry, a
+  removed entry, a truncated tail, and a deleted file. **Limit, stated
+  plainly:** an attacker holding both the key file and the state file can
+  rebuild a consistent forged chain — that's inherent to keeping the anchor
+  on the same host, and the webhook is the honest off-box upgrade path.
+- **`backend/backup_restore.py`** — encrypted (AES-256-GCM, PBKDF2 200k) or
+  plain zip; per-file SHA-256 manifest; integrity check before any restore
+  is offered; explicit confirm flag; automatic pre-restore safety backup;
+  selective restore; keep-last-N with overwrite-before-delete.
+- **`backend/secrets_env.py`** — `.env` / env-var `local_key`s (never
+  written back into `config.json`), the shared redaction helper, and the
+  per-secret sensitivity table that `GET /api/security/secrets` serves.
+- **Redaction hardening in `bulb_manager`**: every exception string that
+  leaves `BulbController` is scrubbed of that device's own key first. This
+  closed a real (unexploited) hole — `status()` passed raw tinytuya
+  exception text straight into an API response *and* the history log, so a
+  tinytuya version that echoed the key it was constructed with would have
+  leaked it with nothing else in the app to catch it.
+- **CI secret scan** (`.github/workflows/secret-scan.yml`) — `.gitignore`
+  is a default, not a control; `git add -f` bypasses it silently.
+- Dashboard: two new System tabs, **Security Log** and **Backup**.
+- Docs: `docs/security-secrets.md` (secret sensitivity table, incident-
+  response checklist, secure deletion, quarterly review) and
+  `docs/backup-restore.md` (migration, test-your-restore).
+
+### Verified for real (not claimed)
+
+Against a live `uvicorn` on `127.0.0.1:8577` with a throwaway config:
+
+- Full backup → verify → preflight → restore cycle, plain and encrypted.
+  Wrong password reports the same message as a modified archive (no oracle).
+- **W2-175 live**: PIN gate enabled, restored an archive taken while it was
+  *disabled*, gate stayed enabled (`{"enabled_before": true,
+  "enabled_after": true, "changed": false}`). Structurally guaranteed —
+  nothing in `backup_restore.py` writes `remote_auth.json`.
+- Tamper detection, all three shapes, against the running server: edited
+  entry → `hmac mismatch at seq 4`; deleted middle entry → `broken link at
+  seq 5`; wiped file → `log is empty but state records 10 entries`.
+- Confirmed the plain archive's decompressed `config.json` really does
+  contain the key (so the warning isn't theatre) and the encrypted one is
+  not even a readable zip.
+- Swept the whole live log + all responses for the test `local_key`, the
+  test PIN and the backup password: none present.
+- Disabling the gate produced a `critical` event and an alert.
+
+### Known gaps / next
+
+- **No scheduled anything.** No automatic backup timer and no periodic
+  audit digest job — deliberately, rather than adding another background
+  thread. `POST /api/security/self-test` and `POST /api/backups` are
+  cron-shaped; `docs/backup-restore.md` shows the invocation.
+- **No upload-a-backup endpoint** — that needs `python-multipart`, and a
+  new dependency wasn't worth it for this pass. Restoring a file from
+  elsewhere means dropping it into `backend/backups/` first.
+- **`keyring` / encrypted-at-rest `config.json` (W2-212, W2-213) not
+  built** — env vars cover the same threat with no new dependency.
+  Discord alert integration (W2-148) is Week 3's, and the webhook is the
+  seam it will plug into.
+- **Pre-existing test-isolation gap, not fixed here:** the audio modules
+  (`audio_reactive`, `audio_safety`, `audio_presets`) still write
+  `audio_last_session.json`, `audio_safety.json` and
+  `audio_session_presets.json` into the *real* `backend/data/` during a
+  test run. The auth audit log had the same problem and is fixed
+  (`conftest.auth_reset` now redirects `AUDIT_LOG_PATH` too); the audio
+  ones need the same treatment and are out of this phase's scope.
+- **Pre-existing latent deadlock, fixed in passing:** `config.load_config()`
+  called `save_config()` while already holding a non-reentrant `_lock`.
+  Only reachable when *both* `config.json` and `config.example.json` are
+  missing, which never happens in a checkout — now writes directly instead.
+- The browser UI for both new tabs has not been through a real browser
+  pass; the JS parses and the assets serve, but a human should click it.
+## Round 6 — Week 2 Phase D: observability, network resilience, security docs (2026-07-31)
+
+Tracking issue `THEROCKSSS/smart-bulb-dashboard#72`. Full write-up in
+`iterations/005-observability-network-resilience/README.md`.
+
+**Three new backend modules**, deliberately standalone (a broken audio
+stack must not take the observability layer down with it):
+
+- `backend/observability.py` — `/metrics` in Prometheus text format,
+  per-endpoint p50/p95/p99 latency and error rates, request correlation
+  IDs, a level-configurable in-memory log buffer the UI can tail, startup
+  dependency probes, and the secrets-redacted self-diagnostic report.
+- `backend/network_health.py` — host-IP change detection, connectivity
+  loss/regain with an automatic bulb-reconnect hook, per-bulb latency
+  history over time, and `full`/`lan_only`/`tailscale_only`/`offline`
+  connectivity modes.
+- `backend/remote_access_status.py` — public IP (opt-in lookup only),
+  DuckDNS last-sync, Tailscale status + tailnet URL, and the exposure
+  warning banner including the persistent fail-safe.
+
+**New docs:** `SECURITY.md` (disclosure process, no-telemetry guarantee,
+real `pip-audit` findings), `docs/pin-gate-threat-model.md` (formal, blunt
+about the ten things it doesn't defend), `docs/observability.md`.
+
+**Tests:** 353 → **472 passing**. New `conftest.py` `observability_reset`
+fixture isolates all three new state files at a tmp path — the first run
+had been reading/writing the real `backend/data/`.
+
+### Real bugs found
+
+1. **Pre-existing, user-visible:** `frontend/app.js` `bootDashboard()`
+   referenced a `ROUTES` map that stopped existing when the eleven panels
+   were consolidated into five `PAGES`. On a **first visit with no `#` in
+   the URL** it threw a `ReferenceError` before `router()` ran, so the
+   dashboard rendered nothing at all. Fixed.
+2. My own: route-template resolution collapsed
+   `/api/devices/{id}/power` onto `/api/devices` via a prefix fallback
+   meant for static mounts. Caught by its own test; fallback removed.
+
+### What a reviewer must check by hand
+
+- **The frontend has not been opened in a browser.** It was verified at
+  the data-contract level only (every endpoint the new UI calls returns
+  200 with the expected shape) plus `node --check`. The Health tab, log
+  viewer, latency tables, Tailscale card and exposure banner need visual
+  confirmation.
+- The `pip-audit` findings in `SECURITY.md` are **not fixed** — reaching a
+  patched `starlette` needs a FastAPI upgrade past `0.115.6`, which
+  deserves its own verified pass. Two of the seven advisories genuinely
+  apply to this project's configuration.
+- The tailnet URL is built with port **8500** unless `SBD_PORT` is set.
+
+### Known gap, pre-existing
+
+The *existing* test suite still writes `backend/data/audio_safety.json`,
+`audio_last_session.json`, `audio_session_presets.json` and
+`auth_audit.log` on the real install. Same class of problem the new
+`observability_reset` fixture solves; out of scope for this phase.
+
 ## Repo
 
 Pushed to Forgejo: `agentsoul/smart-bulb-dashboard` (see commit log for

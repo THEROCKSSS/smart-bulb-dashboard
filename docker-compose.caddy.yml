@@ -1,0 +1,133 @@
+# One-command TLS deploy: dashboard + Caddy, with automatic Let's Encrypt
+# certificates for a DuckDNS domain. (Week 2, W2-040, W2-187.)
+#
+#   1. Edit deploy/caddy/Caddyfile -- replace yourname.duckdns.org and
+#      you@example.com with your own.
+#   2. Forward :80 AND :443 from your router to this machine. Both. :80 is
+#      what Let's Encrypt validates over.
+#   3. Enable the PIN gate first. This publishes the dashboard on the
+#      public internet; TLS stops people reading your PIN off the wire, it
+#      does not stop them typing one in.
+#   4. docker compose -f docker-compose.caddy.yml up -d
+#   5. python3 deploy/smoke-test.py --base-url https://yourname.duckdns.org
+#
+# This file REPLACES docker-compose.yml -- don't run both, they'd both bind
+# port 8500. Use `-f docker-compose.caddy.yml` explicitly every time
+# (compose picks up docker-compose.yml by default otherwise).
+
+services:
+  smart-bulb-dashboard:
+    build: .
+    container_name: smart-bulb-dashboard
+    volumes:
+      - ./backend/config.json:/app/backend/config.json
+      - ./backend/data:/app/backend/data
+    restart: unless-stopped
+
+    # Same reason as docker-compose.yml: Tuya's local protocol needs the
+    # container on the bulb's broadcast domain for /rescan (UDP discovery)
+    # to find anything. Everything else -- colour, power, effects, audio --
+    # works fine on a bridge network, so if you never use auto-discovery
+    # see the bridge-network variant at the bottom of this file, which is
+    # the more isolated setup.
+    network_mode: "host"
+
+    environment:
+      # THE setting that makes the PIN gate's per-IP lockout work behind a
+      # proxy. On host networking Caddy reaches the app over loopback, so
+      # loopback is the trusted proxy. Without this the backend ignores
+      # X-Forwarded-For (correctly -- it can't tell a proxy from a forged
+      # header), keys every remote user to 127.0.0.1, and one attacker
+      # burning five wrong PINs locks out everybody.
+      #
+      # Never widen this to 0.0.0.0/0 or "*" on host networking: the app's
+      # port is reachable directly here, so anything that can hit :8500
+      # could then forge its own source IP and walk past the lockout.
+      SBD_TRUSTED_PROXIES: "127.0.0.1,::1"
+
+      # Caddy owns HSTS and the HTTP->HTTPS redirect in this setup (see
+      # deploy/caddy/Caddyfile), so the app's own versions stay off and
+      # there's one source of truth. Set SBD_HSTS=on only if you strip the
+      # header out of the Caddyfile.
+      SBD_HSTS: "off"
+      SBD_HTTPS_REDIRECT: "off"
+
+    # W2-186. Uses the dedicated infrastructure endpoint, not
+    # /api/system/health -- /healthz stays reachable when the PIN gate is
+    # enabled and returns nothing that fingerprints the install.
+    # Python rather than curl/wget because the image is python:3.11-slim,
+    # which ships neither.
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8500/healthz', timeout=5).status == 200 else 1)"]
+      interval: 30s
+      timeout: 10s
+      # 40s: the app imports numpy and sounddevice at startup, which is
+      # slow on a Pi. Too short a grace period and the container gets
+      # restart-looped before it has ever finished booting.
+      start_period: 40s
+      retries: 3
+
+  caddy:
+    image: caddy:2-alpine
+    container_name: smart-bulb-caddy
+    restart: unless-stopped
+    network_mode: "host"
+    volumes:
+      - ./deploy/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      # Named volumes, not bind mounts: caddy_data holds the private keys
+      # and ACME account. Losing it means re-issuing certificates on every
+      # `docker compose down`, and Let's Encrypt rate-limits that at 5 per
+      # hostname per week.
+      - caddy_data:/data
+      - caddy_config:/config
+      - caddy_logs:/var/log/caddy
+    depends_on:
+      smart-bulb-dashboard:
+        condition: service_healthy
+
+volumes:
+  caddy_data:
+  caddy_config:
+  caddy_logs:
+
+# ---------------------------------------------------------------------------
+# Variant: bridge networking (more isolated, breaks Tuya auto-discovery)
+# ---------------------------------------------------------------------------
+# `network_mode: host` puts both containers directly on the host's network
+# stack. It's what makes UDP device discovery work, but it also means the
+# dashboard's :8500 is reachable on your LAN without going through Caddy at
+# all. If you don't use /rescan, this is stricter -- the app is reachable
+# only from the proxy, and nothing needs to be published:
+#
+#   services:
+#     smart-bulb-dashboard:
+#       build: .
+#       volumes:
+#         - ./backend/config.json:/app/backend/config.json
+#         - ./backend/data:/app/backend/data
+#       restart: unless-stopped
+#       networks: [sbd]
+#       expose: ["8500"]          # visible to caddy, not published to the host
+#       environment:
+#         # The compose network's subnet, pinned below so this stays a
+#         # specific CIDR rather than a guess. Docker assigns bridge
+#         # subnets dynamically otherwise, and the address would change
+#         # under you on the next `docker compose up`.
+#         SBD_TRUSTED_PROXIES: "172.28.0.0/16"
+#       healthcheck: ...same as above...
+#
+#     caddy:
+#       image: caddy:2-alpine
+#       restart: unless-stopped
+#       networks: [sbd]
+#       ports: ["80:80", "443:443", "443:443/udp"]   # /udp for HTTP/3
+#       volumes: ...same as above...
+#
+#   networks:
+#     sbd:
+#       ipam:
+#         config:
+#           - subnet: 172.28.0.0/16
+#
+# and in the Caddyfile, change the upstream from 127.0.0.1:8500 to
+# smart-bulb-dashboard:8500 (compose's service DNS name).

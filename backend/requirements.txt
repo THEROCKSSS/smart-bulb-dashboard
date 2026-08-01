@@ -4,3 +4,8 @@ tinytuya==1.20.0
 pydantic==2.10.4
 numpy==2.4.6
 sounddevice==0.5.5
+# Already present transitively (tinytuya depends on it), but backup_restore.py
+# now imports AESGCM directly for encrypted backups. Depending on another
+# package's dependency is how a feature breaks on an unrelated bump — so it's
+# declared here, at the version already installed and tested against.
+cryptography==49.0.0

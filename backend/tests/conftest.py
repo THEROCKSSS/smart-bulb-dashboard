@@ -12,6 +12,26 @@ the real backend/data/*.json files:
     tests.
   - `auth_reset` points remote_auth's on-disk state file at a pytest tmp
     path instead of the real backend/data/remote_auth.json.
+  - `reset_api_rate_limit` / `reset_audio_rate_limit` (both autouse) clear
+    the two module-level rate limiters between tests.
+  - `reset_reverse_proxy_settings` (autouse) forces reverse_proxy back to
+    its shipped defaults, so neither a developer's own SBD_* environment
+    nor a test that enables proxy trust can leak into anything else.
+  - `security_audit_isolation` (autouse) redirects every path the
+    security-event log writes to. This one is autouse and unconditional
+    because remote_auth.log_audit_event() now forwards to security_audit,
+    so ANY test that touches auth would otherwise append to the real
+    backend/data/security_events.log and corrupt its hmac chain.
+  - `backup_isolation` (autouse) points backup_restore at throwaway
+    directories, so no test can read the real config.json into an archive
+    or write one into the repo.
+  - `clean_secret_env` (autouse) strips SBD_* secret env vars, so a
+    developer's real `.env` can never change what a test sees.
+  - `observability_reset` (autouse) clears the process-global metric,
+    log-buffer and dependency-cache state and redirects every Week 2 Phase
+    D state file (observability.json, network_state.json,
+    remote_access.json) at a pytest tmp path, so no test can read or write
+    the real backend/data/ copies.
 """
 
 import colorsys
@@ -28,6 +48,13 @@ if BACKEND_DIR not in sys.path:
 import config as cfgmod  # noqa: E402
 import bulb_manager as bm  # noqa: E402
 import remote_auth  # noqa: E402
+import reverse_proxy  # noqa: E402
+import security_audit  # noqa: E402
+import backup_restore  # noqa: E402
+import secrets_env  # noqa: E402
+import observability  # noqa: E402
+import network_health  # noqa: E402
+import remote_access_status  # noqa: E402
 import main as main_module  # noqa: E402
 
 
@@ -240,12 +267,77 @@ def fake_config(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def clean_secret_env(monkeypatch):
+    """A developer's real `.env` (loaded by main.py at import) must never
+    change what a test sees. Strip every variable this project reads for a
+    secret or a path before each test; tests that want one set it back."""
+    for name in list(os.environ):
+        if name.startswith(secrets_env.DEVICE_KEY_PREFIX):
+            monkeypatch.delenv(name, raising=False)
+    monkeypatch.delenv("SBD_ENV_FILE", raising=False)
+    monkeypatch.delenv("SBD_BACKUP_DIR", raising=False)
+
+
+@pytest.fixture(autouse=True)
+def security_audit_isolation(tmp_path, monkeypatch):
+    """remote_auth.log_audit_event() forwards to security_audit, and
+    config.save_config() writes a change-tracking event, so nearly every
+    test in this suite now produces security events as a side effect.
+    Without this they'd land in the real backend/data/security_events.log
+    -- polluting it and, worse, extending its tamper-evident hmac chain
+    with entries from a test run."""
+    audit_dir = tmp_path / "security_audit"
+    audit_dir.mkdir()
+    monkeypatch.setattr(security_audit, "DATA_DIR", str(audit_dir))
+    monkeypatch.setattr(security_audit, "EVENTS_LOG_PATH", str(audit_dir / "security_events.log"))
+    monkeypatch.setattr(security_audit, "STATE_PATH", str(audit_dir / "security_audit_state.json"))
+    monkeypatch.setattr(security_audit, "KEY_PATH", str(audit_dir / "security_audit_key"))
+    monkeypatch.setattr(security_audit, "CONFIG_PATH", str(audit_dir / "security_audit_config.json"))
+    monkeypatch.setattr(security_audit, "ALERTS_PATH", str(audit_dir / "security_alerts.json"))
+    security_audit._threshold_hits.clear()
+    yield
+    security_audit._threshold_hits.clear()
+
+
+@pytest.fixture(autouse=True)
+def backup_isolation(tmp_path, monkeypatch):
+    """Every path backup_restore reads or writes points somewhere
+    throwaway. Autouse rather than opt-in: a backup route touched by
+    accident would otherwise pull the developer's real config.json (device
+    local_keys included) into an archive under the repo."""
+    root = tmp_path / "backup_root"
+    (root / "data").mkdir(parents=True)
+    (root / "backups").mkdir()
+    monkeypatch.setattr(backup_restore, "BACKEND_DIR", str(root))
+    monkeypatch.setattr(backup_restore, "DATA_DIR", str(root / "data"))
+    monkeypatch.setattr(backup_restore, "CONFIG_PATH", str(root / "config.json"))
+    monkeypatch.setattr(backup_restore, "REMOTE_AUTH_PATH", str(root / "data" / "remote_auth.json"))
+    monkeypatch.setattr(backup_restore, "BACKUP_DIR", str(root / "backups"))
+    monkeypatch.setattr(backup_restore, "SETTINGS_PATH", str(root / "data" / "backup_settings.json"))
+    return root
+
+
+@pytest.fixture(autouse=True)
 def reset_controllers():
     with bm._controllers_lock:
         bm._controllers.clear()
     yield
     with bm._controllers_lock:
         bm._controllers.clear()
+
+
+@pytest.fixture(autouse=True)
+def reset_api_rate_limit():
+    # Same class of leak as reset_audio_rate_limit below, one layer up:
+    # api_rate_limit's counters are module-level and every TestClient request
+    # in the whole suite reports the same client host ("testclient"), so
+    # without this the suite as a whole would eventually trip a 429 in some
+    # unrelated test. Also restores the tier limits, since rate-limit tests
+    # lower them deliberately.
+    import api_rate_limit
+    api_rate_limit.reset()
+    yield
+    api_rate_limit.reset()
 
 
 @pytest.fixture(autouse=True)
@@ -261,6 +353,43 @@ def reset_audio_rate_limit():
     yield
     with ar_module._rate_limit_lock:
         ar_module._rate_limit_hits.clear()
+
+
+@pytest.fixture(autouse=True)
+def reset_reverse_proxy_settings():
+    # reverse_proxy caches its parsed SBD_* config in a module global, so
+    # without this a test that turns on proxy trust or the HTTPS redirect
+    # would change what every later test's requests mean -- and a developer
+    # who happens to have SBD_TRUSTED_PROXIES exported in their own shell
+    # would get different results from CI. Empty env == the shipped
+    # defaults (trust nothing, no HSTS, no redirect).
+    reverse_proxy.reload_from_env(env={})
+    yield
+    reverse_proxy.reload_from_env(env={})
+
+
+@pytest.fixture(autouse=True)
+def observability_reset(tmp_path, monkeypatch):
+    """Week 2 Phase D state is process-global (metrics counters, the log
+    ring buffer, the dependency-probe cache) or disk-backed under
+    backend/data/. Both leak across tests and, worse, the disk-backed half
+    would have tests reading and overwriting the real machine's network /
+    remote-access state -- the same class of bug `auth_reset` exists for.
+    Everything gets a clean, throwaway home per test."""
+    monkeypatch.setattr(observability, "SETTINGS_PATH", str(tmp_path / "observability.json"))
+    monkeypatch.setattr(network_health, "NETWORK_STATE_PATH", str(tmp_path / "network_state.json"))
+    monkeypatch.setattr(remote_access_status, "REMOTE_ACCESS_PATH", str(tmp_path / "remote_access.json"))
+    observability.reset_metrics()
+    observability.clear_log_buffer()
+    observability.clear_template_cache()
+    with network_health._latency_lock:
+        network_health._latency.clear()
+    yield
+    observability.reset_metrics()
+    observability.clear_log_buffer()
+    observability.clear_template_cache()
+    with network_health._latency_lock:
+        network_health._latency.clear()
 
 
 @pytest.fixture
@@ -294,6 +423,14 @@ def auth_reset(tmp_path, monkeypatch):
     # isolation deliberately, since it's specifically testing that system.)
     fake_path = tmp_path / "remote_auth.json"
     monkeypatch.setattr(remote_auth, "AUTH_PATH", str(fake_path))
+    # The audit log needs redirecting too, not just the state file: every
+    # login/logout/enable/disable a test drives appends a line, and without
+    # this those lines land in the real backend/data/auth_audit.log. (Found
+    # by checking what the suite had actually written to backend/data/ after
+    # a full run -- the state file was isolated, its log was not.)
+    monkeypatch.setattr(remote_auth, "AUDIT_LOG_PATH", str(tmp_path / "auth_audit.log"))
     remote_auth._attempts.clear()
+    remote_auth._rate_limit_buckets.clear()
     yield
     remote_auth._attempts.clear()
+    remote_auth._rate_limit_buckets.clear()

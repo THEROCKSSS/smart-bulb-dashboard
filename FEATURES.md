@@ -154,7 +154,8 @@ Gaming
 149. `GET /api/analytics/usage` — real per-device on-time for a given period, derived from logged history (no fabricated wattage — this bulb has no real power-draw data)
 
 ## Developer tooling (1)
-150. A real backend pytest suite (76 tests: 54 backend + 22 CLI), mocked Tuya hardware layer — no test touches real hardware or `config.json`
+150. A real pytest suite (453 tests: 431 backend + 22 CLI), mocked Tuya hardware layer — no test touches real hardware or `config.json`
+150. A real backend pytest suite (503 tests: 481 backend + 22 CLI), mocked Tuya hardware layer — no test touches real hardware or `config.json`
 
 ## Dashboard UX additions — v0.3.0 (9)
 151. Sleep-timer countdown ticks live, client-side, every second — no more refresh-to-see
@@ -167,13 +168,128 @@ Gaming
 158. Rounder, softer visual pass — 8px → 12px corner radius, real card elevation, smoother hover states
 159. Real mobile-friendliness fix — the sidebar was collapsing to a ~16px sliver on phones (an unreset grid-column span), plus 44px minimum tap targets throughout
 
+## PIN gate hardening & API rate limiting — Week 2 Phase A (11)
+160. Configurable lockout threshold and duration (`POST /api/system/remote-auth/lockout-policy`, and in Settings) instead of a hardcoded 5 attempts / 5 minutes
+161. Exponential lockout backoff — each repeat lockout for the same source doubles the wait up to a capped ceiling, with escalation decaying after a quiet period
+162. Enforced PIN complexity — refuses short PINs, well-known PINs, this project's own dev/test PINs, repeated characters, sequences and padded patterns, with a live strength meter in Settings (`POST /api/system/remote-auth/pin-strength`)
+163. Guest PINs — up to 5 additional PINs opening the same gate, each revocable on its own; revoking one signs out only the sessions it opened
+164. Household PIN change that revokes every existing session, rotates the signing key, and reissues the caller's own cookie in the same response
+165. Session TTL configurable from the API and the Settings UI, with bounds checking
+166. IPv6-correct per-IP tracking — /64-prefix keying plus normalization across compressed/expanded/bracketed/scope-id/IPv4-mapped spellings, shared by the lockout and the rate limiter
+167. General per-IP API rate limiting on the public HTTP surface, independent of the auth lockout, with per-endpoint tiers (poll / read / write / expensive)
+168. `429` responses carrying a real `Retry-After` header
+169. Loopback and LAN clients exempt from the general limiter by default, toggleable at runtime or by env var
+170. Rate-limit and auth metrics in the Diagnostics panel (`GET /api/system/diagnostics/rate-limit`) — requests counted/rejected, busiest clients in the live window, lockouts triggered, IPs locked out right now
+
 ---
 
-**Total: 159 working features**, verified end-to-end against a real Bytech
+**Total: 170 working features**, verified end-to-end against a real Bytech
+## TLS, reverse proxy & deployment (16)
+160. Trusted-proxy `X-Forwarded-For` handling — the PIN gate's per-IP lockout and login rate limiter attribute requests to the real client behind a reverse proxy instead of collapsing every remote user into one bucket. Opt-in via `SBD_TRUSTED_PROXIES`, defaulting to trusting nothing, and the forwarded chain is walked right-to-left so a client-prepended value can't win
+161. `Secure` flag applied to the session cookie automatically once the connection is genuinely HTTPS (direct TLS or `X-Forwarded-Proto` from a trusted proxy) — and deliberately not before, since browsers discard a `Secure` cookie sent over plain HTTP
+162. Opt-in HSTS (`SBD_HSTS`, with max-age/includeSubDomains/preload controls), only ever emitted on a request that really is HTTPS
+163. Opt-in redirect-to-HTTPS (`SBD_HTTPS_REDIRECT`), 307 so it isn't cached, and never applied to health probes
+164. `/healthz` — infrastructure liveness endpoint, separate from `/api/system/health`, open when the PIN gate is on and leaking no version/uptime
+165. `/api/system/proxy-status` — diagnostic showing the resolved client IP, TLS state, and trusted-proxy settings, so a proxy misconfiguration is visible instead of silent
+166. Caddy reference config with automatic Let's Encrypt certs for a DuckDNS domain (`deploy/caddy/Caddyfile`)
+167. Caddy LAN-only HTTPS config using its internal CA, no public domain needed (`deploy/caddy/Caddyfile.lan-selfsigned`)
+168. nginx reference config — TLS, HTTP/2, per-endpoint rate limiting, WebSocket passthrough, request size limits (`deploy/nginx/`)
+169. Documented certbot renewal automation for nginx, including the deploy hook that reloads it (the step whose absence kills a working setup 90 days later)
+170. Self-signed certificate generator with correct SAN handling for hostnames and IPs (`deploy/nginx/make-selfsigned-cert.sh`)
+171. `docker-compose.caddy.yml` — dashboard + Caddy in one command, with the trusted-proxy env var pre-set
+172. Docker healthcheck directive in `Dockerfile` and `docker-compose.yml`, probing `/healthz`
+173. systemd service unit — restart on crash, start on boot, sandboxing, with the audio-capture caveats documented
+174. systemd health-check timer that restarts the service when it stops answering while still technically alive
+175. Post-deploy smoke test (`deploy/smoke-test.py`) — stdlib-only, checks health, assets, PIN gate enforcement, cookie flags, TLS validity, certificate expiry, and reverse-proxy IP attribution
+
+---
+
+**Total: 175 working features**, verified end-to-end against a real Bytech
+## Security audit log & alerting — Week 2 Phase C (10)
+160. Dedicated security-events log, separate from both the per-device action history and the existing auth-only audit trail (which is unchanged and now forwards into it)
+161. Four configurable severity levels with per-event overrides, defaulted so ordinary daily use never crosses the alert threshold
+162. Tamper-evident HMAC chain + separately-recorded head — detects an edited entry, a removed entry, a truncated tail, and a deleted log file (all four exercised against a running server)
+163. Size-based rotation that keeps the chain continuous, plus age- and count-based retention that can never delete the current segment
+164. Audit log search/filter UI in the dashboard (text, event type, minimum severity, rotated segments), with actionable entries visually distinguished from informational ones
+165. Export to JSON or CSV, JSON keeping the chain fields so an export stays independently verifiable
+166. Real-time alert when the PIN gate is disabled (`critical`) and when a new device appears in `config.json` (`warning`)
+167. Rate-based alert thresholds (default: 3 failed logins in 5 minutes) that aggregate a burst into one alert rather than N
+168. Local-only alert queue with browser notifications, and an optional outbound webhook that is off by default
+169. Change-tracking for `config.json` — every write logged by SHA-256 fingerprint, so a change is provable without any credential reaching the log
+
+## Backup & restore — Week 2 Phase C (7)
+170. One-click full backup of config + runtime data, downloadable, with a per-file SHA-256 manifest
+171. AES-256-GCM encrypted backup option, with the plaintext-`local_key` tradeoff surfaced in the UI as a required acknowledgement rather than buried in the docs
+172. Integrity check before any restore is offered (zip CRCs plus every file's checksum against the manifest)
+173. Restore behind an explicit overwrite confirmation, with an automatic pre-restore safety backup
+174. Selective restore (favorites / schedules / audio / lightshows / discovery / groups+zones) that provably never touches device credentials
+175. Backup versioning — keep the last N, older ones overwritten with random bytes before deletion
+176. A restore can never turn remote access on or off — structural (nothing writes `remote_auth.json`), reported in the result, and pinned by a test in both directions
+
+## Secrets management — Week 2 Phase C (5)
+177. Environment-variable / `.env` support for device `local_key`s, with a documented `.env.example`, and an env-sourced key that is never written back into `config.json`
+178. Systematic redaction audit — a test that walks the real route table, so any future endpoint leaking a `local_key` fails the suite without anyone remembering to add it
+179. Exception-text scrubbing at the device layer, so a `local_key` cannot reach an API response or the history log via third-party error text
+180. Secret-scanning CI check — fails the build if `backend/config.json`, `backend/data/`, `.env` or a real-looking key is ever committed, beyond what `.gitignore` can enforce
+181. Documented sensitivity, storage location and rotation procedure for each of the four secrets, served live at `GET /api/security/secrets` so the docs can't drift from the code
+
+---
+
+**Total: 181 working features**, verified end-to-end against a real Bytech
+## Observability & monitoring — Week 2 Phase D (11)
+160. `GET /metrics` — Prometheus text exposition format: uptime, per-endpoint request counts, error counts by class, and latency quantiles
+161. Request latency percentiles (p50/p95/p99) tracked per **route template**, not per concrete path — so one series per bulb id can't blow up cardinality
+162. Error-rate tracking, 5xx vs 4xx counted separately, per endpoint and process-wide
+163. System Health page (System → Health) — backend uptime, dependency state, request/error rates, network mode, per-bulb latency, recent errors; deliberately distinct from the per-device Diagnostics tab
+164. Startup dependency health checks that *exercise* each package (`tinytuya`, `numpy`, `sounddevice`), not just import it — fails fast with an actionable fix command when a required one is broken, degrades loudly rather than fatally when audio is unavailable
+165. Log level configurable from Settings (persisted, no restart, no code edit)
+166. Centralized log viewer in the dashboard — a filterable tail of the in-memory buffer, with per-line correlation IDs
+167. Correlation IDs on every request (`X-Correlation-ID`), echoed on the response and stamped onto every log record emitted while handling it; an inbound id is honoured only if it can't be used for log injection
+168. Self-diagnostic report generator — config shape + dependencies + metrics + network + recent logs and history, bundled for a bug report with secrets stripped three independent ways, asserted by test
+169. Three-layer secret redaction (secret-shaped field names, `key=value` patterns in free-form text, and bare occurrences of live secret values) applied to both the log buffer and the diagnostic report
+170. Documented "healthy" baseline metrics so a user can recognise a degraded install (`docs/observability.md`)
+
+## Network resilience — Week 2 Phase D (7)
+171. Host-IP change detection — logged with timestamp, old and new address, so "remote access stopped working yesterday" has an answer
+172. Automatic reconnection after the backend loses and regains connectivity — every stale persistent bulb socket is dropped and rebuilt, while controllers (history, timers, effect state) survive
+173. Router-reboot resilience for discovery — a failed scan retries with a widening delay instead of being recorded as "no devices on this network"
+174. Discovery scheduler skips scanning entirely when the host has no LAN address, instead of burning ~18s and overwriting `last_scan`; and scans immediately when the host IP changes
+175. Per-bulb latency monitoring over time, recorded free from real status calls, surfaced in Diagnostics and on the Health page with p50/p95/max and failure rate
+176. Connectivity modes (`full` / `lan_only` / `tailscale_only` / `offline`) with an explicit `bulb_control_available` flag — the tailnet-up-but-LAN-down case says plainly that bulb commands can't work rather than letting each one time out
+177. Firewall guidance for LAN-only operation, served as live data from the API so the docs and the UI can't drift apart
+
+## Remote-access surfacing — Week 2 Phase D (5)
+178. Settings display of the currently detected public IP and when it was last checked (opt-in, on-demand lookup only)
+179. Last DuckDNS sync time and status in Settings, reported by the user's own updater via `POST /api/system/remote-access/duckdns-sync`
+180. Tailscale status check in Diagnostics — is it installed, is the daemon running — plus the tailnet-reachable MagicDNS URL with a copy button
+181. Warning banner when the dashboard has demonstrably been reached from a public IP while the PIN gate is off
+182. Persistent fail-safe warning when public exposure is configured and the PIN gate is *later* disabled — survives restarts, clears only when the gate is re-enabled or exposure is explicitly retracted
+
+## Security documentation — Week 2 Phase D (4)
+183. `SECURITY.md` — responsible-disclosure process, response-time commitments, security update policy, and scope
+184. Formal PIN-gate threat model (`docs/pin-gate-threat-model.md`) — assets, trust boundaries, an attacker table, what's defended with test evidence, and ten explicitly-undefended cases
+185. `pip-audit` dependency vulnerability scan with real findings recorded, per-advisory applicability assessment, and an honest "not yet fixed, here's why" status
+186. Verified and documented no-telemetry guarantee — one opt-in outbound request in the entire codebase, with the grep command to check it yourself
+
+---
+
+**Total: 186 working features**, verified end-to-end against a real Bytech
 A19 Wi-Fi RGB+CCT bulb (Tuya protocol v3.5) and this machine's real audio
 devices (VoiceMeeter + physical microphone) — see the verification log in
 `HANDOFF.md`, and `iterations/001` through `iterations/004` for each new
-feature area's actual test results, including five real bugs found and
+feature area's actual test results, including six real bugs found and
 fixed across these rounds of testing (an IP-change log field bug, a
 brightness-floor bug, the audio/bulb-I/O blocking bug, a circular hue
+smoothing bug, a root-page auth lockout bug, and a non-ASCII session
+cookie crashing the signature check into a 500 instead of a 401).
 smoothing bug, and a root-page auth lockout bug).
+
+Items 160–175 (Week 2 Phase B) are the exception to "verified against a
+real bulb" — they're deployment infrastructure, and were verified
+differently: the proxy configs against real `caddy validate` / `nginx -t` /
+`systemd-analyze verify` binaries, the X-Forwarded-For handling end-to-end
+through a real Caddy container proxying to a running instance, and the
+smoke test against that live instance with the PIN gate both off and on.
+No Let's Encrypt certificate has been issued against a real domain and no
+systemd unit has been started on a real Linux host — see `deploy/README.md`
+for the full validated/not-validated split.

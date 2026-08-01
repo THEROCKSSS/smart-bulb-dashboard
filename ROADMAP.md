@@ -76,7 +76,22 @@ actually joins the network.
 
 The PIN gate (`docs/remote-access-security.md`, `iterations/004`) is real
 and tested: brute-force lockout, server-verified session expiry, PBKDF2
-PIN hashing. Explicitly **not yet done**:
+PIN hashing.
+
+**Week 2 Phase A** (roadmap section 4, W2-051..070; section 6, W2-101..120)
+added on top of that: a configurable lockout with exponential backoff,
+enforced PIN complexity, household + separately-revocable guest PINs,
+session-token rotation on PIN change, IPv6-correct per-IP tracking, and a
+general per-IP API rate limiter (per-endpoint tiers, 429 + `Retry-After`,
+LAN/loopback exempt by default, metrics in Diagnostics). Still open in those
+sections: email/webhook notification on repeated failures (W2-053), PIN
+rotation reminders (W2-055), "remember this device" long-lived tokens
+(W2-058), TOTP 2FA (W2-059), reverse-proxy `X-Forwarded-For` handling
+(W2-112 — needs a real proxy in front to test against), IP
+allow/denylists and temporary ban escalation (W2-107/108), a persisted
+rate-limit store (W2-116), and the load-testing items (W2-118).
+
+Explicitly **not yet done**:
 
 - **A dedicated adversarial security test** — a separate agent actually
   attacking a real, exposed (DuckDNS + port forward) instance from the
@@ -84,9 +99,17 @@ PIN hashing. Explicitly **not yet done**:
   replay attacks, discovery-timing via port scan, lockout-bypass attempts.
   This needs an actual deployed instance to attack meaningfully rather than
   a same-machine simulation — see `roadmap/` for this as its own phase.
-- **TLS / reverse proxy** (e.g. Caddy with automatic certs for a DuckDNS
-  domain) — the PIN currently travels over plaintext HTTP once forwarded
-  publicly; flagged clearly in the security doc, not yet built.
+- ~~**TLS / reverse proxy**~~ — **built** (Week 2 Phase B). `deploy/` has
+  validated Caddy and nginx configs, a `docker-compose.caddy.yml` bundle,
+  a self-signed LAN fallback, systemd units and a post-deploy smoke test;
+  the backend gained trusted-proxy `X-Forwarded-For` handling so the PIN
+  gate's per-IP lockout survives a proxy, a conditional `Secure` cookie
+  flag, opt-in HSTS/HTTPS-redirect, and a `/healthz` probe. See
+  `docs/deployment.md`. **Still not done:** no certificate has ever been
+  issued from Let's Encrypt against a real domain, and no unit has been
+  started on a real Linux host — the configs are validated by
+  `caddy validate` / `nginx -t` / `systemd-analyze verify`, which is not
+  the same as having run them in anger.
 - **Tailscale is the currently-recommended path** for anyone who doesn't
   need public access at all — no code changes needed, just documented
   setup steps.
