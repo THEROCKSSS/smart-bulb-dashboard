@@ -547,7 +547,10 @@ class _FakeController:
 
 
 def test_all_genre_presets_have_valid_fields():
-    assert len(ar.AUDIO_GENRE_PRESETS) == 8
+    # Was pinned at 8; the Week 3 pass took it to 24. Asserting a floor
+    # rather than an exact count keeps the "someone deleted the list"
+    # guarantee without needing an edit every time one is added.
+    assert len(ar.AUDIO_GENRE_PRESETS) >= 24
     valid_color_ids = {p["id"] for p in ar.PRESET_COLORS}
     seen_ids = set()
     for preset in ar.AUDIO_GENRE_PRESETS:

@@ -976,6 +976,7 @@ AUDIO_GENRE_PRESETS = [
         "mode": "palette_cycle", "sensitivity": 1.8, "min_dwell_ms": 45, "n_bands": 3,
         "monochrome_hue": 300.0, "beat_sensitivity": "aggressive",
         "palette": ["magenta", "cyan", "hot_pink", "violet", "lime"],
+        "tempo_range": "140-150 BPM", "best_for": "party, fast",
         "description": "Fast dwell, high-contrast palette cycling, aggressive beat threshold for big-room energy.",
     },
     {
@@ -983,6 +984,7 @@ AUDIO_GENRE_PRESETS = [
         "mode": "breathing_silence", "sensitivity": 0.6, "min_dwell_ms": 250, "n_bands": 3,
         "monochrome_hue": 200.0, "beat_sensitivity": "subtle",
         "palette": ["sky", "lavender", "teal", "turquoise"],
+        "tempo_range": "60-90 BPM", "best_for": "slow",
         "description": "Slow dwell, narrow hue range, breathing baseline for quiet/ambient listening.",
     },
     {
@@ -990,6 +992,7 @@ AUDIO_GENRE_PRESETS = [
         "mode": "band_fixed", "sensitivity": 1.3, "min_dwell_ms": 90, "n_bands": 3,
         "monochrome_hue": 10.0, "beat_sensitivity": "normal",
         "palette": ["red", "orange", "gold"],
+        "tempo_range": "110-140 BPM", "best_for": "general",
         "description": "Bass-forward warm palette using the fixed 3-band mapping.",
     },
     {
@@ -997,6 +1000,7 @@ AUDIO_GENRE_PRESETS = [
         "mode": "vu_meter", "sensitivity": 0.8, "min_dwell_ms": 200, "n_bands": 3,
         "monochrome_hue": 45.0, "beat_sensitivity": "subtle",
         "palette": ["white_warm", "gold"],
+        "tempo_range": "any", "best_for": "slow, general",
         "description": "Brightness-only, minimal hue movement, gentle dwell for dynamic acoustic material.",
     },
     {
@@ -1004,6 +1008,7 @@ AUDIO_GENRE_PRESETS = [
         "mode": "bass_only_pulse", "sensitivity": 1.6, "min_dwell_ms": 70, "n_bands": 3,
         "monochrome_hue": 15.0, "beat_sensitivity": "normal",
         "palette": ["red", "coral", "gold"],
+        "tempo_range": "85-115 BPM", "best_for": "party, general",
         "description": "Deep warm hue, brightness pulses purely off the bass band.",
     },
     {
@@ -1011,6 +1016,7 @@ AUDIO_GENRE_PRESETS = [
         "mode": "dominant_band", "sensitivity": 1.0, "min_dwell_ms": 140, "n_bands": 3,
         "monochrome_hue": 40.0, "beat_sensitivity": "subtle",
         "palette": ["amber", "teal", "violet"],
+        "tempo_range": "100-160 BPM", "best_for": "general",
         "description": "Wider dynamic tolerance and slower smoothing for improvised, less-metronomic material.",
     },
     {
@@ -1018,6 +1024,7 @@ AUDIO_GENRE_PRESETS = [
         "mode": "breathing_silence", "sensitivity": 0.5, "min_dwell_ms": 300, "n_bands": 3,
         "monochrome_hue": 220.0, "beat_sensitivity": "subtle",
         "palette": ["lavender", "white_cool", "sky"],
+        "tempo_range": "70-90 BPM", "best_for": "slow",
         "description": "Very slow, desaturated breathing baseline for background study/focus listening.",
     },
     {
@@ -1025,7 +1032,148 @@ AUDIO_GENRE_PRESETS = [
         "mode": "strobe_on_drop", "sensitivity": 2.2, "min_dwell_ms": 40, "n_bands": 3,
         "monochrome_hue": 0.0, "beat_sensitivity": "aggressive",
         "palette": ["red", "white_cool"],
+        "tempo_range": "160-200 BPM", "best_for": "party, fast",
         "description": "High-contrast strobe-on-drop, fast dwell, aggressive threshold for hard/fast material.",
+    },
+    # ---------------------------------------------------------------------
+    # Added in the Week 3 audio pass, taking the set from 8 to 24.
+    #
+    # HONEST CAVEAT, and it applies to all 24: these values are reasoned from
+    # what each mode's maths does, not tuned by ear. The bulb has been offline
+    # or untested against real music for every build session so far, so treat
+    # them as informed starting points. `sensitivity` and `min_dwell_ms` are
+    # the two worth adjusting first -- see docs/audio-modes.md.
+    #
+    # `tempo_range` and `best_for` are metadata for the docs and the picker,
+    # not inputs to the engine.
+    # ---------------------------------------------------------------------
+    {
+        "id": "house_four_on_floor", "name": "House / Four-on-the-Floor",
+        "mode": "bass_only_pulse", "sensitivity": 1.6, "min_dwell_ms": 55, "n_bands": 3,
+        "monochrome_hue": 280.0, "beat_sensitivity": "aggressive",
+        "palette": ["violet", "magenta", "cyan"],
+        "tempo_range": "118-130 BPM", "best_for": "party",
+        "description": "Every kick is the event. Hue is pinned so the room reads as one colour pulsing on the beat rather than a light show competing with it.",
+    },
+    {
+        "id": "techno_dark", "name": "Techno / Dark",
+        "mode": "strobe_on_drop", "sensitivity": 1.9, "min_dwell_ms": 45, "n_bands": 3,
+        "monochrome_hue": 190.0, "beat_sensitivity": "aggressive",
+        "palette": ["cyan", "white_cool", "white_cool"],
+        "tempo_range": "128-150 BPM", "best_for": "party",
+        "description": "Cold and sparse between hits, hard flash on a drop. Flash-heavy -- the safety cap applies, and it is the mode to avoid if anyone present is photosensitive.",
+    },
+    {
+        "id": "drum_and_bass", "name": "Drum & Bass",
+        "mode": "kick_snare_split", "sensitivity": 1.7, "min_dwell_ms": 40, "n_bands": 3,
+        "monochrome_hue": 130.0, "beat_sensitivity": "aggressive",
+        "palette": ["lime", "green", "cyan"],
+        "tempo_range": "165-180 BPM", "best_for": "party, fast",
+        "description": "Splits the breakbeat: bass drives brightness, the snare drives a hue accent. Dwell is at the floor because at 174 BPM anything slower blurs the break.",
+    },
+    {
+        "id": "pop_radio", "name": "Pop / Radio",
+        "mode": "weighted_blend", "sensitivity": 1.2, "min_dwell_ms": 90, "n_bands": 3,
+        "monochrome_hue": 330.0, "beat_sensitivity": "normal",
+        "palette": ["hot_pink", "gold", "sky"],
+        "tempo_range": "100-130 BPM", "best_for": "general",
+        "description": "The safe default for mixed playlists. Blends all three bands so nothing dominates, and it degrades gracefully when the next track is nothing like the last.",
+    },
+    {
+        "id": "funk_disco", "name": "Funk / Disco",
+        "mode": "palette_cycle", "sensitivity": 1.5, "min_dwell_ms": 70, "n_bands": 3,
+        "monochrome_hue": 45.0, "beat_sensitivity": "normal",
+        "palette": ["gold", "orange", "hot_pink", "lime"],
+        "tempo_range": "105-125 BPM", "best_for": "party, general",
+        "description": "Warm rotating palette on a groove rather than a hard beat. Slightly longer dwell than EDM so colours land on the one, not on every sixteenth.",
+    },
+    {
+        "id": "rnb_soul", "name": "R&B / Soul",
+        "mode": "energy_contour", "sensitivity": 1.0, "min_dwell_ms": 140, "n_bands": 3,
+        "monochrome_hue": 300.0, "beat_sensitivity": "subtle",
+        "palette": ["violet", "purple", "white_warm"],
+        "tempo_range": "60-95 BPM", "best_for": "slow",
+        "description": "Follows the swell of a vocal rather than the percussion. Smoothed envelope, long dwell -- it moves with phrasing instead of twitching on each hit.",
+    },
+    {
+        "id": "reggae_dub", "name": "Reggae / Dub",
+        "mode": "bass_only_pulse", "sensitivity": 1.3, "min_dwell_ms": 160, "n_bands": 3,
+        "monochrome_hue": 100.0, "beat_sensitivity": "normal",
+        "palette": ["green", "gold", "red"],
+        "tempo_range": "60-90 BPM", "best_for": "slow",
+        "description": "Deep bass emphasis with a long dwell, so the offbeat feel is preserved instead of being chopped up.",
+    },
+    {
+        "id": "country_folk", "name": "Country / Folk",
+        "mode": "vu_meter", "sensitivity": 0.9, "min_dwell_ms": 180, "n_bands": 3,
+        "monochrome_hue": 35.0, "beat_sensitivity": "subtle",
+        "palette": ["gold", "amber", "white_warm"],
+        "tempo_range": "80-120 BPM", "best_for": "general, slow",
+        "description": "Warm, brightness-led and nearly hue-static. Acoustic material has little bass transient to chase, so chasing it produces noise.",
+    },
+    {
+        "id": "punk_garage", "name": "Punk / Garage",
+        "mode": "band_flash_overlay", "sensitivity": 1.8, "min_dwell_ms": 50, "n_bands": 6,
+        "monochrome_hue": 0.0, "beat_sensitivity": "aggressive",
+        "palette": ["red", "white_cool", "orange"],
+        "tempo_range": "150-200 BPM", "best_for": "party, fast",
+        "description": "Loud and blunt. Six bands with a flash overlay, because a wall of guitar has no clean band separation to exploit. Flash-heavy.",
+    },
+    {
+        "id": "indie_alt", "name": "Indie / Alternative",
+        "mode": "spectrum_gradient", "sensitivity": 1.1, "min_dwell_ms": 110, "n_bands": 6,
+        "monochrome_hue": 210.0, "beat_sensitivity": "normal",
+        "palette": ["teal", "sky", "lavender", "gold"],
+        "tempo_range": "100-140 BPM", "best_for": "general",
+        "description": "Six-band gradient that shows the arrangement rather than the beat -- useful where the interest is in texture and layering.",
+    },
+    {
+        "id": "orchestral_film", "name": "Orchestral / Film Score",
+        "mode": "crescendo_ramp", "sensitivity": 0.8, "min_dwell_ms": 220, "n_bands": 3,
+        "monochrome_hue": 50.0, "beat_sensitivity": "subtle",
+        "palette": ["gold", "white_warm", "amber"],
+        "tempo_range": "any", "best_for": "slow",
+        "description": "Built for builds. Ramps ahead of a sustained rise instead of reacting after the peak, which is what makes a swell feel anticipated.",
+    },
+    {
+        "id": "ambient_drone", "name": "Ambient / Drone",
+        "mode": "random_walk_hue", "sensitivity": 0.5, "min_dwell_ms": 400, "n_bands": 3,
+        "monochrome_hue": 220.0, "beat_sensitivity": "subtle",
+        "palette": ["indigo", "teal", "violet"],
+        "tempo_range": "no beat", "best_for": "slow",
+        "description": "For material with no beat at all. Hue wanders on a bounded random walk, so it keeps moving without ever implying a pulse that is not there.",
+    },
+    {
+        "id": "podcast_voice", "name": "Podcast / Voice",
+        "mode": "monochrome_pulse", "sensitivity": 0.7, "min_dwell_ms": 300, "n_bands": 3,
+        "monochrome_hue": 30.0, "beat_sensitivity": "subtle",
+        "palette": ["white_warm", "amber"],
+        "tempo_range": "n/a", "best_for": "general",
+        "description": "Speech has no rhythm worth following. Single warm hue with gentle brightness movement, so the room responds without becoming distracting.",
+    },
+    {
+        "id": "movie_night", "name": "Movie Night",
+        "mode": "energy_contour", "sensitivity": 0.7, "min_dwell_ms": 350, "n_bands": 3,
+        "monochrome_hue": 15.0, "beat_sensitivity": "subtle",
+        "palette": ["amber", "white_warm"],
+        "tempo_range": "n/a", "best_for": "slow",
+        "description": "Deliberately understated bias lighting. Long dwell and a dim warm range so it never competes with the screen or flickers during dialogue.",
+    },
+    {
+        "id": "gaming_reactive", "name": "Gaming",
+        "mode": "harmonic_pairs", "sensitivity": 1.4, "min_dwell_ms": 70, "n_bands": 6,
+        "monochrome_hue": 260.0, "beat_sensitivity": "normal",
+        "palette": ["violet", "cyan", "lime"],
+        "tempo_range": "n/a", "best_for": "general, fast",
+        "description": "Game audio is wideband and unpredictable, so this maps complementary hues off the two most energetic bands rather than assuming any beat structure.",
+    },
+    {
+        "id": "party_mixed", "name": "Party / Mixed Playlist",
+        "mode": "auto_rotate_hue", "sensitivity": 1.5, "min_dwell_ms": 60, "n_bands": 3,
+        "monochrome_hue": 0.0, "beat_sensitivity": "normal",
+        "palette": ["magenta", "cyan", "lime", "gold", "hot_pink"],
+        "tempo_range": "100-140 BPM", "best_for": "party, general",
+        "description": "The one to pick when the playlist is a free-for-all. Continuous hue rotation with a beat-driven pulse, so it never looks wrong for the current track -- and never looks tailored to it either.",
     },
 ]
 
