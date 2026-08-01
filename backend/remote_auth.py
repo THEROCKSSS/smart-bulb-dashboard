@@ -2,6 +2,7 @@ import base64
 import hashlib
 import hmac
 import json
+import logging
 import os
 import re
 import secrets
@@ -172,17 +173,82 @@ def _migrate_pins(state):
 
 def _load():
     if not os.path.exists(AUTH_PATH):
+        # No file at all means the gate was never configured -- the LAN-only
+        # default. That is a different situation from a file we cannot read.
         return _default_state()
-    with open(AUTH_PATH, "r") as f:
-        data = json.load(f)
+    try:
+        with open(AUTH_PATH, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except (json.JSONDecodeError, OSError, UnicodeDecodeError) as e:
+        # An unreadable state file is NOT the same as an absent one: the gate
+        # was configured, and we simply cannot tell what it was set to.
+        #
+        # Failing open here (returning the default, gate disabled) would mean
+        # a single corrupt byte silently switches off authentication on an
+        # internet-exposed dashboard. So this fails CLOSED: the gate stays on
+        # and every request is refused until a human intervenes. That locks
+        # the owner out too, which is annoying but recoverable -- and far
+        # better than the alternative.
+        #
+        # The unreadable file is preserved (not overwritten) so it can be
+        # inspected or repaired rather than silently replaced.
+        _log_corrupt_state_once(e)
+        state = _default_state()
+        state["enabled"] = True
+        state["_unreadable"] = True
+        return state
     for k, v in _default_state().items():
         data.setdefault(k, v)
     return _migrate_pins(data)
 
 
+_corrupt_logged = False
+
+
+def _log_corrupt_state_once(exc):
+    """Loud, but once -- this is reached from the PIN gate, which runs on
+    every request, so logging per-call would bury the machine in identical
+    lines during exactly the incident you need the log to be readable for."""
+    global _corrupt_logged
+    if _corrupt_logged:
+        return
+    _corrupt_logged = True
+    logging.getLogger("sbd").error(
+        "remote_auth state file is unreadable (%s): %s. "
+        "Refusing all authenticated requests until this is resolved (failing "
+        "closed on purpose -- see _load). The file has been left in place; "
+        "move or delete %s to reset the PIN gate to its disabled default.",
+        type(exc).__name__, exc, AUTH_PATH,
+    )
+
+
+# Serializes writers in this process. Two requests saving session state at
+# the same time is completely routine -- every login, every last_seen touch --
+# and without this they interleave inside the file.
+_save_lock = threading.Lock()
+
+
 def _save(state):
-    with open(AUTH_PATH, "w") as f:
-        json.dump(state, f, indent=2)
+    """Write auth state atomically.
+
+    This used to be `open(AUTH_PATH, "w")` + json.dump, which is two separate
+    hazards. `"w"` truncates immediately, so an interrupted write leaves a
+    half-file; and with no lock, two concurrent writers interleave. Both were
+    observed for real: this file was found corrupted mid-object
+    (`""ip":` spliced into a key), which then made EVERY request 500, because
+    the PIN gate calls is_enabled() -> _load() on every single one. A torn
+    write to this one file takes the whole dashboard down.
+
+    Writing to a temp file in the same directory and then os.replace() makes
+    the swap atomic on both Windows and POSIX -- a reader sees either the old
+    file or the new one, never a partial one."""
+    tmp_path = AUTH_PATH + ".tmp"
+    with _save_lock:
+        with open(tmp_path, "w", encoding="utf-8") as f:
+            json.dump(state, f, indent=2)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp_path, AUTH_PATH)
 
 
 def is_enabled():
