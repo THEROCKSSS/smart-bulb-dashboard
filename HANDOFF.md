@@ -1,5 +1,236 @@
 # Handoff
 
+> **START HERE.** This file is a recovery document, not a product spec.
+> Everything below the "Round 1" heading is history, kept for context.
+> This top section is the only part that describes the project *now*.
+
+## Session
+
+| | |
+|---|---|
+| **Date** | 2026-08-01 |
+| **Repo** | https://github.com/THEROCKSSS/smart-bulb-dashboard (also mirrored to local Forgejo) |
+| **Branch** | `master` @ `897c66a` — clean tree, nothing unpushed |
+| **Local URL** | http://127.0.0.1:8502 |
+| **Tailnet URL** | https://owens-pc-vpn.tailff2683.ts.net:8502 |
+| **PIN** | `143490` |
+| **Lineage** | Rounds 1–6 below. This is Round 7. |
+
+## Current state
+
+`master` is at `897c66a`, working tree clean, nothing unpushed, **836 tests
+passing** (`backend/tests/` + `cli/tests/`), all four CI workflows green.
+Roadmap **Weeks 1 and 2 are merged and closed**; Week 3 is partly done.
+There is exactly **one branch** (`master`) and one tag
+(`prototype/nav-layouts-50`, holding 50 throwaway nav prototypes — the two
+that were adopted are already live).
+
+A backend is running locally on port 8502 against this commit. The physical
+bulb (`Bytech A19`, `192.168.0.134`) **is currently reachable**, which had not
+been true for most of this project's history.
+
+## What was done this session (Round 7)
+
+Verified state, not claims — every item below was checked by running it.
+
+- **Both applicable starlette CVEs closed.** `starlette 0.41.3 → 1.3.1`,
+  `fastapi 0.115.6 → 0.141.1`, both pinned explicitly in
+  `backend/requirements.txt`. All 7 advisories verified closed against the
+  installed version. Only forced code change: `@app.on_event("startup")` →
+  `lifespan` in `backend/main.py`.
+- **Audio analysis 57% faster** (`0.260 → 0.111 ms/frame`, 2.24% → 0.96% of
+  one core). Cached the Hann window, rfft frequencies and — the real cost,
+  found by profiling not by micro-benchmark — `log_band_edges`, plus replaced
+  per-band boolean masks with precomputed slice bounds. **Output is
+  bit-identical**; a test compares 1848 values with exact equality.
+- **Beat detection now uses the bass band**, not broadband RMS
+  (`TempoTracker.update(rms, bass_energy=…)`). Measured 70–174 BPM on a dense
+  mix: broadband **1/9** correct, bass band **9/9**. Broadband remains the
+  fallback for sources with no low end.
+- **Live SSE stream** (`backend/live_stream.py`, `GET /api/stream`). One
+  connection carries bulb colour, History rows and log lines. PIN-gated,
+  proxy-safe (`X-Accel-Buffering: no`), exempt from the request rate limiter,
+  bounded per-subscriber queues that drop oldest.
+- **History tab updates in real time**; live colour swatch in the right-hand
+  Quick Control panel. Verified: 44 colour events / 39 distinct colours in a
+  6-second session, History gaining rows with no reload.
+- **Genre presets 8 → 24**, all carrying `tempo_range` and `best_for`.
+- **`docs/audio-modes.md`** — all 20 modes explained, party/fast/slow
+  guidance, tuning-by-symptom table. Preset tables generated from live data.
+- **In-app documentation browser** — System → Docs. Discovers all 24 project
+  docs, categorised, with server-side search. Slug-based lookup means path
+  traversal is structurally impossible (verified: `../../backend/config` and
+  percent-encoded variants all 404).
+- **Two CI workflows fixed.** Link check had been silently checking *zero*
+  links for weeks (bad glob — `docs/**/*.html` needs a subdirectory, all pages
+  are directly in `docs/`); now checks 438. Roadmap sync now rebases/retries
+  instead of failing on a non-fast-forward.
+- **Repo tidied**: 5 branches → 1; prototype preserved as a tag.
+
+### Real bugs found and fixed (all reproduced before fixing)
+
+1. **`local_key` leak** — `bulb_manager.status()` passed raw tinytuya
+   exception text into both the API response and the history log. Reproduced
+   with a device double whose exception contains the key.
+2. **Auth state file corruption bricked the whole dashboard.** `_save()` used
+   `open(path, "w")`, which truncates before writing; a force-kill mid-write
+   left half a file, and since the PIN gate reads it on *every* request,
+   every request 500'd. Now an atomic temp-file + `os.replace`, and `_load`
+   **fails closed** on an unreadable file rather than silently disabling auth.
+3. **Blank dashboard on a returning visit** — `bootDashboard()` referenced
+   `ROUTES`, deleted during the nav consolidation. Only fired when
+   `localStorage` had a saved route *and* the URL had no hash.
+4. **Non-ASCII session cookie returned 500 instead of 401** —
+   `hmac.compare_digest` raises on non-ASCII `str`.
+5. **uvicorn trusts proxy headers by default** for `127.0.0.1`, letting a
+   local process forge its source IP. Fixed with `--no-proxy-headers` in all
+   launch paths.
+6. **Suite hang** — `test_secrets.py` auto-sweeps every GET route and picked
+   up the never-ending `/api/stream`. Streaming paths are now tested against
+   the generator directly.
+
+## What's NOT done (the gap)
+
+- **Week 3 is ~20% done.** Only Phase A (the CVE fix, #74) shipped as a
+  planned phase. The rest of Week 3 — Home Assistant, HomeKit, Alexa/Google,
+  voice control, Discord bot, webhooks, PWA, scenes/effects expansion,
+  scheduling depth, groups UX, notifications, presets sharing, accessibility,
+  kiosk UX — is **not started**. Issues #29–#43.
+- **Week 4 not started** (issues #44–#58).
+- **The 24 genre presets are reasoned, not tuned by ear.** This is the single
+  biggest known gap. The bulb was offline for most of this project, so nobody
+  has heard any preset against real music. The bulb now works, so this is
+  finally possible — and it is the highest-value remaining audio task.
+  `docs/audio-modes.md` states this caveat in its opening paragraph.
+- **Adversarial security-test phase (roadmap section W2-071–100) deliberately
+  deferred.** It needs a real deployed target, and should run *after* the
+  Week 2 hardening it tests — which has only just landed.
+- **Multi-user auth (W2-121–140) deferred** per the roadmap's own instruction
+  to revisit only if the single PIN proves insufficient.
+- **No frontend visualizer** for the spectrum/beat data (W1-076–095). Phase B
+  shipped the data; nothing renders it.
+- **Two unreconciled preset systems** (genre bundles vs. session-config
+  snapshots) and **two unreconciled calibration systems** (per-device-key
+  signal conditioning vs. per-device-index sensitivity). Both real, both
+  shipping, neither merged into one concept.
+- **Backups exclude auth state by design**, so a migrated install starts with
+  no PIN set. Deliberate (it makes "a restore can never flip the gate"
+  structural) but a behaviour difference worth knowing.
+- **Only one physical bulb exists.** Every multi-bulb feature — groups, zones,
+  `wave`/`mirror`/`band_split` role modes, failover — is tested only against
+  fakes and has never run on real hardware.
+- **`docs/*.html` (the GitHub Pages site) is hand-maintained** and does not
+  yet reference `SECURITY.md`, the threat model, or `docs/audio-modes.md`.
+
+## How to resume
+
+```bash
+cd "C:\Users\User\Documents\Hermes stuff\hermes workspace\projects\smart-bulb-dashboard"
+
+git status --short          # expect clean, on master, at or after 897c66a
+git log --oneline -3
+
+# Full suite — expect 836 passed. Takes 2-4 min; the audio and
+# tempo tests do real signal processing, so it is CPU-bound and varies.
+backend/venv/Scripts/python.exe -m pytest backend/tests/ cli/tests/ -q
+
+# Bring the dashboard up. --no-proxy-headers is REQUIRED, not optional:
+# uvicorn trusts X-Forwarded-For from 127.0.0.1 by default, which lets any
+# local process forge its source IP and dodge the PIN-gate lockout.
+cd backend
+venv/Scripts/python.exe -m uvicorn main:app --host 127.0.0.1 --port 8502 --no-proxy-headers
+```
+
+Then open http://127.0.0.1:8502 and unlock with PIN `143490`.
+
+If the tailnet URL is not serving:
+
+```bash
+tailscale serve status
+tailscale serve --bg --https=8502 http://127.0.0.1:8502
+```
+
+**If every request returns 500**, suspect `backend/data/remote_auth.json`.
+It is now written atomically so this should not recur, but if it is
+unparseable the gate **fails closed by design** and logs once. Move the file
+aside to reset the PIN gate to its disabled default.
+
+## Credentials / config
+
+- **Dashboard PIN**: `143490`. Session TTL 30 days. Rotate if this file
+  travels beyond this machine.
+- **Bulb**: `Bytech A19`, `192.168.0.134`, Tuya protocol v3.5. Credentials
+  live in `backend/config.json`, which is **git-ignored and must never be
+  committed**. `config.example.json` is the template.
+- **Git identity for this repo** (local, not global):
+  `user.name = THEROCKSSS`,
+  `user.email = 193167949+THEROCKSSS@users.noreply.github.com`.
+- **Pinned runtime**: fastapi 0.141.1, starlette 1.3.1, tinytuya 1.20.0,
+  numpy 2.4.6, Python 3.11.15.
+
+## Standing constraints — read before committing anything
+
+These are explicit, repeated instructions from the repo owner. Violating them
+has required history rewrites before.
+
+1. **Never add `Co-Authored-By`, "Generated with Claude Code", or session-link
+   trailers** to commits, PR bodies or issue comments unless explicitly asked.
+2. **Never self-credit or credit anyone else** in PRs, repos or commits unless
+   asked. The `agentsoul` identity must not appear.
+3. **Tracker is GitHub** for this project. Do not also post to Forgejo.
+4. **Mobile changes go only inside `@media` blocks.** The desktop layout must
+   remain untouched — two separate bugs have been caused by a desktop
+   `grid-column` not being reset on mobile (issues #62 and a repeat during the
+   Week 2 merge).
+5. **Never trust a subagent's self-report.** Re-run the tests yourself. Every
+   parallel-phase round so far has produced cross-phase bugs that only
+   appeared once branches were combined.
+
+## Known issues / blockers
+
+- **`StarletteDeprecationWarning: Using httpx with starlette.testclient is
+  deprecated; install httpx2`** — test-only, non-blocking. `httpx` is not in
+  `requirements.txt` at all, so this is its own small task.
+- **`backend/main.py` carries 17 pre-existing flake8 findings.** Count is
+  unchanged across recent work; none are in modified regions.
+- **Audio test-isolation gap**: `audio_last_session.json`,
+  `audio_safety.json` and `audio_session_presets.json` are still written into
+  the real `backend/data/` during test runs. Other modules were fixed; these
+  were left as out of scope and are noted here so the next session does not
+  rediscover them.
+- **`test_remote_auth.py` enters `TestClient` as a context manager**, so real
+  `on_startup()` runs during the suite and can fire a genuine ~18s LAN
+  discovery scan when `discovery.json` has no `last_scan`. Pre-existing.
+- **An offline bulb still takes ~9–13s for the page to fully settle** — the
+  status badge and Control panel each make their own ~2s-bounded call. A
+  shared in-flight cache would fix it; not built.
+
+## Build order (what to do next)
+
+The established loop, confirmed with the owner: **build one week as four
+parallel phases → hub re-verifies every phase itself → hand-merge → owner
+tests → next week.** See `.claude/skills/phase-delegation-loop/`.
+
+1. **Tune the 24 presets against real music.** Highest value, now possible for
+   the first time. Needs the owner present — it is a judgement task, not a
+   code task.
+2. **Week 3, phases B–D** (issues #29–#43): integrations (Home Assistant,
+   webhooks, Discord), UX (PWA, scenes/effects, notifications,
+   accessibility). Phase A is already closed.
+3. **Adversarial security phase** (W2-071–100) against a real deployed
+   target, now that the hardening has landed.
+4. **Week 4** (issues #44–#58): analytics, diagnostics deepening, release
+   process.
+
+---
+
+# History
+
+Everything below is the record of how the project got here, round by
+round. It is kept because the *why* behind several decisions only exists
+here — but it describes past states, not the current one. For current
+state, read START HERE at the top.
+
 ## What this is
 
 A local dashboard + REST API for controlling a Tuya-based smart bulb
@@ -318,13 +549,14 @@ tailscale serve --bg --https=8502 http://127.0.0.1:8502    # re-create if missin
   comments unless explicitly asked — this was an explicit standing
   instruction from this session.
 
-## Round 5 — Week 1 roadmap, built via 4 parallel phases (open as PR #68, not yet merged)
+## Round 5 — Week 1 roadmap, built via 4 parallel phases (merged in PR #68)
 
 ### Current state
 
-Working on branch `week1-integration`, pushed to GitHub, open as
-[PR #68](https://github.com/THEROCKSSS/smart-bulb-dashboard/pull/68) —
-**not merged to `master` yet**, pending Owen's own testing. Tracked in
+Built on branch `week1-integration` and **merged to `master` via
+[PR #68](https://github.com/THEROCKSSS/smart-bulb-dashboard/pull/68)** on
+2026-07-31. Branch since deleted. Left here as history; see START HERE at the
+top of this file for current state. Tracked in
 issues #64–#67 (one per phase). 353/353 backend tests pass. A real backend
 server is running locally against this branch's code:
 `127.0.0.1:8502` (also reachable over the tailnet at
