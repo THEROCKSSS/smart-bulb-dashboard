@@ -1,9 +1,9 @@
 {
-  "generatedAt": "2026-08-01T18:16:43.404431+00:00",
+  "generatedAt": "2026-08-01T18:16:55.429125+00:00",
   "totalSections": 58,
   "statusCounts": {
-    "in_progress": 24,
-    "planned": 34
+    "in_progress": 27,
+    "planned": 31
   },
   "sections": [
     {
@@ -313,9 +313,9 @@
       "startNum": 176,
       "endNum": 195,
       "itemCount": 20,
-      "status": "planned",
+      "status": "in_progress",
       "url": "https://github.com/THEROCKSSS/smart-bulb-dashboard/issues/24",
-      "updatedAt": "2026-07-29T02:26:38Z",
+      "updatedAt": "2026-08-01T18:16:44Z",
       "milestone": "Week 2 — Remote Access & Security"
     },
     {
@@ -339,9 +339,9 @@
       "startNum": 211,
       "endNum": 225,
       "itemCount": 15,
-      "status": "planned",
+      "status": "in_progress",
       "url": "https://github.com/THEROCKSSS/smart-bulb-dashboard/issues/26",
-      "updatedAt": "2026-07-29T02:26:46Z",
+      "updatedAt": "2026-08-01T18:16:45Z",
       "milestone": "Week 2 — Remote Access & Security"
     },
     {
@@ -352,9 +352,9 @@
       "startNum": 226,
       "endNum": 240,
       "itemCount": 15,
-      "status": "planned",
+      "status": "in_progress",
       "url": "https://github.com/THEROCKSSS/smart-bulb-dashboard/issues/27",
-      "updatedAt": "2026-07-29T02:26:51Z",
+      "updatedAt": "2026-08-01T18:16:47Z",
       "milestone": "Week 2 — Remote Access & Security"
     },
     {
