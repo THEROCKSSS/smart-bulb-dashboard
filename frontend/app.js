@@ -1432,24 +1432,55 @@ async function renderGroups(main) {
   });
 }
 
+function historyRow(h) {
+  return `<tr>
+    <td>${escHtml(h.timestamp.replace("T", " ").slice(0, 19))}</td>
+    <td>${escHtml(h.action)}</td>
+    <td><code class="inline">${escHtml(JSON.stringify(h.params))}</code></td>
+    <td><span class="tag ${h.ok ? "on" : "error"}">${h.ok ? "ok" : "error: " + escHtml(String(h.error))}</span></td>
+  </tr>`;
+}
+
 async function renderHistory(main) {
   const hist = await get(`/api/devices/${state.deviceId}/history`);
   main.innerHTML = `
-    <h1 class="panel-title">History</h1>
-    <p class="panel-subtitle">Last ${hist.length} actions for this device (in-memory, resets on backend restart)</p>
-    ${hist.length === 0 ? '<div class="empty-state">No actions logged yet</div>' : `
-    <table>
+    <h1 class="panel-title">History <span class="live-dot" title="Reconnecting…"></span></h1>
+    <p class="panel-subtitle">
+      Every action taken on this device, newest first — streamed live as it happens
+      (in-memory, resets on backend restart). <span id="hist-count">${hist.length}</span> shown.
+    </p>
+    <div id="hist-empty" class="empty-state" ${hist.length ? 'hidden' : ''}>
+      No actions logged yet. Change a colour or flip the power and it will appear here immediately.
+    </div>
+    <table id="hist-table" ${hist.length ? '' : 'hidden'}>
       <thead><tr><th>Time (UTC)</th><th>Action</th><th>Params</th><th>Result</th></tr></thead>
-      <tbody>${hist.map(h => `
-        <tr>
-          <td>${h.timestamp.replace("T", " ").slice(0, 19)}</td>
-          <td>${h.action}</td>
-          <td><code class="inline">${JSON.stringify(h.params)}</code></td>
-          <td><span class="tag ${h.ok ? "on" : "error"}">${h.ok ? "ok" : "error: " + h.error}</span></td>
-        </tr>`).join("")}
-      </tbody>
-    </table>`}
+      <tbody id="hist-body">${hist.map(historyRow).join("")}</tbody>
+    </table>
   `;
+  renderLiveBadge();
+
+  // Prepend rather than re-fetch: the backend already pushed the exact entry
+  // it appended, so refetching the whole list on every event would be a
+  // round trip to learn something we were just told.
+  if (live.unsubHistory) live.unsubHistory();
+  live.unsubHistory = liveOn("history", (h) => {
+    if (h.device_id !== state.deviceId) return;
+    const body = document.getElementById("hist-body");
+    if (!body) return;                       // panel was torn down mid-flight
+    document.getElementById("hist-table").hidden = false;
+    document.getElementById("hist-empty").hidden = true;
+    body.insertAdjacentHTML("afterbegin", historyRow(h));
+    // Match the backend's own HISTORY_LIMIT so a long session can't grow the
+    // DOM without bound on a page nobody has reloaded in hours.
+    while (body.children.length > 200) body.removeChild(body.lastChild);
+    const c = document.getElementById("hist-count");
+    if (c) c.textContent = body.children.length;
+    const row = body.firstElementChild;
+    if (row) {
+      row.classList.add("row-new");
+      setTimeout(() => row.classList.remove("row-new"), 1200);
+    }
+  });
 }
 
 // ------------------------------------------------------ system health ----
@@ -2848,6 +2879,73 @@ async function renderSettings(main) {
   };
 }
 
+// ---------------------------------------------------------- live stream --
+// One EventSource for the whole page. Panels register a handler for the
+// topics they care about and unregister when they're torn down, so switching
+// tabs never leaves an orphan connection or a handler writing into DOM that
+// no longer exists.
+//
+// Deliberately NOT one connection per panel: browsers cap concurrent
+// connections per origin, and three live views on one page would spend that
+// budget on plumbing.
+const live = {
+  source: null,
+  handlers: {},        // topic -> Set of fn
+  connected: false,
+  retryMs: 1000,
+};
+
+function liveOn(topic, fn) {
+  (live.handlers[topic] || (live.handlers[topic] = new Set())).add(fn);
+  liveConnect();
+  return () => { const s = live.handlers[topic]; if (s) s.delete(fn); };
+}
+
+function liveConnect() {
+  if (live.source) return;
+  // Same-origin, cookie-authenticated: EventSource can't set headers, but it
+  // does send cookies, which is what the PIN gate reads.
+  const es = new EventSource(`${API}/api/stream`);
+  live.source = es;
+
+  ["ready", "bulb", "log", "history"].forEach(topic => {
+    es.addEventListener(topic, ev => {
+      if (topic === "ready") {
+        live.connected = true;
+        live.retryMs = 1000;
+        renderLiveBadge();
+        return;
+      }
+      let data;
+      try { data = JSON.parse(ev.data); } catch (e) { return; }
+      (live.handlers[topic] || []).forEach(fn => {
+        // One panel throwing must not stop the others receiving the event.
+        try { fn(data); } catch (e) { /* keep other handlers alive */ }
+      });
+    });
+  });
+
+  es.onerror = () => {
+    // EventSource reconnects on its own, but only while the connection is
+    // merely dropped. A 401 (session expired) closes it for good, so back off
+    // and retry rather than silently going dead.
+    live.connected = false;
+    renderLiveBadge();
+    if (es.readyState === EventSource.CLOSED) {
+      live.source = null;
+      setTimeout(liveConnect, live.retryMs);
+      live.retryMs = Math.min(live.retryMs * 2, 30000);
+    }
+  };
+}
+
+function renderLiveBadge() {
+  document.querySelectorAll(".live-dot").forEach(el => {
+    el.classList.toggle("is-live", live.connected);
+    el.title = live.connected ? "Live — streaming from the server" : "Reconnecting…";
+  });
+}
+
 // ------------------------------------------------ always-visible control --
 // Rendered once per status poll rather than per route, so it survives page
 // navigation — the whole point is that power/brightness are reachable no
@@ -2878,7 +2976,8 @@ function renderQuickControl() {
   el.innerHTML = `
     <h4>Quick control</h4>
     <div class="qc-device">${escHtml(name)}</div>
-    <div class="qc-swatch" style="background:${rgbToHex(...rgb)}"></div>
+    <div class="qc-swatch" id="qc-swatch" style="background:${rgbToHex(...rgb)}"></div>
+    <div class="qc-row"><span class="live-dot"></span><span id="qc-live-hex" class="qc-live-hex">idle</span></div>
     <button id="qc-power" class="qc-power ${st.power ? "primary" : ""}">${st.power ? "TURN OFF" : "TURN ON"}</button>
     <div class="qc-row"><span>Brightness</span><span id="qc-bval">${pct}%</span></div>
     <input type="range" id="qc-bright" min="1" max="100" value="${pct}">
@@ -2891,6 +2990,26 @@ function renderQuickControl() {
     // The Control panel mirrors this state, so re-render it if it's on screen.
     if (currentRoute().key === "light/control") router();
   };
+
+  // Live colour. The swatch above shows polled status; this overlays what the
+  // audio sender is ACTUALLY pushing to the bulb, which during a session
+  // changes far faster than the poll interval. Unsubscribes on next render so
+  // handlers don't pile up every time the poll re-renders this panel.
+  if (live.unsubBulb) live.unsubBulb();
+  live.unsubBulb = liveOn("bulb", (ev) => {
+    if (ev.device_id !== state.deviceId || !ev.hex) return;
+    const sw = document.getElementById("qc-swatch");
+    if (!sw) return;
+    sw.style.background = ev.hex;
+    const lbl = document.getElementById("qc-live-hex");
+    if (lbl) lbl.textContent = `${ev.hex} · ${ev.latency_ms}ms`;
+  });
+
+  // This panel re-renders on every status poll, which replaces its .live-dot
+  // with a fresh grey one. `ready` only fires at connect, so without this the
+  // indicator would go stale within seconds and claim the stream was down
+  // while it was happily delivering events.
+  renderLiveBadge();
 
   const slider = el.querySelector("#qc-bright");
   slider.oninput = () => {

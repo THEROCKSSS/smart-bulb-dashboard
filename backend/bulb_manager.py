@@ -129,13 +129,24 @@ class BulbController:
             return {"redacted": True}
 
     def _log(self, action, params=None, ok=True, error=None):
-        self._history.appendleft({
+        entry = {
             "timestamp": datetime.utcnow().isoformat() + "Z",
             "action": action,
             "params": params or {},
             "ok": ok,
             "error": self._safe_error(error) if error else error,
-        })
+        }
+        self._history.appendleft(entry)
+
+        # Feed the live History view. Same reasoning as the logging hook:
+        # lazily imported and fully swallowed, because a device command must
+        # not fail just because nobody is watching -- or because someone is.
+        # `entry` is already secret-scrubbed by _safe_error above.
+        try:
+            import live_stream
+            live_stream.publish("history", {"device_id": self.cfg.get("id"), **entry})
+        except Exception:
+            pass
 
     def history(self):
         return list(self._history)

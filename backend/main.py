@@ -5,7 +5,8 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, RedirectResponse, Response
+from fastapi.responses import (FileResponse, JSONResponse, PlainTextResponse, RedirectResponse,
+                               Response, StreamingResponse)
 from pydantic import BaseModel
 
 import secrets_env
@@ -36,6 +37,7 @@ import reverse_proxy  # noqa: E402
 import analytics  # noqa: E402
 import security_audit  # noqa: E402
 import backup_restore  # noqa: E402
+import live_stream  # noqa: E402
 import observability  # noqa: E402
 import network_health  # noqa: E402
 import remote_access_status  # noqa: E402
@@ -56,6 +58,10 @@ async def lifespan(_app: FastAPI):
     # Nothing after the yield: the monitor/scheduler/discovery threads are
     # daemons that die with the process, and adding a shutdown path would
     # be a behaviour change this dependency bump has no business making.
+    # The SSE hub needs the running loop to hand events over from producer
+    # threads (the bulb sender, the logging handler) that are not on it.
+    import asyncio
+    live_stream.set_loop(asyncio.get_running_loop())
     on_startup()
     yield
 
@@ -676,6 +682,49 @@ def health_summary():
         "bulb_latency": network_health.all_latency_summaries(),
         "recent_errors": recent_errors,
     }
+
+
+# ------------------------------------------------------------- live stream --
+@app.get("/api/stream")
+async def live_event_stream(request: Request, topics: str | None = None):
+    """One SSE connection carrying every live view (colour, log, history).
+
+    Auth: this route is NOT in remote_auth.OPEN_PATHS, so the PIN gate covers
+    it like any other API route (W2-066). EventSource cannot set headers, but
+    it does send cookies, and the session already lives in one -- so the gate
+    works here unchanged.
+
+    `topics` optionally narrows the stream, e.g. ?topics=bulb,history. The
+    History tab asks only for what it shows rather than filtering a firehose
+    client-side.
+    """
+    wanted = [t.strip() for t in topics.split(",") if t.strip()] if topics else None
+    sub = live_stream.subscribe(wanted)
+
+    async def disconnected():
+        return await request.is_disconnected()
+
+    return StreamingResponse(
+        live_stream.event_source(sub, disconnected),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache, no-transform",
+            # Tells nginx not to buffer the stream. Without it the default
+            # proxy_buffering holds events back until a buffer fills, which
+            # for a live view means it looks broken through a reverse proxy
+            # while working perfectly on localhost (W2-037).
+            "X-Accel-Buffering": "no",
+            "Connection": "keep-alive",
+        },
+    )
+
+
+@app.get("/api/stream/status")
+def live_stream_status():
+    """How many live views are attached. Useful when the UI says it's live
+    and you want to confirm the server agrees."""
+    return {"subscribers": live_stream.subscriber_count(),
+            "queue_maxsize": live_stream.QUEUE_MAXSIZE}
 
 
 @app.get("/api/system/logs")

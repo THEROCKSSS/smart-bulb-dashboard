@@ -7,6 +7,8 @@ import threading
 import time
 
 import numpy as np
+
+import live_stream
 import sounddevice as sd
 
 import audio_signal
@@ -552,7 +554,44 @@ class BulbSender:
             self._last_latency_ms = round((time.time() - t0) * 1000, 1)
             self._latency_history.append(self._last_latency_ms)
             self._last_sent_at = time.time()
+
+            # Live colour view. Published from the sender rather than the
+            # audio callback on purpose: this is the colour the bulb was
+            # ACTUALLY told to show, after dwell pacing dropped intermediate
+            # frames, so the on-screen swatch matches the lamp instead of
+            # matching the analysis. Non-blocking, and swallowed -- a live
+            # view must never be able to stall or break the send loop.
+            try:
+                live_stream.publish("bulb", {
+                    "device_id": self.controller.cfg.get("id"),
+                    "action": list(action),
+                    "hex": _action_to_hex(action),
+                    "latency_ms": self._last_latency_ms,
+                    "ok": self._error is None,
+                    "at": self._last_sent_at,
+                })
+            except Exception:
+                pass
             self._last_heartbeat = time.time()
+
+
+
+def _action_to_hex(action):
+    """The action as a CSS colour, so the browser can paint it without
+    re-deriving the maths (and without the two drifting apart)."""
+    import colorsys
+    try:
+        if action[0] == "hsv":
+            h, sat, val = float(action[1]) % 360, float(action[2]) / 100.0, float(action[3]) / 100.0
+            r, g, b = colorsys.hsv_to_rgb(h / 360.0, max(0.0, min(1.0, sat)), max(0.0, min(1.0, val)))
+        elif action[0] == "rgb_brightness":
+            scale = float(action[4]) / 100.0
+            r, g, b = (float(action[1]) / 255 * scale, float(action[2]) / 255 * scale, float(action[3]) / 255 * scale)
+        else:
+            return None
+        return "#%02x%02x%02x" % tuple(max(0, min(255, int(c * 255))) for c in (r, g, b))
+    except Exception:
+        return None
 
 
 def _apply_mode(mode, bands, ctx):

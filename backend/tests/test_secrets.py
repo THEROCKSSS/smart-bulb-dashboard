@@ -39,6 +39,14 @@ FIXTURE_KEYS = ("fakekey1", "fakekey2")
 
 # ------------------------------------------------- W2-214: response sweep --
 
+# Endpoints that never return -- an SSE stream stays open until the client
+# disconnects, so a plain blocking GET against one hangs the whole suite.
+# They are NOT exempt from the leak check: each one is swept separately, with
+# a bounded read, by its own test below. Keep that pairing if anything is
+# added here.
+STREAMING_PATHS = {"/api/stream"}
+
+
 def _parameterless_get_paths():
     """Every GET route with no path parameters, straight off the real app.
     Walking the route table rather than a hand-maintained list is the whole
@@ -50,8 +58,77 @@ def _parameterless_get_paths():
         path = getattr(route, "path", "")
         if "GET" not in methods or "{" in path or not path.startswith("/api/"):
             continue
+        if path in STREAMING_PATHS:
+            continue
         paths.append(path)
     return sorted(set(paths))
+
+
+def test_streaming_endpoints_are_swept_too():
+    """The sweep above must skip never-ending responses, so they get their own
+    bounded check rather than quietly dropping out of coverage.
+
+    Driven against the generator directly instead of through TestClient: a
+    blocking client waits for the stream to END, and an SSE stream by
+    definition does not, so any client-level assertion here deadlocks the
+    suite. Exercising the generator is also closer to the risk -- a leak
+    would come from what gets serialised into a frame."""
+    import asyncio
+
+    import live_stream
+
+    async def drive():
+        sub = live_stream.subscribe()
+        frames = []
+
+        async def never_disconnected():
+            return False
+
+        gen = live_stream.event_source(sub, never_disconnected)
+        # The opening `ready` frame, then one real event pushed through the
+        # same path a producer uses.
+        frames.append(await gen.__anext__())
+        live_stream._offer(sub, ("bulb", {"device_id": "bulb-1", "hex": "#112233"}))
+        frames.append(await gen.__anext__())
+        await gen.aclose()
+        return "".join(frames)
+
+    body = asyncio.run(drive())
+    assert "event: ready" in body
+    assert "event: bulb" in body
+    for key in FIXTURE_KEYS:
+        assert key not in body
+
+
+def test_a_closed_stream_unsubscribes_itself():
+    """A subscriber that outlived its connection would leak memory and keep
+    receiving events forever."""
+    import asyncio
+
+    import live_stream
+
+    async def drive():
+        before = live_stream.subscriber_count()
+        sub = live_stream.subscribe()
+
+        async def never_disconnected():
+            return False
+
+        gen = live_stream.event_source(sub, never_disconnected)
+        await gen.__anext__()
+        assert live_stream.subscriber_count() == before + 1
+        await gen.aclose()
+        return before, live_stream.subscriber_count()
+
+    before, after = asyncio.run(drive())
+    assert after == before
+
+
+def test_every_streaming_path_actually_exists():
+    """Guards the skip list itself: a stale entry here would silently drop a
+    real endpoint out of the sweep above."""
+    registered = {getattr(r, "path", "") for r in main_module.app.routes}
+    assert STREAMING_PATHS <= registered
 
 
 def test_no_get_endpoint_ever_returns_a_local_key(client, fake_config):

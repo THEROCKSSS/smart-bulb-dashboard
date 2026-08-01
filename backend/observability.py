@@ -216,6 +216,16 @@ class _RingBufferHandler(logging.Handler):
         with _log_buffer_lock:
             _log_buffer.append(entry)
 
+        # Push to any open live-log view. Imported lazily and inside a
+        # try/except because this runs on the logging path: a failure here
+        # must never turn a log line into an exception, and observability
+        # must not gain a hard import of the stream hub just to feed it.
+        try:
+            import live_stream
+            live_stream.publish("log", entry)
+        except Exception:
+            pass
+
 
 class _CorrelationFilter(logging.Filter):
     """Stamps whatever correlation id is in scope onto every record, so a

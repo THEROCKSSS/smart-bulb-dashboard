@@ -67,7 +67,12 @@ TIER_BY_PATH = (
 # own stricter limiter in remote_auth and must not have its 429 semantics
 # muddled by this one.
 EXEMPT_PREFIXES = ("/static/", "/docs", "/openapi.json", "/redoc")
-EXEMPT_PATHS = {"/", "/favicon.ico", "/api/auth/login"}
+# /api/stream is a single long-lived SSE connection, not a request rate. It
+# is counted once at connect and then stays open for minutes -- billing it
+# per-connection would let a page reload a handful of times and hit a limit
+# meant for hundreds of ordinary calls. It is still behind the PIN gate; this
+# only exempts it from the request counter.
+EXEMPT_PATHS = {"/", "/favicon.ico", "/api/auth/login", "/api/stream"}
 
 SAFE_METHODS = {"GET", "HEAD", "OPTIONS"}
 

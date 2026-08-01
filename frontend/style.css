@@ -770,3 +770,40 @@ kbd {
 .log-line .log-cid { width: 120px; flex-shrink: 0; color: var(--text-faint); }
 .log-line.warning .log-level { color: var(--warning); }
 .log-line.error .log-level, .log-line.critical .log-level { color: var(--danger); }
+
+/* ------------------------------------------------------------ live views */
+/* Streaming indicator. Grey means the SSE connection is down and the view is
+   stale -- worth showing, because a live panel that has silently stopped
+   updating looks identical to one where nothing is happening. */
+.live-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--text-faint);
+  vertical-align: middle;
+  margin-right: 6px;
+  transition: background-color .2s;
+}
+.live-dot.is-live {
+  background: var(--success);
+  box-shadow: 0 0 0 3px rgba(74,222,128,0.15);
+}
+
+.qc-live-hex {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  color: var(--text-dim);
+}
+
+/* A new row arriving on a live table. Brief, and colour-only -- no layout
+   movement, so rows appearing while you're reading don't shove the text. */
+.row-new > td { animation: row-in 1.2s ease-out; }
+@keyframes row-in {
+  from { background: rgba(124,156,255,0.22); }
+  to   { background: transparent; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .row-new > td { animation: none; }
+}
