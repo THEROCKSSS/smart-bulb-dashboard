@@ -25,9 +25,12 @@ There is exactly **one branch** (`master`) and one tag
 (`prototype/nav-layouts-50`, holding 50 throwaway nav prototypes — the two
 that were adopted are already live).
 
-A backend is running locally on port 8502 against this commit. The physical
-bulb (`Bytech A19`, `192.168.0.134`) **is currently reachable**, which had not
-been true for most of this project's history.
+The backend is **not** a service — it runs only while someone starts it, and
+it does not survive a reboot or the end of a session. Assume it is down and
+start it with the command under "How to resume" below. The physical bulb
+(`Bytech A19`, `192.168.0.134`) was reachable as of this writing, which had
+not been true for most of this project's history; it does drop off Wi-Fi
+periodically, so check before concluding the code is broken.
 
 ## What was done this session (Round 7)
 
