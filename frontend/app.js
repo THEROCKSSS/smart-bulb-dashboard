@@ -204,6 +204,7 @@ const PAGES = {
       { id: "security", label: "Security Log", render: renderSecurity },
       { id: "backup", label: "Backup", render: renderBackup },
       { id: "settings", label: "Settings", render: renderSettings },
+      { id: "docs", label: "Docs", render: renderDocs },
     ],
   },
 };
@@ -3268,6 +3269,226 @@ async function renderSessionPresets(main) {
       renderSessionPresets(main);
     };
   });
+}
+
+// ------------------------------------------------------------------ docs --
+// The project's own documentation, in-app. Deliberately a System tab rather
+// than a link out: the docs describe the thing you're looking at, and a link
+// to GitHub is useless on a phone on the tailnet with no internet.
+
+// A small Markdown renderer. Written rather than pulled in because the page
+// has no build step and no CDN access, and these docs use a known, narrow
+// subset: headings, tables, fenced code, lists, blockquotes, rules, links,
+// bold/italic/inline-code.
+//
+// Everything is HTML-escaped FIRST and inline formatting applied after, so a
+// doc can never inject markup -- these files are local today, but a renderer
+// that trusts its input is a bad habit to leave lying around.
+function mdInline(text) {
+  return escHtml(text)
+    .replace(/`([^`]+)`/g, '<code class="inline">$1</code>')
+    .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
+    .replace(/(^|[^*])\*([^*]+)\*/g, "$1<em>$2</em>")
+    // Only http(s) and in-app #/ links become anchors; anything else stays
+    // as plain text so a doc can't produce a javascript: URL.
+    .replace(/\[([^\]]+)\]\((https?:\/\/[^)\s]+|#\/[^)\s]*)\)/g,
+             '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>');
+}
+
+function renderMarkdown(md) {
+  const lines = md.replace(/\r\n/g, "\n").split("\n");
+  const out = [];
+  let i = 0;
+  let listType = null;
+
+  const closeList = () => { if (listType) { out.push(`</${listType}>`); listType = null; } };
+
+  while (i < lines.length) {
+    const line = lines[i];
+
+    // fenced code -- emitted verbatim (escaped), no inline formatting inside
+    if (/^```/.test(line)) {
+      closeList();
+      const lang = line.slice(3).trim();
+      const buf = [];
+      i++;
+      while (i < lines.length && !/^```/.test(lines[i])) buf.push(lines[i++]);
+      i++;
+      out.push(`<pre class="md-code"${lang ? ` data-lang="${escAttr(lang)}"` : ""}><code>${escHtml(buf.join("\n"))}</code></pre>`);
+      continue;
+    }
+
+    // table: a header row followed by a |---|---| separator
+    if (/^\s*\|/.test(line) && i + 1 < lines.length && /^\s*\|[\s:|-]+\|\s*$/.test(lines[i + 1])) {
+      closeList();
+      const cells = r => r.trim().replace(/^\||\|$/g, "").split("|").map(c => c.trim());
+      const head = cells(line);
+      i += 2;
+      const body = [];
+      while (i < lines.length && /^\s*\|/.test(lines[i])) body.push(cells(lines[i++]));
+      out.push(
+        '<div class="md-table-wrap"><table class="md-table"><thead><tr>' +
+        head.map(h => `<th>${mdInline(h)}</th>`).join("") +
+        "</tr></thead><tbody>" +
+        body.map(r => "<tr>" + r.map(c => `<td>${mdInline(c)}</td>`).join("") + "</tr>").join("") +
+        "</tbody></table></div>"
+      );
+      continue;
+    }
+
+    const heading = line.match(/^(#{1,6})\s+(.*)$/);
+    if (heading) {
+      closeList();
+      const level = heading[1].length;
+      // id so the outline can jump to it
+      const id = "h-" + heading[2].toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+      out.push(`<h${level} id="${escAttr(id)}" class="md-h md-h${level}">${mdInline(heading[2])}</h${level}>`);
+      i++;
+      continue;
+    }
+
+    if (/^\s*(---|\*\*\*|___)\s*$/.test(line)) { closeList(); out.push('<hr class="md-hr">'); i++; continue; }
+
+    const ul = line.match(/^\s*[-*]\s+(.*)$/);
+    const ol = line.match(/^\s*\d+\.\s+(.*)$/);
+    if (ul || ol) {
+      const want = ul ? "ul" : "ol";
+      if (listType !== want) { closeList(); out.push(`<${want} class="md-list">`); listType = want; }
+      out.push(`<li>${mdInline((ul || ol)[1])}</li>`);
+      i++;
+      continue;
+    }
+
+    if (/^\s*>\s?/.test(line)) {
+      closeList();
+      const buf = [];
+      while (i < lines.length && /^\s*>\s?/.test(lines[i])) buf.push(lines[i++].replace(/^\s*>\s?/, ""));
+      out.push(`<blockquote class="md-quote">${mdInline(buf.join(" "))}</blockquote>`);
+      continue;
+    }
+
+    if (!line.trim()) { closeList(); i++; continue; }
+
+    const buf = [];
+    while (i < lines.length && lines[i].trim() && !/^(#{1,6}\s|```|\s*[-*]\s|\s*\d+\.\s|\s*>|\s*\|)/.test(lines[i])) {
+      buf.push(lines[i++]);
+    }
+    if (buf.length) { closeList(); out.push(`<p class="md-p">${mdInline(buf.join(" "))}</p>`); }
+    else i++;
+  }
+  closeList();
+  return out.join("\n");
+}
+
+const docsState = { list: null, slug: null, query: "" };
+
+async function renderDocs(main) {
+  if (!docsState.list) docsState.list = await get("/api/docs");
+  const cats = docsState.list.categories;
+
+  main.innerHTML = `
+    <h1 class="panel-title">Documentation</h1>
+    <p class="panel-subtitle">
+      All ${docsState.list.total} project documents, readable here rather than on GitHub —
+      which matters on a phone that can reach the tailnet but not the internet.
+    </p>
+    <div class="docs-search">
+      <input type="search" id="docs-q" placeholder="Search all documentation…"
+             autocomplete="off" value="${escAttr(docsState.query)}">
+      <span class="docs-hint" id="docs-hint"></span>
+    </div>
+    <div class="docs-layout">
+      <nav class="docs-nav" id="docs-nav">
+        ${cats.map(c => `
+          <div class="docs-cat">
+            <h4>${escHtml(c.name)}</h4>
+            ${c.docs.map(d => `
+              <a class="docs-link" href="#/system/docs" data-slug="${escAttr(d.slug)}"
+                 title="${escAttr(d.summary || d.title)}">${escHtml(d.title)}</a>`).join("")}
+          </div>`).join("")}
+      </nav>
+      <article class="docs-body" id="docs-body">
+        <div class="empty-state">Pick a document, or search above.</div>
+      </article>
+    </div>
+  `;
+
+  const body = main.querySelector("#docs-body");
+  const hint = main.querySelector("#docs-hint");
+
+  async function openDoc(slug) {
+    docsState.slug = slug;
+    main.querySelectorAll(".docs-link").forEach(a =>
+      a.classList.toggle("active", a.dataset.slug === slug));
+    body.innerHTML = `<div class="empty-state loading">Loading…</div>`;
+    try {
+      const doc = await get(`/api/docs/${encodeURIComponent(slug)}`);
+      body.innerHTML =
+        `<div class="docs-meta">${escHtml(doc.category)} · ${doc.words} words ·
+           <code class="inline">${escHtml(doc.path)}</code></div>` +
+        renderMarkdown(doc.content);
+      body.scrollTop = 0;
+    } catch (e) {
+      body.innerHTML = `<div class="empty-state">Couldn't load that document: ${escHtml(e.message)}</div>`;
+    }
+  }
+
+  main.querySelector("#docs-nav").addEventListener("click", (e) => {
+    const a = e.target.closest(".docs-link");
+    if (!a) return;
+    e.preventDefault();
+    openDoc(a.dataset.slug);
+  });
+
+  // Debounced so typing doesn't fire a request per keystroke -- the search is
+  // a full scan of every doc server-side.
+  let searchTimer = null;
+  const input = main.querySelector("#docs-q");
+  input.addEventListener("input", () => {
+    clearTimeout(searchTimer);
+    docsState.query = input.value;
+    searchTimer = setTimeout(runSearch, 220);
+  });
+
+  async function runSearch() {
+    const q = input.value.trim();
+    if (q.length < 2) {
+      hint.textContent = q ? "Keep typing…" : "";
+      if (docsState.slug) openDoc(docsState.slug);
+      else body.innerHTML = `<div class="empty-state">Pick a document, or search above.</div>`;
+      return;
+    }
+    const res = await get(`/api/docs/search?q=${encodeURIComponent(q)}`);
+    hint.textContent = res.results.length
+      ? `${res.results.length} document${res.results.length === 1 ? "" : "s"}`
+      : "no matches";
+    body.innerHTML = res.results.length === 0
+      ? `<div class="empty-state">Nothing matches “${escHtml(q)}”.</div>`
+      : res.results.map(r => `
+          <div class="docs-result">
+            <a class="docs-result__title" href="#/system/docs" data-slug="${escAttr(r.slug)}">
+              ${escHtml(r.title)}</a>
+            <span class="tag">${escHtml(r.category)}</span>
+            <span class="docs-result__hits">${r.hits} match${r.hits === 1 ? "" : "es"}</span>
+            ${r.snippets.map(s => `<p class="docs-snippet">${highlight(s.text, q)}</p>`).join("")}
+          </div>`).join("");
+    body.querySelectorAll(".docs-result__title").forEach(a => {
+      a.onclick = (e) => { e.preventDefault(); openDoc(a.dataset.slug); };
+    });
+  }
+
+  // Highlight by splitting on the escaped needle, so the <mark> is inserted
+  // around already-escaped text rather than into raw doc content.
+  function highlight(text, q) {
+    const safe = escHtml(text);
+    const needle = escHtml(q);
+    if (!needle) return safe;
+    const parts = safe.split(new RegExp(`(${needle.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")})`, "ig"));
+    return parts.map((p, i) => (i % 2 ? `<mark>${p}</mark>` : p)).join("");
+  }
+
+  if (docsState.query.length >= 2) runSearch();
+  else if (docsState.slug) openDoc(docsState.slug);
 }
 
 // ------------------------------------------------------------ pin gate --

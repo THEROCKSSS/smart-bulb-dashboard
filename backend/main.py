@@ -38,6 +38,7 @@ import analytics  # noqa: E402
 import security_audit  # noqa: E402
 import backup_restore  # noqa: E402
 import live_stream  # noqa: E402
+import docs_library  # noqa: E402
 import observability  # noqa: E402
 import network_health  # noqa: E402
 import remote_access_status  # noqa: E402
@@ -682,6 +683,30 @@ def health_summary():
         "bulb_latency": network_health.all_latency_summaries(),
         "recent_errors": recent_errors,
     }
+
+
+# ------------------------------------------------------------------ docs --
+# The project's own Markdown, served in-app. Every route below takes a slug
+# and looks it up in the library's discovered table -- no client-supplied
+# path is ever joined to a directory, so a doc outside the configured roots
+# is unreachable by construction rather than by filtering.
+@app.get("/api/docs")
+def docs_list():
+    return {"data_source": "LIVE DATA", **docs_library.list_docs()}
+
+
+@app.get("/api/docs/search")
+def docs_search(q: str = "", limit: int = docs_library.MAX_SEARCH_RESULTS):
+    # Declared before /api/docs/{slug} so "search" is not swallowed as a slug.
+    return docs_library.search(q, limit=limit)
+
+
+@app.get("/api/docs/{slug}")
+def docs_get(slug: str):
+    doc = docs_library.get_doc(slug)
+    if not doc:
+        raise HTTPException(404, f"no document '{slug}'")
+    return {"data_source": "LIVE DATA", **doc, "outline": docs_library.outline(slug)}
 
 
 # ------------------------------------------------------------- live stream --
