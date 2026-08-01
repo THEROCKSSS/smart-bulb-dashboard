@@ -16,6 +16,34 @@ merged PRs — see the note at the bottom of this file for the process.
 
 ## [Unreleased]
 
+### Security — starlette CVEs closed (#74)
+
+**No user action required beyond `pip install -r backend/requirements.txt`.**
+Affected: every version up to and including the current `master`.
+
+`fastapi` `0.115.6` → **`0.141.1`**, and `starlette` is now pinned
+**directly** at **`1.3.1`** instead of being left to FastAPI's floor. This
+closes all seven advisories previously listed in `SECURITY.md`, two of
+which genuinely applied to this project:
+
+- **CVE-2026-48818** (PYSEC-2026-2281) — `StaticFiles` could be steered
+  onto a UNC path on Windows, making the service open an outbound SMB
+  connection and leak its NTLMv2 hash. This project mounts `StaticFiles`
+  at `/static` and is commonly run on Windows.
+- **CVE-2025-62727** (PYSEC-2026-1942) — quadratic `Range`-header parsing
+  in `FileResponse`, a cheap CPU-exhaustion DoS against `/` and
+  `/static/*`.
+
+Both were mitigated in practice by the LAN-only default and **not**
+mitigated for anyone running a forwarded port. If you have exposed this to
+the internet, upgrade.
+
+The only code change the bump forced: `@app.on_event("startup")` is gone,
+replaced by the `lifespan` context manager FastAPI now requires. Middleware
+execution order (`observe_request` → `api_rate_limiter` →
+`https_enforcement` → `pin_gate`) is unchanged, verified by a runtime
+probe as well as the suite. All 743 tests pass.
+
 **Week 1 roadmap — open as [PR #68](https://github.com/THEROCKSSS/smart-bulb-dashboard/pull/68), not yet merged to `master`.**
 
 Built as four parallel phases (one subagent each, in isolated git

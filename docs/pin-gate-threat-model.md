@@ -158,8 +158,10 @@ where* — not *who*.
   limiter caps that at ~20/minute per IP, but nothing stops a distributed
   source set from spending your CPU.
 - Slow-loris style connection holding is untested.
-- Static-file serving inherits `starlette` CVE-2025-62727 (quadratic
-  `Range` header parsing) — see `SECURITY.md`.
+- Static-file serving used to inherit `starlette` CVE-2025-62727 (quadratic
+  `Range` header parsing). Closed by the `starlette==1.3.1` pin — see
+  `SECURITY.md`. A 50,000-range header against `/static/*` now costs
+  ~0.1s, not minutes.
 
 **5.7 — Reverse-proxy source-IP confusion.** The lockout and rate limiter
 key on `request.client.host`. Behind a reverse proxy that would be *the

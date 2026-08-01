@@ -277,9 +277,12 @@ that way. `pip install -r backend/requirements.txt` on a machine you set up
 six months ago must install what it installed then, or "it works on the
 other Pi" becomes unanswerable.
 
-What that does *not* pin is transitive dependencies — `fastapi==0.115.6`
-still resolves `starlette` and `anyio` to whatever is current. For a
-genuinely reproducible install, freeze the full tree once it works:
+What that does *not* pin is the rest of the transitive tree — `anyio`,
+`h11`, `click` and friends still resolve to whatever is current.
+(`starlette` is the exception: it is pinned directly, because the CVEs in
+#74 were all its, and leaving it to FastAPI's floor would let a fresh
+install drift back onto a vulnerable build.) For a genuinely reproducible
+install, freeze the full tree once it works:
 
 ```bash
 backend/venv/bin/pip freeze > backend/requirements.lock.txt

@@ -148,17 +148,22 @@ python -m pip install pip-audit    # in a throwaway venv, not backend/venv
 python -m pip_audit -r backend/requirements.txt
 ```
 
-### Known findings as of 2026-07-31
+### Known findings as of 2026-08-01
 
-All findings are in **`starlette` 0.41.3**, which is a *transitive*
-dependency pulled in by `fastapi==0.115.6` (whose own pin is
-`starlette>=0.40.0,<0.42.0`). None of the four directly-pinned runtime
-packages — `fastapi`, `tinytuya`, `pydantic`, `numpy`, `sounddevice`,
-`uvicorn` — had a known advisory at the time of scanning.
+**None.** `python -m pip_audit -r backend/requirements.txt` reports *no
+known vulnerabilities* against the current pin set.
 
-| Advisory | CVE | Fixed in | Applies here? |
+### Previously known findings, fixed 2026-08-01 (#74)
+
+Seven advisories, all in **`starlette` 0.41.3** — a *transitive* dependency
+pulled in by the old `fastapi==0.115.6` (whose own pin was
+`starlette>=0.40.0,<0.42.0`). None of the directly-pinned runtime packages
+— `tinytuya`, `pydantic`, `numpy`, `sounddevice`, `uvicorn`, `cryptography`
+— had a known advisory at any point.
+
+| Advisory | CVE | Fixed in | Applied here? |
 |---|---|---|---|
-| PYSEC-2026-2281 | CVE-2026-48818 | starlette 1.1.0 | **Yes.** `StaticFiles` on Windows can be made to start an outbound SMB connection via a UNC path, leaking the service account's NTLMv2 hash. This project mounts `StaticFiles` and is commonly run on Windows. |
+| PYSEC-2026-2281 | CVE-2026-48818 | starlette 1.1.0 | **Yes.** `StaticFiles` on Windows could be made to start an outbound SMB connection via a UNC path, leaking the service account's NTLMv2 hash. This project mounts `StaticFiles` and is commonly run on Windows. |
 | PYSEC-2026-2280 | CVE-2026-48817 | starlette 1.1.0 | No. Requires `HTTPEndpoint` subclasses registered via `Route(...)`; this project uses only FastAPI function routes. |
 | PYSEC-2026-1942 | CVE-2025-62727 | starlette 0.49.1 | **Yes.** Quadratic-time `Range` header parsing in `FileResponse` — a CPU-exhaustion DoS against any file-serving endpoint, which includes `/` and `/static/*`. |
 | PYSEC-2026-1941 | CVE-2025-54121 | starlette 0.47.2 | No. Multipart upload path; this project has no file-upload endpoint. |
@@ -166,16 +171,14 @@ packages — `fastapi`, `tinytuya`, `pydantic`, `numpy`, `sounddevice`,
 | PYSEC-2026-248 | — | starlette 1.3.0 | Low. `request.url` host confusion via a path not starting with `/`. Nothing here reads `request.url.hostname` for an auth decision. |
 | PYSEC-2026-161 | — | starlette 1.0.1 | Low. Same class as above (unvalidated `Host` header in URL reconstruction). The PIN gate keys on `request.url.path` and the cookie, not the host. |
 
-**Status: not yet fixed, deliberately.** Reaching a patched starlette means
-upgrading FastAPI past `0.115.6`, which is a real dependency bump that needs
-its own verified test pass rather than being smuggled in alongside a feature
-branch. Two of the seven are genuinely applicable to this project's
-configuration, and both are mitigated in practice by the LAN-only default
-(the two applicable ones need the attacker to reach the HTTP port at all).
-They are **not** mitigated if you have forwarded a port to the internet.
+Closed by moving to `fastapi==0.141.1` + `starlette==1.3.1`. `starlette` is
+now pinned **directly** in `backend/requirements.txt` rather than left to
+FastAPI's floor, because every one of the seven was starlette's and
+FastAPI's own range would still accept a vulnerable build. `1.3.1` is the
+highest fixed-in version in the table, so the pin closes all seven, not
+just the two that applied.
 
-If you are running this publicly exposed, treat the FastAPI upgrade as the
-priority item. Re-run the scan yourself before trusting this table — it is a
+Re-run the scan yourself before trusting this section — it is a
 point-in-time snapshot, and new advisories land constantly.
 
 ## Scope

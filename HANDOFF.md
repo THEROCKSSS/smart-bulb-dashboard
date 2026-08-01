@@ -710,10 +710,9 @@ had been reading/writing the real `backend/data/`.
   200 with the expected shape) plus `node --check`. The Health tab, log
   viewer, latency tables, Tailscale card and exposure banner need visual
   confirmation.
-- The `pip-audit` findings in `SECURITY.md` are **not fixed** — reaching a
-  patched `starlette` needs a FastAPI upgrade past `0.115.6`, which
-  deserves its own verified pass. Two of the seven advisories genuinely
-  apply to this project's configuration.
+- ~~The `pip-audit` findings in `SECURITY.md` are **not fixed**~~ — done
+  in #74: `fastapi==0.141.1` + a direct `starlette==1.3.1` pin, all seven
+  advisories closed, `pip-audit` clean, 743 tests still green.
 - The tailnet URL is built with port **8500** unless `SBD_PORT` is set.
 
 ### Known gap, pre-existing

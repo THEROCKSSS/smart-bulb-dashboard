@@ -1,4 +1,14 @@
-fastapi==0.115.6
+fastapi==0.141.1
+# Pinned explicitly, not left to fastapi's own floor, because the two CVEs
+# this bump exists to close are both starlette's:
+#   CVE-2026-48818 -- StaticFiles follows a UNC path on Windows, leaking an
+#     NTLMv2 hash to an attacker-chosen host. This app mounts StaticFiles at
+#     /static and is developed/run on Windows. Fixed in 1.1.0.
+#   CVE-2025-62727 -- quadratic Range-header parsing in FileResponse, a
+#     cheap CPU-exhaustion DoS against "/" and /static/*. Fixed in 0.49.1.
+# fastapi 0.141.1 would otherwise accept a still-vulnerable starlette, so the
+# floor lives here where a `pip install -r` can't drift below it.
+starlette==1.3.1
 uvicorn[standard]==0.34.0
 tinytuya==1.20.0
 pydantic==2.10.4

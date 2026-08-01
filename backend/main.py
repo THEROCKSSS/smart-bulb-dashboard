@@ -1,5 +1,6 @@
 import os
 import time
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -43,7 +44,23 @@ from scenes_presets import PRESET_COLORS, SCENES, EFFECTS  # noqa: E402
 APP_VERSION = "0.3.0"
 START_TIME = time.time()
 
-app = FastAPI(title="Smart Bulb Dashboard", version=APP_VERSION)
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    # Replaces the old @app.on_event("startup") hook, which FastAPI has
+    # deprecated. `on_startup` itself is defined further down, next to the
+    # routes whose background workers it starts -- a forward reference is
+    # fine here because this body only runs when the server boots, long
+    # after the module has finished importing.
+    #
+    # Nothing after the yield: the monitor/scheduler/discovery threads are
+    # daemons that die with the process, and adding a shutdown path would
+    # be a behaviour change this dependency bump has no business making.
+    on_startup()
+    yield
+
+
+app = FastAPI(title="Smart Bulb Dashboard", version=APP_VERSION, lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -1899,7 +1916,9 @@ def delete_orchestration_preset_route(preset_id: str):
     return {"ok": True}
 
 
-@app.on_event("startup")
+# Driven by the `lifespan` context manager defined above the app, not by a
+# decorator: @app.on_event("startup") is deprecated. Kept here rather than
+# inlined up there so the startup work stays next to the modules it starts.
 def on_startup():
     # Dependency check FIRST, before any thread is spawned: a missing
     # tinytuya should stop the process here with a message naming the fix,
