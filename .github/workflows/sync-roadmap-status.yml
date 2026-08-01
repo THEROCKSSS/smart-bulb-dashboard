@@ -19,7 +19,7 @@ jobs:
   sync:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Regenerate docs/assets/roadmap-status.json
         env:
@@ -30,10 +30,34 @@ jobs:
         run: |
           git config user.name "roadmap-status-bot"
           git config user.email "actions@users.noreply.github.com"
-          if ! git diff --quiet -- docs/assets/roadmap-status.json; then
-            git add docs/assets/roadmap-status.json
-            git commit -m "Sync roadmap status from issues [skip ci]"
-            git push
-          else
+          if git diff --quiet -- docs/assets/roadmap-status.json; then
             echo "No status change."
+            exit 0
           fi
+          git add docs/assets/roadmap-status.json
+          git commit -m "Sync roadmap status from issues [skip ci]"
+
+          # The concurrency group serializes runs, but it does NOT stop a human
+          # push (or a merge) landing between this job's checkout and its push
+          # -- which is exactly how this failed before: a non-fast-forward on an
+          # otherwise-correct run. Rebase and retry instead of giving up.
+          #
+          # Rebasing is safe here specifically because this file is generated:
+          # if the rebase conflicts, the freshly regenerated version is always
+          # the right answer, so take ours unconditionally.
+          for attempt in 1 2 3 4 5; do
+            if git push; then
+              echo "Pushed on attempt $attempt."
+              exit 0
+            fi
+            echo "Push rejected (attempt $attempt) -- rebasing onto the latest master."
+            git fetch origin "${GITHUB_REF_NAME}"
+            if ! git rebase "origin/${GITHUB_REF_NAME}"; then
+              git checkout --ours docs/assets/roadmap-status.json || true
+              git add docs/assets/roadmap-status.json
+              GIT_EDITOR=true git rebase --continue || git rebase --abort
+            fi
+            sleep $((attempt * 3))
+          done
+          echo "::error::Could not push the roadmap status after 5 attempts."
+          exit 1

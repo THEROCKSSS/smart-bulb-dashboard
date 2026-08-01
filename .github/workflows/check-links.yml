@@ -14,13 +14,22 @@ jobs:
   lychee:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Link check (docs/ site)
         uses: lycheeverse/lychee-action@v2
         with:
+          # Both globs on purpose. `docs/**/*.html` requires at least one
+          # intermediate directory, and every page on this site lives directly
+          # in docs/ -- so on its own it matched nothing and lychee failed with
+          # "No links were found", which reads like a broken site but was only
+          # ever a bad glob.
           args: >-
             --no-progress
             --accept 200,204,206,301,302,308,429
+            docs/*.html
             docs/**/*.html
           fail: true
+          # A run that finds zero links is a configuration error, not a pass --
+          # keep failing on it so this can't silently stop checking again.
+          failIfEmpty: true
