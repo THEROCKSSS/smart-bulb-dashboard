@@ -10,7 +10,7 @@
 |---|---|
 | **Date** | 2026-08-01 |
 | **Repo** | https://github.com/THEROCKSSS/smart-bulb-dashboard (also mirrored to local Forgejo) |
-| **Branch** | `master` @ `897c66a` — clean tree, nothing unpushed |
+| **Branch** | `master`, at or after `83b7ed5` (hash as written; later commits are fine — `git log` is the source of truth) |
 | **Local URL** | http://127.0.0.1:8502 |
 | **Tailnet URL** | https://owens-pc-vpn.tailff2683.ts.net:8502 |
 | **PIN** | `143490` |
@@ -18,8 +18,8 @@
 
 ## Current state
 
-`master` is at `897c66a`, working tree clean, nothing unpushed, **836 tests
-passing** (`backend/tests/` + `cli/tests/`), all four CI workflows green.
+`master` was at `83b7ed5` when this was written, working tree clean and
+nothing unpushed, with **836 tests passing** (`backend/tests/` + `cli/tests/`), all four CI workflows green.
 Roadmap **Weeks 1 and 2 are merged and closed**; Week 3 is partly done.
 There is exactly **one branch** (`master`) and one tag
 (`prototype/nav-layouts-50`, holding 50 throwaway nav prototypes — the two
@@ -130,7 +130,7 @@ Verified state, not claims — every item below was checked by running it.
 ```bash
 cd "C:\Users\User\Documents\Hermes stuff\hermes workspace\projects\smart-bulb-dashboard"
 
-git status --short          # expect clean, on master, at or after 897c66a
+git status --short          # expect clean, on master, at or after 83b7ed5
 git log --oneline -3
 
 # Full suite — expect 836 passed. Takes 2-4 min; the audio and
