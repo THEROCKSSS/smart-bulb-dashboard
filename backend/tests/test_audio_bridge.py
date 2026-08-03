@@ -258,3 +258,55 @@ def test_bridge_session_is_refused_when_no_listener_is_running(client, fake_conf
                              "n_bands": 3, "min_dwell_ms": 90})
     assert resp.status_code == 409, resp.text
     assert "bridge" in resp.text.lower()
+
+
+def test_subscriber_count_distinguishes_streaming_from_being_consumed(server):
+    """The signal behind the dashboard's "Bridge ready · no session" state.
+
+    Audio arriving and audio being *used* are different things, and the
+    difference is invisible in every other field: `connected` and `streaming`
+    are both true whether or not a session exists. Without this, the chip
+    reported "live", the audio really was live, and the bulb sat still because
+    nobody had pressed Start -- "everything looks right and nothing happens",
+    which is the worst thing a status indicator can fail to say.
+    """
+    assert server.status()["subscribers"] == 0, "nothing consuming the stream yet"
+
+    received = []
+    source = capture_sources.NetworkSource(received.append, server=server)
+    with source:
+        assert server.status()["subscribers"] == 1, "a running session consumes the stream"
+
+    assert server.status()["subscribers"] == 0, "and releases it when the session stops"
+
+
+def _bridge_tool():
+    """The capture tool lives in tools/ and is a script, not a package."""
+    import importlib.util
+    path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(
+        os.path.abspath(__file__)))), "tools", "sbd-audio-bridge.py")
+    spec = importlib.util.spec_from_file_location("sbd_audio_bridge", path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def test_auto_device_pick_prefers_loopback_over_a_louder_microphone(check_all):
+    """Loudest-wins picks the wrong device.
+
+    Measured on the development machine with a podcast playing: "Primary Sound
+    Capture Driver" (a microphone hearing the speakers) read peak 0.53 while
+    the clean Voicemeeter loopback read 0.23. Streaming the mic means the
+    lights react to the room -- a cough, a keyboard -- as much as to the audio.
+    """
+    tool = _bridge_tool()
+
+    loopback = ["CABLE Output (VB-Audio Virtual Cable)", "Voicemeeter Out B1 (VB-Audio Voicemeeter VAIO)",
+                "Stereo Mix (Realtek)", "What U Hear (Sound Blaster)"]
+    not_loopback = ["Microphone (Fifine Microphone)", "Primary Sound Capture Driver",
+                    "Headset Microphone (OCULUSVAD)", "Microphone (HD Webcam eMeet C950)"]
+
+    check_all(loopback, lambda n: (_ for _ in ()).throw(AssertionError(f"{n!r} not detected as loopback"))
+              if not tool._is_loopback_like(n) else None, label="loopback name")
+    check_all(not_loopback, lambda n: (_ for _ in ()).throw(AssertionError(f"{n!r} wrongly detected as loopback"))
+              if tool._is_loopback_like(n) else None, label="microphone name")

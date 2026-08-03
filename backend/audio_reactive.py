@@ -569,6 +569,12 @@ class BulbSender:
         self._lock = threading.Lock()
         self._ready = threading.Event()
         self._stop = threading.Event()
+        # Signalled when the dwell changes (or on stop) so a sender sitting in
+        # a long dwell wait re-evaluates immediately. Without it, dropping the
+        # dwell from 400ms to 40ms would not take effect until the current
+        # wait expired, which makes the slider feel broken exactly when
+        # someone is dragging it to find the right value.
+        self._wake = threading.Event()
         self._last_sent_at = 0.0
         self._last_latency_ms = None
         self._latency_history = collections.deque(maxlen=self.LATENCY_HISTORY_LEN)
@@ -607,9 +613,22 @@ class BulbSender:
             self._pending = action
         self._ready.set()
 
+    def set_min_dwell(self, ms):
+        """Change the dwell on a RUNNING sender. Returns the clamped value.
+
+        Safe to call from a request thread: `_loop` re-reads `min_dwell_ms`
+        every cycle, and `_wake` pulls it out of an in-progress wait so the
+        new value applies now rather than after the old one elapses.
+        """
+        clamped = max(MIN_DWELL_FLOOR_MS, min(MIN_DWELL_MS_CEILING, float(ms)))
+        self.min_dwell_ms = clamped
+        self._wake.set()
+        return clamped
+
     def stop(self):
         self._stop.set()
         self._ready.set()
+        self._wake.set()
         if self._thread.is_alive():
             self._thread.join(timeout=3)
         if self._watchdog_thread.is_alive():
@@ -663,11 +682,18 @@ class BulbSender:
             self._last_heartbeat = time.time()
             if not self._ready.wait(timeout=0.5):
                 continue
-            since_last = (time.time() - self._last_sent_at) * 1000
-            wait_more = self.min_dwell_ms - since_last
-            if wait_more > 0:
-                if self._stop.wait(wait_more / 1000):
-                    return
+            # Re-read the dwell each pass rather than once: it is live-editable
+            # while a session runs, and a raise mid-wait must extend the wait
+            # just as a drop must shorten it.
+            while not self._stop.is_set():
+                since_last = (time.time() - self._last_sent_at) * 1000
+                wait_more = self.min_dwell_ms - since_last
+                if wait_more <= 0:
+                    break
+                self._wake.wait(wait_more / 1000)
+                self._wake.clear()
+            if self._stop.is_set():
+                return
             with self._lock:
                 action = self._pending
                 self._pending = None
@@ -2402,6 +2428,61 @@ def tap_session_tempo(device_id, timestamp=None):
     if not session:
         return None
     return session.tempo.tap(timestamp)
+
+
+def set_session_min_dwell(device_id, min_dwell_ms):
+    """Change dwell on a live session and remember it.
+
+    Persisting here rather than only on start is the point: the value someone
+    lands on by ear IS the setting, and losing it on the next restart would
+    make every tuning session disposable. Written to the same last-session
+    record that resume-after-restart reads, with only this one field touched.
+    """
+    if not isinstance(min_dwell_ms, (int, float)):
+        raise AudioConfigError(f"min_dwell_ms must be a number, got {min_dwell_ms!r}")
+    if min_dwell_ms < MIN_DWELL_FLOOR_MS:
+        raise AudioConfigError(
+            f"min_dwell_ms below the safety floor of {MIN_DWELL_FLOOR_MS}ms, got {min_dwell_ms!r}")
+    if min_dwell_ms > MIN_DWELL_MS_CEILING:
+        raise AudioConfigError(
+            f"min_dwell_ms above the sane ceiling of {MIN_DWELL_MS_CEILING}ms, got {min_dwell_ms!r}")
+
+    session = get_active_session(device_id)
+    applied = None
+    if session is not None:
+        applied = session.sender.set_min_dwell(min_dwell_ms)
+
+    # Persist even with no live session: the slider is still meaningful as the
+    # value the next session will start with.
+    try:
+        # load_last_session returns the RECORD ({device_id, config, saved_at}),
+        # not the config -- and save_last_session sanitizes to a field
+        # whitelist, so writing at the wrong level silently persists nothing.
+        record = audio_presets.load_last_session(device_id)
+        config = (record or {}).get("config")
+        if config:
+            config["min_dwell_ms"] = applied if applied is not None else float(min_dwell_ms)
+            audio_presets.save_last_session(device_id, config)
+    except Exception:
+        # A persistence failure must not undo a change the user can already
+        # see and hear on the bulb.
+        pass
+    return {"applied": applied is not None, "min_dwell_ms": applied if applied is not None else min_dwell_ms}
+
+
+def set_group_min_dwell(group_id, min_dwell_ms):
+    """Same, for every sender in a group session."""
+    if min_dwell_ms < MIN_DWELL_FLOOR_MS or min_dwell_ms > MIN_DWELL_MS_CEILING:
+        raise AudioConfigError(
+            f"min_dwell_ms must be between {MIN_DWELL_FLOOR_MS} and {MIN_DWELL_MS_CEILING}ms, "
+            f"got {min_dwell_ms!r}")
+    with _sessions_lock:
+        session = _group_sessions.get(group_id)
+    if session is None or not session.is_alive():
+        return None
+    applied = [s.set_min_dwell(min_dwell_ms) for s in session.senders]
+    return {"applied": True, "min_dwell_ms": applied[0] if applied else min_dwell_ms,
+            "bulbs": len(applied)}
 
 
 def set_session_beat_sensitivity(device_id, preset):

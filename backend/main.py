@@ -381,6 +381,10 @@ class BeatSensitivityBody(BaseModel):
     preset: str
 
 
+class MinDwellBody(BaseModel):
+    min_dwell_ms: float
+
+
 class ApplyAudioPresetBody(BaseModel):
     preset_id: str
     device_index: int
@@ -1824,6 +1828,34 @@ def group_audio_reactive_apply_preset(group_id: str, body: GroupApplyAudioPreset
 @app.get("/api/groups/{group_id}/audio-reactive/status")
 def group_audio_reactive_status(group_id: str):
     return {"data_source": "LIVE DATA", **audio_reactive.get_group_session_status(group_id)}
+
+
+@app.post("/api/devices/{device_id}/audio-reactive/min-dwell")
+def audio_reactive_set_min_dwell(device_id: str, body: MinDwellBody):
+    """Change dwell on a running session, without stopping it.
+
+    Tuning by ear means moving one control and listening to the difference.
+    Stop / change / start destroys that: the bulb goes dark, the tempo tracker
+    loses its history and has to re-lock, and the thing you were comparing
+    against is gone by the time the new value is live.
+    """
+    get_controller_or_404(device_id)
+    try:
+        result = audio_reactive.set_session_min_dwell(device_id, body.min_dwell_ms)
+    except audio_reactive.AudioConfigError as e:
+        raise HTTPException(400, str(e))
+    return {"ok": True, **result}
+
+
+@app.post("/api/groups/{group_id}/audio-reactive/min-dwell")
+def group_audio_reactive_set_min_dwell(group_id: str, body: MinDwellBody):
+    try:
+        result = audio_reactive.set_group_min_dwell(group_id, body.min_dwell_ms)
+    except audio_reactive.AudioConfigError as e:
+        raise HTTPException(400, str(e))
+    if result is None:
+        raise HTTPException(404, f"no active audio session for group '{group_id}'")
+    return {"ok": True, **result}
 
 
 @app.get("/api/devices/{device_id}/audio-reactive/status")

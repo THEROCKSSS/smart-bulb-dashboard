@@ -864,17 +864,28 @@ function renderDeliveryNote(capture) {
     </p>`;
 }
 
-// The bridge has four states and they need different fixes, so the chip
-// distinguishes all four rather than collapsing to connected/disconnected:
+// The bridge has five states and they each need a different fix, so the chip
+// distinguishes all five rather than collapsing to connected/disconnected:
 //   off        - backend started with the listener disabled
-//   waiting    - listening, but no bridge has connected yet
+//   waiting    - listening, but no bridge tool has connected yet
 //   silent     - bridge attached but sending no sound (nothing playing, or
 //                the wrong capture device selected)
-//   live       - audio is actually arriving
+//   ready      - audio IS arriving, but nothing is consuming it because no
+//                session is running. Added because the previous four states
+//                could not express it: the chip said "live", the audio really
+//                was live, and the bulb sat still because nobody had pressed
+//                Start. "Everything looks right and nothing happens" is the
+//                worst state a status chip can fail to name.
+//   live       - audio arriving AND a session consuming it
+//
+// `subscribers` is the signal for that distinction: a bridge session
+// subscribes to the server for as long as it runs, so >0 means something is
+// actually listening to the stream.
 function bridgeState(b) {
   if (!b || !b.listening) return "off";
   if (!b.connected) return "waiting";
   if (!b.streaming) return "silent";
+  if (!b.subscribers) return "ready";
   return "live";
 }
 
@@ -882,16 +893,20 @@ function bridgeChipClass(b) { return "bridge-" + bridgeState(b); }
 
 function bridgeChipText(b) {
   return { off: "Bridge off", waiting: "Bridge waiting",
-           silent: "Bridge silent", live: "Bridge live" }[bridgeState(b)];
+           silent: "Bridge silent", ready: "Bridge ready · no session",
+           live: "Bridge live" }[bridgeState(b)];
 }
 
 function bridgeChipTitle(b) {
   const st = bridgeState(b);
   if (st === "off") return "The backend is not listening for a bridge. Restart it with SBD_AUDIO_BRIDGE enabled.";
   if (st === "waiting") return `Listening on port ${b.port}, but no bridge has connected. Run: python tools/sbd-audio-bridge.py --probe`;
+  if (st === "ready") {
+    return `Audio IS arriving from ${b.client} (${b.frames} frames, peak ${b.peak}) — but no audio-reactive session is running, so nothing is using it. Press Start below.`;
+  }
   if (st === "silent") {
     const age = b.last_frame_age_s == null ? "never" : b.last_frame_age_s + "s ago";
-    return `Bridge connected from ${b.client} but no audio is arriving (last frame ${age}). Is anything playing? Is the right capture device selected?`;
+    return `Bridge connected from ${b.client} but no audio is arriving (last frame ${age}). Is anything playing? Is the right capture device selected? Run --probe to find the device that actually has sound on it.`;
   }
   return `Streaming from ${b.client} — ${b.frames} frames, ${b.drops} dropped, peak ${b.peak}`;
 }
@@ -1150,8 +1165,33 @@ async function renderAudio(main) {
   main.querySelector("#audio-sensitivity").oninput = (e) => {
     main.querySelector("#sens-val").textContent = parseFloat(e.target.value).toFixed(1) + "x";
   };
+  // Dwell applies LIVE, without stopping the session. Tuning by ear means
+  // moving one control and hearing the difference; stop / change / start
+  // destroys that comparison — the bulb goes dark and the tempo tracker has
+  // to re-lock before the new value means anything.
+  //
+  // `oninput` updates the label on every pixel of the drag (cheap, local),
+  // `onchange` fires once when the drag ends and is what hits the network.
+  // Sending on every input event would be one request per pixel.
   main.querySelector("#audio-dwell").oninput = (e) => {
     main.querySelector("#dwell-val").textContent = e.target.value + "ms";
+  };
+  main.querySelector("#audio-dwell").onchange = async (e) => {
+    const ms = parseInt(e.target.value, 10);
+    const label = main.querySelector("#dwell-val");
+    try {
+      const resp = await post(`/api/devices/${state.deviceId}/audio-reactive/min-dwell`,
+                              { min_dwell_ms: ms });
+      // "applied" false means it was saved for next time but no session is
+      // running to change — say so rather than implying the bulb just moved.
+      label.textContent = resp.applied ? `${ms}ms` : `${ms}ms (saved, no session)`;
+      if (resp.applied) {
+        label.classList.add("val-flash");
+        setTimeout(() => label.classList.remove("val-flash"), 400);
+      }
+    } catch (err) {
+      toast(`Could not set dwell: ${err.message}`, "error");
+    }
   };
   main.querySelector("#audio-nbands").oninput = (e) => {
     main.querySelector("#nbands-val").textContent = e.target.value;

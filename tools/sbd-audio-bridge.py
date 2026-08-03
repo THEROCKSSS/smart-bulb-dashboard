@@ -259,6 +259,53 @@ def cmd_probe(seconds, samplerate=None):
     return 0
 
 
+# Devices that carry what the computer is PLAYING, rather than what a
+# microphone can hear in the room. Loopback wins even when a mic is louder:
+# a mic picks up the room as well as the audio, so the lights end up reacting
+# to a cough or a keyboard. Measured on this machine, naive "loudest wins"
+# chose "Primary Sound Capture Driver" (a mic hearing the speakers, peak 0.53)
+# over the clean Voicemeeter feed (peak 0.23).
+_LOOPBACK_HINTS = (
+    "cable output", "voicemeeter out", "stereo mix", "what u hear",
+    "loopback", "wave out mix", "vb-audio", "virtual",
+)
+
+
+def _is_loopback_like(name):
+    low = name.lower()
+    return any(h in low for h in _LOOPBACK_HINTS)
+
+
+def pick_loudest(seconds=0.6):
+    """The best device with signal on it right now, or None.
+
+    Exists because a hardcoded device index is a trap: the launcher shipped
+    with `--device 85`, which is silent on this machine, so the bridge would
+    connect, stream perfectly, and deliver nothing but zeros. The dashboard
+    correctly reported "silent" and the natural conclusion was that the bridge
+    was broken.
+
+    "Best" is loopback-first, then loudest -- not simply loudest. See
+    `_LOOPBACK_HINTS`.
+
+    Quieter and faster than `cmd_probe` because it runs before every auto
+    session rather than being asked for by a person.
+    """
+    candidates = []
+    for d in input_devices():
+        ch = min(2, d["channels"]) or 1
+        got = _measure(d["index"], ch, seconds, None)
+        if got is None or got["peak"] < 0.0005:
+            continue
+        candidates.append((d, got["peak"]))
+    if not candidates:
+        return None
+    # Sort loopback-like first, then by peak within each tier.
+    candidates.sort(key=lambda t: (_is_loopback_like(t[0]["name"]), t[1]), reverse=True)
+    return candidates[0]
+    return 0
+
+
 def resolve_device(spec):
     """Accept an index or a case-insensitive name substring."""
     if spec is None:
@@ -409,6 +456,8 @@ def main(argv=None):
     ap.add_argument("--probe", action="store_true", help="find which device actually has sound on it")
     ap.add_argument("--probe-seconds", type=float, default=1.0, help="probe duration per device")
     ap.add_argument("--device", help="device index, or part of its name")
+    ap.add_argument("--auto", action="store_true",
+                    help="pick whichever device actually has sound on it right now")
     ap.add_argument("--host", default=DEFAULT_HOST, help=f"backend host (default {DEFAULT_HOST})")
     ap.add_argument("--port", type=int, default=DEFAULT_PORT, help=f"bridge port (default {DEFAULT_PORT})")
     ap.add_argument("--channels", type=int, default=2, choices=(1, 2), help="capture channels")
@@ -419,6 +468,20 @@ def main(argv=None):
         return cmd_list()
     if args.probe:
         return cmd_probe(args.probe_seconds)
+
+    if args.auto and not args.device:
+        print("Finding which device actually has sound on it...")
+        found = pick_loudest()
+        if found is None:
+            print("\nNo device has any signal right now.")
+            print("  - Is audio actually playing?")
+            print("  - Desktop audio needs Voicemeeter / VB-Cable routing;")
+            print("    a plain microphone only hears the room.")
+            print("  - Run with --probe for the full per-device breakdown.")
+            return 1
+        best, peak = found
+        print(f"Using [{best['index']}] {best['name']}  (peak {peak:.4f})\n")
+        args.device = str(best["index"])
 
     device = resolve_device(args.device)
     channels = args.channels

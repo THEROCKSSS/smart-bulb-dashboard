@@ -1137,3 +1137,20 @@ kbd {
 
 .lat-note { margin-top: 10px; }
 .lat-warn { color: var(--warning); }
+
+/* "Audio is arriving but nothing is consuming it" — informational, not a
+   fault, so it reads blue rather than amber. Something IS working; there is
+   just one more button to press. */
+.bridge-ready { color: #6f9ee8; background: #182231; border-color: #2b3d57; }
+
+/* Confirms a live slider change actually reached the bulb. Brief and on the
+   value itself, so it answers "did that do anything?" without a toast
+   interrupting a tuning session every few seconds. */
+.val-flash {
+  color: var(--success);
+  transition: color 120ms ease-out;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .val-flash { transition: none; }
+}
