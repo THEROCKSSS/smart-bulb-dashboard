@@ -45,7 +45,9 @@ The bulb is the real floor: its round-trip was measured at 111-152ms. Nothing
 here changes that, and no setting in this tool can.
 """
 import argparse
+import json
 import queue
+import select
 import socket
 import struct
 import sys
@@ -60,9 +62,13 @@ except Exception as exc:  # pragma: no cover - environment problem, not logic
     print(f"sounddevice is required: {exc}", file=sys.stderr)
     raise SystemExit(2)
 
+MAGIC_DEVICES = b"DEV0"
+MAGIC_CONTROL = b"CTL0"
 MAGIC_HEADER = b"SBDA"
 MAGIC_FRAME = b"FRM0"
-PROTOCOL_VERSION = 1
+# Must match backend/audio_bridge.py. 2 added the DEV0 device inventory and
+# CTL0 control channel that let the dashboard pick the capture device.
+PROTOCOL_VERSION = 2
 
 TARGET_SAMPLE_RATE = 44100   # what the analysis pipeline expects
 # Must track the backend's analysis HOP (audio_hop.DEFAULT_HOP_SIZE), not its
@@ -140,6 +146,24 @@ class Resampler:
                 self._buf = self._buf[consumed:]
                 self._pos -= consumed
         return out
+
+
+def _recv_exactly(sock, n):
+    """Read exactly n bytes, or None if the peer closed.
+
+    Deliberately not `recv(n, socket.MSG_WAITALL)`: that flag is unsupported
+    on Windows (WinError 10045), which is the only platform this tool runs on.
+    """
+    buf = bytearray()
+    while len(buf) < n:
+        try:
+            chunk = sock.recv(n - len(buf))
+        except (BlockingIOError, InterruptedError):
+            continue
+        if not chunk:
+            return None
+        buf.extend(chunk)
+    return bytes(buf)
 
 
 def native_rate(device):
@@ -392,7 +416,63 @@ class Streamer:
         # resampler has already converted by the time anything is written.
         sock.sendall(_HEADER_STRUCT.pack(
             MAGIC_HEADER, PROTOCOL_VERSION, self.out_rate, self.channels, TARGET_BLOCK))
+        self._send_inventory(sock)
         return sock
+
+    def _send_inventory(self, sock):
+        """Tell the container what capture devices exist on this host.
+
+        The container has none of its own, so without this the dashboard can
+        only offer a device picker for local capture -- which is exactly the
+        mode that does not work in Docker. This is what makes "choose your
+        audio source on the website" possible for bridge mode.
+        """
+        try:
+            devices = [{
+                "index": d["index"],
+                "name": d["name"],
+                "channels": d.get("channels", 0),
+                "loopback": _is_loopback_like(d["name"]),
+            } for d in input_devices()]
+            payload = json.dumps({"devices": devices, "current": self.device}).encode("utf-8")
+            sock.sendall(_FRAME_HEADER_STRUCT.pack(MAGIC_DEVICES, len(payload)))
+            sock.sendall(payload)
+        except Exception as e:
+            # A failed inventory costs the picker, not the audio.
+            print(f"  (could not send device inventory: {e})")
+
+    def _poll_control(self, sock):
+        """Non-blocking check for a control message from the dashboard.
+
+        Returns the requested device index, or None. The socket has only ever
+        carried audio one way until now; reading it here is what lets the
+        dashboard change the capture device without touching a command line.
+        """
+        try:
+            ready, _, _ = select.select([sock], [], [], 0)
+        except (OSError, ValueError):
+            return None
+        if not ready:
+            return None
+        try:
+            # NOT socket.MSG_WAITALL: unsupported on Windows (WinError 10045),
+            # which is the only platform this tool runs on. recv() can return
+            # a short read at any time, so read exactly what is needed.
+            head = _recv_exactly(sock, _FRAME_HEADER_STRUCT.size)
+            if head is None:
+                return None
+            magic, length = _FRAME_HEADER_STRUCT.unpack(head)
+            if magic != MAGIC_CONTROL or not (0 < length <= 65536):
+                return None
+            body = _recv_exactly(sock, length)
+            if body is None:
+                return None
+            msg = json.loads(body.decode("utf-8"))
+            if msg.get("action") == "set_device":
+                return int(msg["device"])
+        except Exception:
+            return None
+        return None
 
     def run_once(self):
         info = sd.query_devices(self.device) if self.device is not None else {}
@@ -424,6 +504,17 @@ class Streamer:
                     sock.sendall(_FRAME_HEADER_STRUCT.pack(MAGIC_FRAME, len(payload)))
                     sock.sendall(payload)
                     self.sent += 1
+
+                    requested = self._poll_control(sock)
+                    if requested is not None and requested != self.device:
+                        # Re-open on the new device by unwinding to
+                        # run_forever, which reconnects. Switching in place
+                        # would mean tearing down a PortAudio stream from
+                        # inside its own callback's thread.
+                        print(f"\n  dashboard requested device {requested}; switching")
+                        self.device = requested
+                        self.capture_rate = native_rate(requested)
+                        return
 
                     now = time.time()
                     if not self.quiet and now - last_report >= 1.0:

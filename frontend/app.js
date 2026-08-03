@@ -889,6 +889,49 @@ function bridgeState(b) {
   return "live";
 }
 
+// The capture device, chosen here rather than on a command line.
+//
+// This deliberately does NOT reuse the "Input device" dropdown above it: that
+// one lists the CONTAINER's audio devices, which in Docker is always empty and
+// is exactly the wrong list for bridge mode. The list below is reported by the
+// capture tool itself over the bridge socket, so it is the host's devices.
+//
+// Loopback devices are grouped first because that is almost always what
+// someone wants — a microphone hears the room, not what the computer is
+// playing — and because picking a silent device is the single most common way
+// this feature appears broken.
+function renderBridgeDevicePicker(b) {
+  if (!b || !b.listening) return "";
+  const devices = b.devices || [];
+  if (!devices.length) {
+    return `<p class="bridge-launcher-foot dim">
+      Connect the bridge and it will report this PC's capture devices here,
+      so you can switch source without restarting it.</p>`;
+  }
+  const loopback = devices.filter(d => d.loopback);
+  const rest = devices.filter(d => !d.loopback);
+  const opt = d => `<option value="${d.index}" ${d.index === b.device_index ? "selected" : ""}>`
+    + `[${d.index}] ${escapeHtml(d.name)}</option>`;
+  const group = (label, list) => list.length
+    ? `<optgroup label="${label}">${list.map(opt).join("")}</optgroup>` : "";
+
+  const live = b.streaming && b.peak > 0.0005;
+  return `
+    <label class="bridge-field">Capture device
+      <select id="bridge-device">
+        ${group("Plays what the PC outputs (recommended)", loopback)}
+        ${group("Microphones and other inputs", rest)}
+      </select>
+    </label>
+    <p class="bridge-launcher-foot ${live ? "" : "dim"}">
+      ${live
+        ? `Signal on the current device — peak ${Number(b.peak).toFixed(3)}.`
+        : `<strong>No signal on the current device.</strong> Play something; if it stays
+           at zero, this device carries no audio — try another from the top group.`}
+      Changing this switches the running bridge; it reconnects in a second or two.
+    </p>`;
+}
+
 function bridgeChipClass(b) { return "bridge-" + bridgeState(b); }
 
 function bridgeChipText(b) {
@@ -958,6 +1001,30 @@ async function refreshBridgeChip() {
   chip.title = bridgeChipTitle(b);
   const text = document.querySelector("#bridge-chip-text");
   if (text) text.textContent = bridgeChipText(b);
+
+  // Keep the device picker current — the inventory only exists once a bridge
+  // has connected, so on first load there is nothing to draw. Skipped while
+  // the dropdown has focus so a re-render cannot yank it shut mid-selection.
+  const wrap = document.querySelector("#bridge-device-picker");
+  if (wrap && document.activeElement !== document.querySelector("#bridge-device")) {
+    wrap.innerHTML = renderBridgeDevicePicker(b);
+    wireBridgeDevicePicker();
+  }
+}
+
+function wireBridgeDevicePicker() {
+  const sel = document.querySelector("#bridge-device");
+  if (!sel || sel.dataset.wired) return;
+  sel.dataset.wired = "1";
+  sel.onchange = async (e) => {
+    const index = parseInt(e.target.value, 10);
+    try {
+      await post("/api/audio/bridge/device", { device_index: index });
+      toast(`Bridge switching to device ${index}…`);
+    } catch (err) {
+      toast(`Could not switch device: ${err.message}`, "error");
+    }
+  };
 }
 
 async function renderAudio(main) {
@@ -1050,6 +1117,7 @@ async function renderAudio(main) {
       </div>
       <p class="bridge-launcher-foot">Paste into a terminal, or double-click
         <code>tools\start-audio-bridge.cmd</code>. Leave it open — closing the window stops the bridge.</p>
+      <div id="bridge-device-picker">${renderBridgeDevicePicker(bridge)}</div>
     </div>
 
     <div class="card">
@@ -1173,6 +1241,8 @@ async function renderAudio(main) {
   // `oninput` updates the label on every pixel of the drag (cheap, local),
   // `onchange` fires once when the drag ends and is what hits the network.
   // Sending on every input event would be one request per pixel.
+  wireBridgeDevicePicker();
+
   main.querySelector("#audio-dwell").oninput = (e) => {
     main.querySelector("#dwell-val").textContent = e.target.value + "ms";
   };

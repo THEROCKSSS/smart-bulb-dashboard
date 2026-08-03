@@ -332,3 +332,104 @@ def test_bridge_frame_size_tracks_the_analysis_hop():
         f"bridge sends {tool.TARGET_BLOCK}-sample frames but the backend's hop is "
         f"{audio_hop.DEFAULT_HOP_SIZE}; a bridge session's latency floor would be "
         f"the larger of the two")
+
+
+def _send_header(sock, rate=SR, channels=2, block=256):
+    sock.sendall(HEADER.pack(audio_bridge.MAGIC_HEADER, audio_bridge.PROTOCOL_VERSION,
+                             rate, channels, block))
+
+
+def test_host_device_inventory_reaches_the_dashboard(server):
+    """The container has no audio devices, so a bridge-mode device picker can
+    only exist if the host tool reports its own. Without this the dashboard's
+    only device list is the container's -- which is always empty in Docker and
+    is exactly the wrong list for the one mode that needs it."""
+    import json
+    inventory = {"devices": [
+        {"index": 85, "name": "CABLE Output (VB-Audio Virtual Cable)", "loopback": True, "channels": 2},
+        {"index": 78, "name": "Microphone (Fifine)", "loopback": False, "channels": 1},
+    ], "current": 85}
+
+    with socket.create_connection(("127.0.0.1", server.port), timeout=5) as sock:
+        _send_header(sock)
+        payload = json.dumps(inventory).encode("utf-8")
+        sock.sendall(FRAME.pack(audio_bridge.MAGIC_DEVICES, len(payload)))
+        sock.sendall(payload)
+        deadline = time.time() + 3.0
+        while not server.status()["devices"] and time.time() < deadline:
+            time.sleep(0.05)
+
+        st = server.status()
+        assert [d["index"] for d in st["devices"]] == [85, 78]
+        assert st["devices"][0]["loopback"] is True
+        assert st["device_index"] == 85
+
+
+def test_a_malformed_inventory_does_not_kill_the_audio_stream(server):
+    """The picker degrading is acceptable; audio dying because of it is not."""
+    received = []
+    server.subscribe(received.append)
+
+    with socket.create_connection(("127.0.0.1", server.port), timeout=5) as sock:
+        _send_header(sock, channels=1)
+        junk = b"{not json at all"
+        sock.sendall(FRAME.pack(audio_bridge.MAGIC_DEVICES, len(junk)))
+        sock.sendall(junk)
+
+        block = np.zeros(256, dtype="<f4")
+        sock.sendall(FRAME.pack(audio_bridge.MAGIC_FRAME, block.nbytes))
+        sock.sendall(block.tobytes())
+
+        deadline = time.time() + 3.0
+        while not received and time.time() < deadline:
+            time.sleep(0.05)
+
+    assert received, "audio must keep flowing through a bad inventory"
+    assert "device inventory" in (server.status()["error"] or ""), "and the problem is reported"
+
+
+def test_selecting_a_device_sends_a_control_message_to_the_host(server):
+    """The reverse direction of a socket that only ever carried audio one way.
+    This is what makes 'pick your source on the website' work without anyone
+    touching a command line."""
+    import json
+
+    with socket.create_connection(("127.0.0.1", server.port), timeout=5) as sock:
+        _send_header(sock)
+        deadline = time.time() + 3.0
+        while server.status()["client"] is None and time.time() < deadline:
+            time.sleep(0.05)
+
+        assert server.request_device(124) is True
+
+        sock.settimeout(3.0)
+
+        def _read(n):
+            # MSG_WAITALL is unsupported on Windows (WinError 10045) -- the
+            # same trap the tool itself has to avoid.
+            buf = bytearray()
+            while len(buf) < n:
+                chunk = sock.recv(n - len(buf))
+                if not chunk:
+                    raise AssertionError("peer closed mid-message")
+                buf.extend(chunk)
+            return bytes(buf)
+
+        magic, length = FRAME.unpack(_read(FRAME.size))
+        assert magic == audio_bridge.MAGIC_CONTROL
+        msg = json.loads(_read(length).decode("utf-8"))
+        assert msg == {"action": "set_device", "device": 124}
+
+
+def test_selecting_a_device_with_no_bridge_connected_reports_failure(server):
+    """Saying "saved" when nothing received it is the lie this avoids."""
+    assert server.request_device(85) is False
+
+
+def test_route_refuses_a_device_change_with_no_bridge_attached(client, fake_config, fake_tuya,
+                                                               auth_reset, monkeypatch):
+    srv = audio_bridge.BridgeServer(host="127.0.0.1", port=_free_port())
+    monkeypatch.setattr(audio_bridge, "_server", srv, raising=False)
+    r = client.post("/api/audio/bridge/device", json={"device_index": 85})
+    assert r.status_code == 409
+    assert "no capture tool is connected" in r.text.lower()

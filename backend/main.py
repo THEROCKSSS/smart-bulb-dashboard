@@ -385,6 +385,10 @@ class MinDwellBody(BaseModel):
     min_dwell_ms: float
 
 
+class BridgeDeviceBody(BaseModel):
+    device_index: int
+
+
 class ApplyAudioPresetBody(BaseModel):
     preset_id: str
     device_index: int
@@ -1344,6 +1348,40 @@ def audio_bridge_status():
     # UI lets the user edit it anyway.
     st["host_dir"] = os.environ.get("SBD_BRIDGE_HOST_DIR") or None
     return st
+
+
+@app.post("/api/audio/bridge/device")
+def audio_bridge_set_device(body: BridgeDeviceBody):
+    """Change which HOST device the bridge captures, from the dashboard.
+
+    The container has no audio devices of its own, so the list this picks from
+    is reported by the capture tool itself (the DEV0 inventory) rather than
+    enumerated locally -- `/api/audio/devices` lists the *container's* devices,
+    which in Docker is always empty and is exactly the wrong list for bridge
+    mode. Selecting here sends a control message back down the tool's own
+    socket; it reopens on the new device and reconnects within a couple of
+    seconds.
+    """
+    server = audio_bridge.get_server()
+    if server is None:
+        raise HTTPException(409, "the audio bridge listener is not running")
+
+    known = {d["index"] for d in server.status().get("devices", [])}
+    if known and body.device_index not in known:
+        raise HTTPException(
+            400,
+            f"device {body.device_index} is not in the bridge's reported inventory. "
+            f"The bridge lists {len(known)} host devices; refresh the page if it "
+            f"reconnected recently.")
+
+    if not server.request_device(body.device_index):
+        # Distinct from a 400: the request was fine, there is just no tool
+        # attached to receive it. Saying "saved" here would be a lie.
+        raise HTTPException(
+            409,
+            "no capture tool is connected, so there is nothing to switch. "
+            "Start tools/start-audio-bridge.cmd on the Windows host first.")
+    return {"ok": True, "device_index": body.device_index}
 
 
 @app.get("/api/audio/devices")

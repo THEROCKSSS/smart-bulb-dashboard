@@ -42,6 +42,7 @@ All little-endian. Header once per connection, then frames until close::
 loses alignment scans forward for the marker rather than reinterpreting
 arbitrary bytes as audio (which is how you get NaN/Inf reaching a bulb).
 """
+import json
 import socket
 import struct
 import threading
@@ -51,7 +52,22 @@ import numpy as np
 
 MAGIC_HEADER = b"SBDA"
 MAGIC_FRAME = b"FRM0"
-PROTOCOL_VERSION = 1
+
+# Host->container: the capture tool's device inventory, JSON. The container
+# has no audio devices of its own, so this is the ONLY way the dashboard can
+# offer a device picker for bridge mode -- it cannot enumerate the host.
+MAGIC_DEVICES = b"DEV0"
+
+# Container->host: a control message, JSON. The reverse direction of a socket
+# that until now only ever carried audio one way, so the dashboard can change
+# the capture device without anyone touching a command line.
+MAGIC_CONTROL = b"CTL0"
+
+# 2 adds DEV0/CTL0. A version-1 tool connecting to a version-2 server is
+# refused with a named error rather than half-working: it would stream audio
+# fine but silently ignore every device change from the dashboard, which is
+# worse than not connecting.
+PROTOCOL_VERSION = 2
 
 DEFAULT_BRIDGE_PORT = 8503
 DEFAULT_BIND_HOST = "0.0.0.0"  # inside the container; the published port is loopback-bound
@@ -95,6 +111,17 @@ class BridgeServer:
         self._peak = 0.0
         self._listening = False
         self._client_thread = None
+
+        # Host device inventory, reported by the capture tool (DEV0). Survives
+        # a disconnect on purpose: the picker should still show the last known
+        # devices while the bridge is restarting, rather than emptying out.
+        self._devices = []
+        self._device_index = None
+        # The socket, kept so control messages can be written back to the
+        # tool. Written from request threads, read/replaced by the reader
+        # thread, hence its own lock.
+        self._conn = None
+        self._conn_lock = threading.Lock()
 
     # ------------------------------------------------------------ lifecycle
     def start(self):
@@ -161,6 +188,10 @@ class BridgeServer:
             "block_size": self._block_size,
             "peak": round(self._peak, 5),
             "subscribers": self.subscriber_count,
+            # Reported by the capture tool (DEV0); the container cannot
+            # enumerate host audio devices itself.
+            "devices": list(self._devices),
+            "device_index": self._device_index,
             "error": self._last_error,
         }
 
@@ -203,6 +234,14 @@ class BridgeServer:
             # come back round before a freshly-spawned thread has run its
             # first line, and then two clients both look like "the first one".
             self._client_addr = f"{addr[0]}:{addr[1]}"
+            # Claim the control socket in the SAME breath as the address, so
+            # status() reporting "connected" always implies the bridge can
+            # actually be steered. Setting it in the worker instead left a
+            # window where the dashboard showed a connected bridge and a
+            # device change silently reported "nothing connected" -- rare
+            # enough to pass in isolation and fail under load.
+            with self._conn_lock:
+                self._conn = conn
             # Read on a worker so the accept loop keeps running. Handling the
             # client inline blocked accept() for the whole session, which
             # meant a second bridge was not actually refused -- it sat in the
@@ -279,6 +318,20 @@ class BridgeServer:
             if not head:
                 return
             magic, payload_len = _FRAME_HEADER_STRUCT.unpack(head)
+
+            if magic == MAGIC_DEVICES:
+                # Device inventory. Length-checked but NOT %4-checked -- it is
+                # JSON, not float32 samples.
+                if payload_len == 0 or payload_len > MAX_PAYLOAD_BYTES:
+                    if not self._resync(conn):
+                        return
+                    continue
+                payload = self._recv_exactly(conn, payload_len)
+                if payload is None:
+                    return
+                self._ingest_devices(payload)
+                continue
+
             if magic != MAGIC_FRAME:
                 if not self._resync(conn):
                     return
@@ -291,6 +344,46 @@ class BridgeServer:
             if payload is None:
                 return
             self._dispatch(payload, channels)
+
+    def _ingest_devices(self, payload):
+        """Store the host's device inventory. A malformed inventory must not
+        tear down a working audio stream -- the picker degrades, the audio
+        keeps flowing."""
+        try:
+            data = json.loads(payload.decode("utf-8"))
+            devices = data.get("devices") or []
+            cleaned = []
+            for d in devices:
+                cleaned.append({
+                    "index": int(d["index"]),
+                    "name": str(d.get("name", ""))[:120],
+                    "loopback": bool(d.get("loopback")),
+                    "channels": int(d.get("channels", 0)),
+                })
+            self._devices = cleaned
+            if data.get("current") is not None:
+                self._device_index = int(data["current"])
+        except Exception as e:
+            self._last_error = f"bad device inventory from bridge: {e}"
+
+    def request_device(self, index):
+        """Ask the connected capture tool to switch device.
+
+        Returns False when no tool is connected -- the dashboard needs to say
+        "start the bridge first" rather than pretend the change landed.
+        """
+        message = json.dumps({"action": "set_device", "device": int(index)}).encode("utf-8")
+        with self._conn_lock:
+            conn = self._conn
+            if conn is None:
+                return False
+            try:
+                conn.sendall(_FRAME_HEADER_STRUCT.pack(MAGIC_CONTROL, len(message)))
+                conn.sendall(message)
+            except OSError as e:
+                self._last_error = f"could not send device change: {e}"
+                return False
+        return True
 
     def _resync(self, conn):
         """Scan forward for the next frame marker after corruption."""
