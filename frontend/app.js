@@ -1227,48 +1227,74 @@ async function renderAudio(main) {
     monoRow.style.display = info && info.mono ? "" : "none";
     nbandsRow.style.display = info && info.bands ? "" : "none";
   }
-  modeSelect.onchange = syncModeUI;
+  modeSelect.onchange = () => {
+    syncModeUI();
+    // Deliberately after syncModeUI: the mono-hue / band-count rows show or
+    // hide based on the new mode, and pushing first would briefly leave the
+    // panel describing the old one.
+    pushLive({ mode: modeSelect.value });
+  };
   syncModeUI();
 
-  main.querySelector("#audio-sensitivity").oninput = (e) => {
-    main.querySelector("#sens-val").textContent = parseFloat(e.target.value).toFixed(1) + "x";
-  };
-  // Dwell applies LIVE, without stopping the session. Tuning by ear means
-  // moving one control and hearing the difference; stop / change / start
-  // destroys that comparison — the bulb goes dark and the tempo tracker has
-  // to re-lock before the new value means anything.
+  // Every control below applies LIVE to a running session and is remembered.
   //
-  // `oninput` updates the label on every pixel of the drag (cheap, local),
+  // Tuning by ear means moving one control and hearing the difference. The old
+  // stop / change / start cycle destroyed exactly that: the bulb went dark, the
+  // tempo tracker lost its lock and had to re-acquire, and — the part that
+  // actually bit — the restart went through the start path, whose capture
+  // source defaults to "device", so changing the mood on a bridge session
+  // silently moved it to local capture the container does not have.
+  //
+  // `oninput` updates the label on every pixel of a drag (cheap, local);
   // `onchange` fires once when the drag ends and is what hits the network.
   // Sending on every input event would be one request per pixel.
-  wireBridgeDevicePicker();
-
-  main.querySelector("#audio-dwell").oninput = (e) => {
-    main.querySelector("#dwell-val").textContent = e.target.value + "ms";
-  };
-  main.querySelector("#audio-dwell").onchange = async (e) => {
-    const ms = parseInt(e.target.value, 10);
-    const label = main.querySelector("#dwell-val");
+  async function pushLive(patch, labelEl) {
     try {
-      const resp = await post(`/api/devices/${state.deviceId}/audio-reactive/min-dwell`,
-                              { min_dwell_ms: ms });
-      // "applied" false means it was saved for next time but no session is
-      // running to change — say so rather than implying the bulb just moved.
-      label.textContent = resp.applied ? `${ms}ms` : `${ms}ms (saved, no session)`;
-      if (resp.applied) {
-        label.classList.add("val-flash");
-        setTimeout(() => label.classList.remove("val-flash"), 400);
+      const resp = await post(`/api/devices/${state.deviceId}/audio-reactive/settings`, patch);
+      if (labelEl) {
+        // `live: false` means it was saved as the next session's starting
+        // value but nothing is running to change. Saying "saved" is honest;
+        // flashing green would imply the bulb just moved.
+        labelEl.classList.toggle("val-flash", !!resp.live);
+        if (resp.live) setTimeout(() => labelEl.classList.remove("val-flash"), 400);
       }
+      return resp;
     } catch (err) {
-      toast(`Could not set dwell: ${err.message}`, "error");
+      toast(`Could not apply: ${err.message}`, "error");
+      return null;
     }
+  }
+
+  const sensVal = main.querySelector("#sens-val");
+  main.querySelector("#audio-sensitivity").oninput = (e) => {
+    sensVal.textContent = parseFloat(e.target.value).toFixed(1) + "x";
   };
+  main.querySelector("#audio-sensitivity").onchange = (e) =>
+    pushLive({ sensitivity: parseFloat(e.target.value) }, sensVal);
+
+  const dwellVal = main.querySelector("#dwell-val");
+  main.querySelector("#audio-dwell").oninput = (e) => {
+    dwellVal.textContent = e.target.value + "ms";
+  };
+  main.querySelector("#audio-dwell").onchange = (e) =>
+    pushLive({ min_dwell_ms: parseInt(e.target.value, 10) }, dwellVal);
+
+  const nbandsVal = main.querySelector("#nbands-val");
   main.querySelector("#audio-nbands").oninput = (e) => {
-    main.querySelector("#nbands-val").textContent = e.target.value;
+    nbandsVal.textContent = e.target.value;
   };
+  main.querySelector("#audio-nbands").onchange = (e) =>
+    pushLive({ n_bands: parseInt(e.target.value, 10) }, nbandsVal);
+
+  const hueVal = main.querySelector("#mono-hue-val");
   main.querySelector("#mono-hue").oninput = (e) => {
-    main.querySelector("#mono-hue-val").textContent = e.target.value + "°";
+    hueVal.textContent = e.target.value + "°";
   };
+  main.querySelector("#mono-hue").onchange = (e) =>
+    pushLive({ monochrome_hue: parseFloat(e.target.value) }, hueVal);
+
+  const beatSel = main.querySelector("#audio-beat-sensitivity");
+  if (beatSel) beatSel.onchange = (e) => pushLive({ beat_sensitivity: e.target.value });
 
   // ---- audio bridge launcher -------------------------------------------
   const dirEl = main.querySelector("#bridge-dir");
@@ -1402,6 +1428,30 @@ async function renderAudio(main) {
     } catch (e) { toast(`Tap tempo failed: ${e.message}`, "error"); }
   };
 
+  // Which custom preset the Save box is currently aimed at. Null = save a new
+  // one. Cleared on re-render, deliberately: an edit target that outlived the
+  // page would silently overwrite a preset the user had stopped looking at.
+  let editingPresetId = null;
+
+  function loadPresetIntoControls(preset) {
+    const set = (sel, value, labelSel, fmt) => {
+      const elx = main.querySelector(sel);
+      if (!elx || value === undefined || value === null) return;
+      elx.value = value;
+      if (labelSel) {
+        const lab = main.querySelector(labelSel);
+        if (lab) lab.textContent = fmt ? fmt(value) : value;
+      }
+    };
+    set("#audio-mode", preset.mode);
+    set("#audio-sensitivity", preset.sensitivity, "#sens-val", v => Number(v).toFixed(1) + "x");
+    set("#audio-dwell", preset.min_dwell_ms, "#dwell-val", v => v + "ms");
+    set("#audio-nbands", preset.n_bands, "#nbands-val");
+    set("#mono-hue", preset.monochrome_hue, "#mono-hue-val", v => Math.round(v) + "°");
+    set("#audio-beat-sensitivity", preset.beat_sensitivity);
+    syncModeUI();
+  }
+
   const presetGrid = main.querySelector("#audio-preset-grid");
   const allPresets = audioPresetsResp.presets || [];
   allPresets.forEach(preset => {
@@ -1410,17 +1460,59 @@ async function renderAudio(main) {
       <div class="desc">${preset.description || "Custom preset"}</div>
     </div>`);
     card.onclick = async () => {
-      if (audioDevices.length === 0) {
+      const source = main.querySelector("#audio-source").value;
+      // Only LOCAL capture needs a device. Requiring one unconditionally made
+      // presets unusable in bridge mode — the container reports zero audio
+      // devices by design, so this check refused every preset on the one
+      // deployment the bridge exists to serve.
+      if (source === "device" && audioDevices.length === 0) {
         toast("No audio input devices available", "error");
         return;
       }
-      await post(`/api/devices/${state.deviceId}/audio-reactive/apply-preset`, {
-        preset_id: preset.id,
-        device_index: parseInt(main.querySelector("#audio-device").value, 10),
-      });
-      toast(`Preset "${preset.name}" applied`, "success");
-      renderAudio(main);
+      const deviceEl = main.querySelector("#audio-device");
+      try {
+        const resp = await post(`/api/devices/${state.deviceId}/audio-reactive/apply-preset`, {
+          preset_id: preset.id,
+          device_index: deviceEl && deviceEl.value ? parseInt(deviceEl.value, 10) : 0,
+          source,
+        });
+        // A live session takes a preset without restarting, so there is no
+        // need to rebuild the page and lose the user's scroll position.
+        toast(resp.restarted
+          ? `Preset "${preset.name}" applied — session started`
+          : `Preset "${preset.name}" applied live`, "success");
+        loadPresetIntoControls(preset);
+        if (resp.restarted) renderAudio(main);
+      } catch (e) {
+        toast(`Could not apply preset: ${e.message}`, "error");
+      }
     };
+
+    // Edit: pull the preset's values into the controls so they can be tweaked
+    // by ear, and aim the Save box at it. Editing a custom preset overwrites
+    // it (same id); editing a built-in forks a custom copy, because the
+    // shipped 24 are a reference set and silently mutating them would leave
+    // no way back.
+    const editBtn = el(`<button class="btn small ghost" style="margin-top:6px;width:100%;">Edit${preset.custom ? "" : " a copy"}</button>`);
+    editBtn.onclick = async (ev) => {
+      ev.stopPropagation();
+      loadPresetIntoControls(preset);
+      await pushLive({
+        mode: preset.mode, sensitivity: preset.sensitivity,
+        monochrome_hue: preset.monochrome_hue, n_bands: preset.n_bands,
+        min_dwell_ms: preset.min_dwell_ms, beat_sensitivity: preset.beat_sensitivity,
+      });
+      editingPresetId = preset.custom ? preset.id : null;
+      const nameEl = main.querySelector("#custom-preset-name");
+      nameEl.value = preset.custom ? preset.name : `${preset.name} (mine)`;
+      nameEl.scrollIntoView({ behavior: "smooth", block: "center" });
+      nameEl.focus();
+      toast(preset.custom
+        ? `Editing "${preset.name}" — tweak, then Save to overwrite it`
+        : `Forking "${preset.name}" — tweak, then Save as your own copy`);
+    };
+    card.appendChild(editBtn);
+
     if (preset.custom) {
       const delBtn = el(`<button class="danger" style="margin-top:6px;width:100%;">Delete</button>`);
       delBtn.onclick = async (ev) => {
@@ -1439,6 +1531,10 @@ async function renderAudio(main) {
     if (!name) { toast("Enter a preset name first", "error"); return; }
     try {
       await post("/api/audio/presets/custom", {
+        // Carrying the id through is what makes Save an *edit* rather than a
+        // duplicate: the backend replaces by id. Null (a built-in fork, or a
+        // fresh preset) lets the backend mint a new one from the name.
+        id: editingPresetId || undefined,
         name,
         mode: main.querySelector("#audio-mode").value,
         sensitivity: parseFloat(main.querySelector("#audio-sensitivity").value),

@@ -392,6 +392,22 @@ class BridgeDeviceBody(BaseModel):
 class ApplyAudioPresetBody(BaseModel):
     preset_id: str
     device_index: int
+    # None means "keep whatever the running session is using". Applying a mood
+    # must not silently move a bridge session back to local device capture --
+    # inside the container that means no audio devices at all, so the session
+    # runs and never reacts.
+    source: str | None = None
+
+
+class LiveSettingsBody(BaseModel):
+    """Any subset of the live-editable session settings. All optional: a client
+    sends only what the user actually touched."""
+    mode: str | None = None
+    sensitivity: float | None = None
+    beat_sensitivity: str | None = None
+    min_dwell_ms: float | None = None
+    monochrome_hue: float | None = None
+    n_bands: int | None = None
 
 
 class GroupApplyAudioPresetBody(BaseModel):
@@ -1617,10 +1633,59 @@ def audio_reactive_apply_preset(device_id: str, body: ApplyAudioPresetBody):
         preset = next((p for p in cfg.get("audio_custom_presets", []) if p["id"] == body.preset_id), None)
     if not preset:
         raise HTTPException(404, f"preset '{body.preset_id}' not found")
+
+    # Inherit the running session's capture source unless told otherwise.
+    # Without this, applying a mood while on the bridge restarted the session
+    # with start_session's default source_kind="device" -- and in the container
+    # there are no audio devices, so it ran and never reacted to a sound. The
+    # exact silent no-op the bridge exists to eliminate.
+    existing = audio_reactive.get_active_session(device_id)
+    source = body.source or (existing.source_kind if existing else "device")
+
+    if source == "bridge" and audio_bridge.get_server() is None:
+        raise HTTPException(409, (
+            "this session is using the audio bridge, but the bridge listener is not "
+            "running -- applying the preset would leave it with no audio at all."))
+
+    # A live session can take a preset without being torn down at all: every
+    # field a genre preset carries is live-editable. That keeps the bulb lit,
+    # keeps the tempo tracker's lock, and keeps the capture source.
+    if existing is not None:
+        result = audio_reactive.update_session_settings(
+            device_id,
+            mode=preset["mode"], sensitivity=preset["sensitivity"],
+            monochrome_hue=preset["monochrome_hue"], n_bands=preset["n_bands"],
+            min_dwell_ms=preset["min_dwell_ms"], beat_sensitivity=preset["beat_sensitivity"],
+        )
+        return {"ok": True, "preset_id": preset["id"], "mode": preset["mode"],
+                "source": source, "restarted": False, "applied": result["applied"]}
+
     audio_reactive.start_session(c, body.device_index, preset["mode"], preset["sensitivity"],
                                   preset["monochrome_hue"], preset["n_bands"], preset["min_dwell_ms"],
-                                  preset["beat_sensitivity"])
-    return {"ok": True, "preset_id": preset["id"], "mode": preset["mode"]}
+                                  preset["beat_sensitivity"], source_kind=source)
+    return {"ok": True, "preset_id": preset["id"], "mode": preset["mode"],
+            "source": source, "restarted": True}
+
+
+@app.post("/api/devices/{device_id}/audio-reactive/settings")
+def audio_reactive_live_settings(device_id: str, body: LiveSettingsBody):
+    """Change mode / sensitivity / beat sensitivity / dwell / hue / band count
+    on a RUNNING session, and remember the change.
+
+    One endpoint rather than six because these get adjusted together while
+    tuning by ear, and because every one of them previously required a stop /
+    change / start cycle -- which dropped the capture source, killed the bulb
+    and reset the tempo lock every time.
+    """
+    get_controller_or_404(device_id)
+    changes = body.model_dump(exclude_none=True)
+    if not changes:
+        raise HTTPException(400, "no settings supplied")
+    try:
+        result = audio_reactive.update_session_settings(device_id, **changes)
+    except audio_reactive.AudioConfigError as e:
+        raise HTTPException(400, str(e))
+    return {"ok": True, **result}
 
 
 # ----------------------------------------------------------- audio presets -

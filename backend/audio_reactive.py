@@ -2485,6 +2485,100 @@ def set_group_min_dwell(group_id, min_dwell_ms):
             "bulbs": len(applied)}
 
 
+#: Settings that can be changed on a RUNNING session. Each maps to a value the
+#: per-frame path re-reads every hop, so a change takes effect on the next
+#: frame without restarting capture.
+#:
+#: Restarting to change any of these is what made tuning by ear impractical:
+#: the bulb goes dark, the tempo tracker loses its onset history and has to
+#: re-lock, and — the part that actually bit — a restart went through
+#: `start_session`, whose `source_kind` defaults to "device". Changing the mood
+#: on a bridge session therefore dropped it back to local capture, which inside
+#: the container means no audio devices at all.
+LIVE_SETTINGS = ("mode", "sensitivity", "beat_sensitivity", "min_dwell_ms",
+                 "monochrome_hue", "n_bands")
+
+
+def update_session_settings(device_id, **changes):
+    """Apply any subset of LIVE_SETTINGS to a running session, and remember it.
+
+    Returns {"applied": {...}, "live": bool}. `live` is False when nothing is
+    running — the values are still persisted as what the next session starts
+    with, but the caller must not claim the bulb just changed.
+
+    Unknown keys are rejected rather than ignored: silently dropping a setting
+    someone thinks they just changed is the worst possible outcome here.
+    """
+    unknown = [k for k in changes if k not in LIVE_SETTINGS]
+    if unknown:
+        raise AudioConfigError(
+            f"not live-editable: {', '.join(sorted(unknown))}. "
+            f"Editable while running: {', '.join(LIVE_SETTINGS)}")
+
+    session = get_active_session(device_id)
+    applied = {}
+
+    for key, value in changes.items():
+        if value is None:
+            continue
+        if key == "mode":
+            if value not in MODES:
+                raise AudioConfigError(f"unknown mode '{value}', expected one of {MODES}")
+            applied["mode"] = value
+        elif key == "sensitivity":
+            applied["sensitivity"] = max(0.1, min(5.0, float(value)))
+        elif key == "beat_sensitivity":
+            if value not in BEAT_SENSITIVITY_PRESETS:
+                raise AudioConfigError(
+                    f"unknown beat_sensitivity '{value}', expected one of "
+                    f"{list(BEAT_SENSITIVITY_PRESETS)}")
+            applied["beat_sensitivity"] = value
+        elif key == "min_dwell_ms":
+            ms = float(value)
+            if ms < MIN_DWELL_FLOOR_MS or ms > MIN_DWELL_MS_CEILING:
+                raise AudioConfigError(
+                    f"min_dwell_ms must be between {MIN_DWELL_FLOOR_MS} and "
+                    f"{MIN_DWELL_MS_CEILING}ms, got {value!r}")
+            applied["min_dwell_ms"] = ms
+        elif key == "monochrome_hue":
+            applied["monochrome_hue"] = float(value) % 360
+        elif key == "n_bands":
+            n = int(value)
+            if n < N_BANDS_MIN or n > N_BANDS_MAX:
+                raise AudioConfigError(
+                    f"n_bands must be between {N_BANDS_MIN} and {N_BANDS_MAX}, got {value!r}")
+            applied["n_bands"] = n
+
+    if session is not None:
+        if "mode" in applied:
+            session.mode = applied["mode"]
+            session._stereo = (applied["mode"] == "stereo_split")
+        if "sensitivity" in applied:
+            session.ctx["sensitivity"] = applied["sensitivity"]
+        if "beat_sensitivity" in applied:
+            session.tempo.set_sensitivity(applied["beat_sensitivity"])
+        if "min_dwell_ms" in applied:
+            session.sender.set_min_dwell(applied["min_dwell_ms"])
+        if "monochrome_hue" in applied:
+            session.ctx["monochrome_hue"] = applied["monochrome_hue"]
+        if "n_bands" in applied:
+            session.n_bands = applied["n_bands"]
+            session.band_edges = log_band_edges(applied["n_bands"])
+
+    # Persist so the value survives a restart. The setting someone arrived at
+    # by ear IS the setting; losing it would make every tuning pass throwaway.
+    try:
+        record = audio_presets.load_last_session(device_id)
+        config = (record or {}).get("config")
+        if config:
+            config.update(applied)
+            audio_presets.save_last_session(device_id, config)
+    except Exception:
+        pass
+
+    return {"applied": applied, "live": session is not None}
+
+
 def set_session_beat_sensitivity(device_id, preset):
     with _sessions_lock:
         session = _sessions.get(device_id)
