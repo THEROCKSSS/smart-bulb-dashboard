@@ -1,0 +1,45 @@
+# Windows override for docker-compose.yml.
+#
+#   docker compose -f docker-compose.yml -f docker-compose.windows.yml up -d
+#
+# Two things in the base file are Linux-only assumptions:
+#
+# 1. network_mode: "host" is a no-op on Docker Desktop for Windows -- the
+#    containers run inside a Linux VM, so "host" is the VM's network, not
+#    Windows'. It also makes the `ports` mapping inert, which means the base
+#    file on Windows publishes nothing at all. Reset to bridge networking.
+#
+#    The cost is real and worth stating: Tuya's UDP broadcast discovery
+#    (/rescan) cannot reach the bulb's broadcast domain from bridge, so
+#    auto-discovery will find nothing. Direct control -- colour, power,
+#    brightness, scenes, effects -- is a plain outbound TCP connection to the
+#    bulb's IP and works fine, because backend/config.json already pins
+#    192.168.0.134.
+#
+# 2. Host port 8500 is already taken on this machine (the hub-frontend
+#    container publishes 127.0.0.1:8500), and `tailscale serve` maps 8502 to
+#    the dashboard. So publish on 8502 and leave the container on 8500.
+#
+# Bound to 127.0.0.1, not 0.0.0.0: tailscale serve fronts it, and the PIN
+# gate should not be the only thing between the LAN and the bulb.
+services:
+  smart-bulb-dashboard:
+    network_mode: !reset null
+    ports: !override
+      - "127.0.0.1:8502:8500"
+      # Audio bridge. tools/sbd-audio-bridge.py runs on Windows and connects
+      # here to stream captured PCM in -- the container has no audio devices
+      # of its own, so this is the only way audio-reactive lighting can work
+      # without stopping the container.
+      #
+      # 127.0.0.1 only, deliberately: the payload is live microphone or
+      # desktop audio and must not be reachable from the LAN.
+      - "127.0.0.1:8503:8503"
+    environment:
+      # Where this repo lives on the WINDOWS host. The container only knows
+      # its own /app path, which is no use in a command the user runs on
+      # Windows, so the Audio page shows this as the launch directory.
+      # Machine-specific, therefore optional and read from the gitignored
+      # .env -- an unset value just means the user types the path once and
+      # the dashboard remembers it in the browser.
+      SBD_BRIDGE_HOST_DIR: "${SBD_BRIDGE_HOST_DIR:-}"

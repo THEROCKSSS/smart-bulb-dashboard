@@ -14,6 +14,7 @@ import sounddevice as sd
 import audio_signal
 import audio_presets
 import audio_safety
+import capture_sources
 from scenes_presets import PRESET_COLORS
 
 SAMPLE_RATE = 44100
@@ -111,18 +112,136 @@ MODES = [
 ROLE_MODES = ["unison", "phase_offset", "band_split", "wave", "mirror"]
 
 
-def list_input_devices():
+# PortAudio enumerates every physical device once per Windows host API (MME,
+# DirectSound, WASAPI, WDM-KS), so one microphone appears three or four
+# times. Measured on the development machine: 72 input-capable entries for
+# roughly 14 real devices -- the Fifine mic alone appeared 4 times and every
+# Voicemeeter bus 3 times. Listing that raw makes the picker unusable and
+# invites picking the slowest backend by accident.
+#
+# Preference is latency-first. WASAPI is the modern Windows path and the only
+# one that can capture loopback ("what is playing on the speakers"), so it
+# wins by default. WDM-KS can be lower latency still but is frequently
+# exclusive-mode-only and simply fails to open, so it sits below the reliable
+# shared-mode DirectSound. MME is last: it is the oldest, the slowest, and
+# the one that truncates device names to 31 characters.
+#
+# That truncation is why grouping normalises on the truncated length --
+# otherwise "Voicemeeter Out B1 (VB-Audio Vo" (MME) and "Voicemeeter Out B1
+# (VB-Audio Voicemeeter VAIO)" (WASAPI) look like two unrelated devices and
+# the duplicate survives the dedupe.
+_HOSTAPI_PREFERENCE = (
+    "Windows WASAPI",
+    "Windows DirectSound",
+    "Windows WDM-KS",
+    "MME",
+)
+_MME_NAME_LIMIT = 31
+
+
+def _hostapi_names():
+    """host-api index -> name, or {} if PortAudio cannot say. Never raises:
+    a failure here must degrade the device list to "undeduplicated", not
+    break audio device listing altogether."""
+    try:
+        return {i: a.get("name", "") for i, a in enumerate(sd.query_hostapis())}
+    except Exception:
+        return {}
+
+
+def _hostapi_rank(name):
+    try:
+        return _HOSTAPI_PREFERENCE.index(name)
+    except ValueError:
+        # Unknown API (ALSA, PulseAudio, JACK, CoreAudio...). Rank after every
+        # known one but stay deterministic, so this stays a no-op reordering
+        # on Linux/macOS rather than a surprise.
+        return len(_HOSTAPI_PREFERENCE)
+
+
+def _dedupe_key(name):
+    """Group key for "the same physical device seen through another API".
+
+    The trailing .strip() is load-bearing. MME truncates at exactly 31
+    characters, and that cut often lands mid-word leaving a trailing space:
+    "CABLE Output (VB-Audio Virtual ". Truncating the full WASAPI name to 31
+    keeps that space, but whitespace-normalising the already-truncated MME
+    name removes it -- so the two keys differ by one invisible character and
+    the duplicate survives. Observed on exactly this machine.
+    """
+    return " ".join((name or "").split()).lower()[:_MME_NAME_LIMIT].strip()
+
+
+def list_input_devices(collapse_duplicates=True):
+    """Input devices, one entry per *physical* device by default.
+
+    Each entry keeps the raw PortAudio `index` of the preferred host API,
+    and lists every other index the same device is reachable through under
+    `aliases`. Nothing is hidden -- a caller that wants the raw PortAudio
+    view passes collapse_duplicates=False, and saved settings pointing at a
+    non-preferred index still resolve via the alias list.
+    """
     devices = sd.query_devices()
-    result = []
+    apis = _hostapi_names()
+
+    raw = []
     for i, d in enumerate(devices):
         if d.get("max_input_channels", 0) > 0:
-            result.append({
+            raw.append({
                 "index": i,
                 "name": d.get("name"),
                 "max_input_channels": d.get("max_input_channels"),
                 "default_samplerate": d.get("default_samplerate"),
+                "hostapi": apis.get(d.get("hostapi"), ""),
             })
+
+    if not collapse_duplicates:
+        return raw
+
+    groups = {}
+    for entry in raw:
+        groups.setdefault(_dedupe_key(entry["name"]), []).append(entry)
+
+    result = []
+    for members in groups.values():
+        # Preferred = best host API; ties broken by original index so the
+        # result is stable across calls.
+        members.sort(key=lambda e: (_hostapi_rank(e["hostapi"]), e["index"]))
+        best = dict(members[0])
+        # MME truncates, so the longest name in the group is the real one.
+        best["name"] = max((m["name"] or "" for m in members), key=len)
+        best["aliases"] = [
+            {"index": m["index"], "hostapi": m["hostapi"], "name": m["name"]}
+            for m in members[1:]
+        ]
+        result.append(best)
+
+    result.sort(key=lambda e: e["index"])
     return result
+
+
+def find_input_device(device_index):
+    """Map any index -- preferred or alias -- to the entry that represents it.
+
+    Saved settings and calibrations recorded before de-duplication (or chosen
+    through a non-preferred host API) still point at an alias index. Without
+    this they would silently miss and fall back to a stringified index, which
+    is how a calibration quietly stops applying.
+
+    Deliberately NOT called resolve_device_index: that name is already taken
+    (see below) by the "is this index still valid, else fall back" helper,
+    which returns a (index, fallback_used) tuple. Two functions with one name
+    means the later definition silently wins.
+    """
+    try:
+        for entry in list_input_devices():
+            if entry["index"] == device_index:
+                return entry
+            if any(a["index"] == device_index for a in entry.get("aliases", [])):
+                return entry
+    except Exception:
+        return None
+    return None
 
 
 # --------------------------------------------------------- hot-path caches ---
@@ -1460,10 +1579,22 @@ class AudioSession:
                  use_saved_calibration=True,
                  max_duration_s=None, warmup_s=0.0, auto_resume_grace_s=DEFAULT_AUTO_RESUME_GRACE_S,
                  max_flash_rate_hz=None, disable_flash_heavy=False, max_brightness_swing=None,
-                 silence_auto_off=True, fallback_device_index=None):
+                 silence_auto_off=True, fallback_device_index=None,
+                 source_kind="device", source_factory=None):
         self.controller = controller
         self.requested_device_index = device_index
-        self.device_index, self.device_fallback_used = resolve_device_index(device_index, fallback_device_index)
+        # source_kind "bridge" means audio arrives from the host-side capture
+        # tool over the network, so there is no local device index to resolve
+        # and no fallback device to fall back to. Resolving anyway would
+        # report a spurious "device disappeared" fallback on a machine (the
+        # container) that legitimately has no audio devices at all.
+        self.source_kind = source_kind
+        self.source_factory = source_factory
+        if source_kind == "device":
+            self.device_index, self.device_fallback_used = resolve_device_index(
+                device_index, fallback_device_index)
+        else:
+            self.device_index, self.device_fallback_used = None, False
         self.fallback_device_index = fallback_device_index
         self.mode = mode if mode in MODES else "band_fixed"
         self.n_bands = max(N_BANDS_MIN, min(N_BANDS_MAX, n_bands))
@@ -1593,24 +1724,27 @@ class AudioSession:
             "restart_count": self._restart_count,
         }
 
+    def _open_source(self, channels):
+        """Build this session's capture source.
+
+        The seam that lets the same session run from a local microphone, from
+        audio streamed in by the host-side bridge, or from synthetic samples
+        in a test -- without `_process` knowing the difference.
+        """
+        if self.source_factory is not None:
+            return self.source_factory(self._process, channels)
+        if self.source_kind == "bridge":
+            return capture_sources.NetworkSource(self._process)
+        return capture_sources.SoundDeviceSource(
+            device_index=self.device_index, channels=channels,
+            samplerate=SAMPLE_RATE, blocksize=BLOCK_SIZE, callback=self._process)
+
     def _run(self):
         consecutive_failures = 0
         while not self._stop.is_set():
             channels = 2 if self._stereo else 1
             try:
-                def callback(indata, frames, time_info, status_flags):
-                    self._process(indata)
-
-                try:
-                    stream = sd.InputStream(device=self.device_index, channels=channels, samplerate=SAMPLE_RATE,
-                                             blocksize=BLOCK_SIZE, latency="low", callback=callback)
-                except Exception:
-                    if channels == 2:
-                        channels = 1  # fall back to mono if the device can't do stereo
-                        stream = sd.InputStream(device=self.device_index, channels=channels, samplerate=SAMPLE_RATE,
-                                                 blocksize=BLOCK_SIZE, latency="low", callback=callback)
-                    else:
-                        raise
+                stream = self._open_source(channels)
                 with stream:
                     consecutive_failures = 0  # a clean open resets the failure streak
                     while not self._stop.is_set():
@@ -1641,8 +1775,14 @@ class AudioSession:
                 # stream error — re-resolve the device (this is also what
                 # picks up the configured fallback if the device
                 # disappeared) and retry after a short backoff.
-                self.device_index, self.device_fallback_used = resolve_device_index(
-                    self.requested_device_index, self.fallback_device_index)
+                #
+                # Bridge sessions skip this: there is no local device to
+                # re-resolve, and doing it inside the container (which has no
+                # audio devices at all) would flip device_fallback_used on and
+                # report a device problem that isn't the real fault.
+                if self.source_kind == "device":
+                    self.device_index, self.device_fallback_used = resolve_device_index(
+                        self.requested_device_index, self.fallback_device_index)
                 if self._stop.wait(min(5.0, 0.5 * consecutive_failures)):
                     return
 
@@ -2009,7 +2149,8 @@ def start_session(controller, device_index, mode="band_fixed", sensitivity=1.0,
                    use_saved_calibration=True,
                    max_duration_s=None, warmup_s=0.0, auto_resume_grace_s=DEFAULT_AUTO_RESUME_GRACE_S,
                    max_flash_rate_hz=None, disable_flash_heavy=False, max_brightness_swing=None,
-                   silence_auto_off=True, fallback_device_index=None):
+                   silence_auto_off=True, fallback_device_index=None,
+                   source_kind="device", source_factory=None):
     """Raises AudioConfigError on an invalid config (caller turns this into
     an HTTP 400) before anything is started. On success, persists this
     config as the "last known good session" for this device (Section 8's
@@ -2030,7 +2171,8 @@ def start_session(controller, device_index, mode="band_fixed", sensitivity=1.0,
                                 max_duration_s=max_duration_s, warmup_s=warmup_s,
                                 auto_resume_grace_s=auto_resume_grace_s, max_flash_rate_hz=max_flash_rate_hz,
                                 disable_flash_heavy=disable_flash_heavy, max_brightness_swing=max_brightness_swing,
-                                silence_auto_off=silence_auto_off, fallback_device_index=fallback_device_index)
+                                silence_auto_off=silence_auto_off, fallback_device_index=fallback_device_index,
+                                source_kind=source_kind, source_factory=source_factory)
         _sessions[controller.cfg["id"]] = session
         session.start()
     audio_presets.save_last_session(controller.cfg["id"], {

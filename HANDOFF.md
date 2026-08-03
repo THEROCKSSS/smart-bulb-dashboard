@@ -25,12 +25,34 @@ There is exactly **one branch** (`master`) and one tag
 (`prototype/nav-layouts-50`, holding 50 throwaway nav prototypes — the two
 that were adopted are already live).
 
-The backend is **not** a service — it runs only while someone starts it, and
-it does not survive a reboot or the end of a session. Assume it is down and
-start it with the command under "How to resume" below. The physical bulb
-(`Bytech A19`, `192.168.0.134`) was reachable as of this writing, which had
-not been true for most of this project's history; it does drop off Wi-Fi
-periodically, so check before concluding the code is broken.
+The backend **now runs as a Docker container** (`smart-bulb-dashboard`,
+`restart: unless-stopped`) and is no longer tied to whoever started it.
+Assume it is **up**, not down — check with `docker ps` before starting
+anything, or you will fight a port conflict on 8502. This replaced the
+"run uvicorn in a terminal" model; see "How to resume" below.
+
+**Audio in the container now works via the audio bridge.** The container
+still has no audio devices of its own (`/api/audio/devices` returns zero
+there, by design). `tools/sbd-audio-bridge.py` runs on the Windows host,
+captures audio, and streams PCM to the backend on port 8503; the dashboard's
+Audio page shows a live connectivity chip with four states (off / waiting /
+silent / live).
+
+Start it with `tools/start-audio-bridge.cmd` (double-clickable, stays open
+with a level meter). `--probe` finds which device actually has sound on it;
+`--list` shows the de-duplicated device list.
+
+Verified working end to end: 48000Hz capture resampled to 44100 on the host,
+thousands of frames, zero drops. **The resampling is not optional** — WASAPI
+shared mode refuses any rate other than the device's own, so asking for
+44100 directly fails with `Invalid sample rate [PaErrorCode -9997]`.
+
+The host path in `deploy/windows/` remains for zero-added-latency work
+(tuning presets by ear).
+
+The physical bulb (`Bytech A19`, `192.168.0.134`) was reachable as of this
+writing, which had not been true for most of this project's history; it does
+drop off Wi-Fi periodically, so check before concluding the code is broken.
 
 ## What was done this session (Round 7)
 
@@ -137,9 +159,41 @@ git log --oneline -3
 # tempo tests do real signal processing, so it is CPU-bound and varies.
 backend/venv/Scripts/python.exe -m pytest backend/tests/ cli/tests/ -q
 
-# Bring the dashboard up. --no-proxy-headers is REQUIRED, not optional:
-# uvicorn trusts X-Forwarded-For from 127.0.0.1 by default, which lets any
-# local process forge its source IP and dodge the PIN-gate lockout.
+# The dashboard should already be running as a container. Check first:
+docker ps --filter name=smart-bulb-dashboard
+```
+
+**Normal path — Docker (survives reboot and session end):**
+
+```bash
+# Both files, always. The base file alone sets network_mode: "host", which
+# on Docker Desktop for Windows is a no-op that ALSO makes the ports mapping
+# inert -- so the base file on its own publishes nothing at all.
+docker compose -f docker-compose.yml -f docker-compose.windows.yml up -d
+
+# Or as part of the workspace apps tier (it is registered in docker/apps.yml):
+#   docker compose -f ../../docker/apps.yml up -d smart-bulb-dashboard
+
+docker logs -f smart-bulb-dashboard
+```
+
+Published on `127.0.0.1:8502` -> container `8500`. `--no-proxy-headers` is
+already baked into the image's CMD and is REQUIRED, not optional: uvicorn
+trusts `X-Forwarded-For` from `127.0.0.1` by default, which lets any local
+process forge its source IP and dodge the PIN-gate lockout.
+
+**Audio path — host, no container.** The container cannot reach Windows
+audio devices, so anything involving a microphone or loopback capture needs
+the backend on the host. Stop the container first or 8502 is taken:
+
+```bash
+docker stop smart-bulb-dashboard
+
+# Supervised, restarts on crash, logs to logs/ -- and it is what the
+# Scheduled Task in deploy/windows/install-scheduled-task.ps1 runs.
+pwsh -File deploy/windows/run-dashboard.ps1
+
+# Or plain, in a terminal:
 cd backend
 venv/Scripts/python.exe -m uvicorn main:app --host 127.0.0.1 --port 8502 --no-proxy-headers
 ```
@@ -214,9 +268,27 @@ The established loop, confirmed with the owner: **build one week as four
 parallel phases → hub re-verifies every phase itself → hand-merge → owner
 tests → next week.** See `.claude/skills/phase-delegation-loop/`.
 
+0. **Low-latency audio bridge — spec #75, tickets #76–#82.** Specced and
+   ticketed, not started. Audio-reactive lighting **does not work in the
+   container** (no host audio devices), so this gates item 1 below unless you
+   use the host path. Two tickets are startable now with no blockers:
+   **#76** (capture source seam — the prefactor everything else needs) and
+   **#77** (native audio mode — one command to swap the container for a host
+   backend, which is what makes item 1 possible today).
+   Critical path afterwards: #79 → #81 → #82.
+
+   Read #75 before any of them. The headline constraint: **≤10ms is
+   achievable from sound to decision, but the bulb's own round-trip was
+   measured at 111–152ms** and no software change alters that. Do not chase
+   it; do not let a reader think the bridge is the slow part.
+
+   Device de-duplication from that spec is **already done** (72 → 41 entries,
+   host-API preference, aliases retained, calibration made alias-aware).
+
 1. **Tune the 24 presets against real music.** Highest value, now possible for
    the first time. Needs the owner present — it is a judgement task, not a
-   code task.
+   code task. Note this needs the **host** audio path (#77), not the
+   container.
 2. **Week 3, phases B–D** (issues #29–#43): integrations (Home Assistant,
    webhooks, Discord), UX (PWA, scenes/effects, notifications,
    accessibility). Phase A is already closed.

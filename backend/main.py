@@ -1,3 +1,4 @@
+import logging
 import os
 import time
 from contextlib import asynccontextmanager
@@ -27,6 +28,8 @@ import bulb_manager as bm  # noqa: E402
 import schedule_engine  # noqa: E402
 import discovery  # noqa: E402
 import audio_reactive  # noqa: E402
+import audio_bridge  # noqa: E402
+import capture_sources  # noqa: E402
 import audio_signal  # noqa: E402
 import audio_presets  # noqa: E402
 import audio_safety  # noqa: E402
@@ -63,6 +66,17 @@ async def lifespan(_app: FastAPI):
     # threads (the bulb sender, the logging handler) that are not on it.
     import asyncio
     live_stream.set_loop(asyncio.get_running_loop())
+    # The bridge listener starts with the app, not with a session, so the
+    # dashboard's connectivity indicator can report "bridge connected" even
+    # when nothing is running yet -- which is exactly the state a user checks
+    # while setting the bridge up.
+    if os.environ.get("SBD_AUDIO_BRIDGE", "1") != "0":
+        try:
+            audio_bridge.start_server(
+                port=int(os.environ.get("SBD_AUDIO_BRIDGE_PORT", audio_bridge.DEFAULT_BRIDGE_PORT)),
+                expected_sample_rate=audio_reactive.SAMPLE_RATE)
+        except Exception as e:
+            logging.getLogger("sbd").warning("audio bridge listener failed to start: %s", e)
     on_startup()
     yield
 
@@ -308,6 +322,10 @@ class AudioReactiveStartBody(BaseModel):
     max_brightness_swing: float | None = None
     silence_auto_off: bool = True
     fallback_device_index: int | None = None
+    # "device" = capture locally (host deployments). "bridge" = consume audio
+    # streamed in by tools/sbd-audio-bridge.py, which is the only thing that
+    # works when the backend runs in a container with no audio devices.
+    source: str = "device"
     force: bool = False  # override an active-group conflict on this device
 
 
@@ -1277,13 +1295,42 @@ def _device_key_for_index(device_index):
     name) -- device indices can shift on device reconnect/replug, but the
     name is what a saved noise-gate calibration should actually travel
     with. Falls back to the raw index (stringified) if the device can't be
-    found (e.g. it was unplugged since /api/audio/devices was last called)."""
+    found (e.g. it was unplugged since /api/audio/devices was last called).
+
+    Alias-aware: the same physical device is reachable through several
+    PortAudio host APIs at different indices, so a calibration saved while
+    the device was selected via MME must still apply when it is later
+    selected via WASAPI. Resolving through the alias list is what makes the
+    calibration key "this microphone" rather than "this microphone, as seen
+    through one particular Windows audio API"."""
     try:
-        devices = audio_reactive.list_input_devices()
+        entry = audio_reactive.find_input_device(device_index)
     except Exception:
         return str(device_index)
-    match = next((d for d in devices if d["index"] == device_index), None)
-    return match["name"] if match else str(device_index)
+    return entry["name"] if entry else str(device_index)
+
+
+@app.get("/api/audio/bridge")
+def audio_bridge_status():
+    """Is the host-side capture bridge connected and actually sending audio?
+
+    Three states worth distinguishing, because they have different fixes:
+      * not listening  -> the backend was started with the bridge disabled
+      * listening, not connected -> run tools/sbd-audio-bridge.py on the host
+      * connected but not streaming -> the bridge is attached but its capture
+        device is silent (nothing playing, or the wrong device selected)
+    """
+    st = audio_bridge.status()
+    st["sample_rate_expected"] = audio_reactive.SAMPLE_RATE
+    st["block_size_expected"] = audio_reactive.BLOCK_SIZE
+    # Where the repo lives on the HOST, so the dashboard can show a
+    # copy-pasteable launch command. The container only knows its own /app
+    # path, which is useless for a command the user runs on Windows -- hence
+    # an explicit hint rather than a guess. Optional and machine-specific, so
+    # it comes from the environment (set it in the gitignored .env), and the
+    # UI lets the user edit it anyway.
+    st["host_dir"] = os.environ.get("SBD_BRIDGE_HOST_DIR") or None
+    return st
 
 
 @app.get("/api/audio/devices")
@@ -1409,9 +1456,14 @@ def audio_reactive_start(device_id: str, body: AudioReactiveStartBody):
     if body.beat_sensitivity not in audio_reactive.BEAT_SENSITIVITY_PRESETS:
         raise HTTPException(400, f"unknown beat_sensitivity '{body.beat_sensitivity}', "
                                   f"expected one of {list(audio_reactive.BEAT_SENSITIVITY_PRESETS)}")
-    ok, err = audio_reactive.validate_device_index(body.device_index)
-    if not ok:
-        raise HTTPException(400, err)
+    # Only meaningful for local capture. A bridge session has no local device
+    # to validate, and inside the container there are zero audio devices, so
+    # running this check anyway rejected every bridge session with a
+    # misleading "device index 0 not found (only 0 audio devices connected)".
+    if body.source == "device":
+        ok, err = audio_reactive.validate_device_index(body.device_index)
+        if not ok:
+            raise HTTPException(400, err)
     if not audio_reactive.check_rate_limit(f"start:{device_id}"):
         raise HTTPException(429, "too many audio-reactive start/stop requests for this device — slow down")
 
@@ -1427,16 +1479,32 @@ def audio_reactive_start(device_id: str, body: AudioReactiveStartBody):
     for gid in conflicts:
         audio_reactive.stop_group_session(gid)
 
-    device_key = _device_key_for_index(body.device_index)
+    # A bridge session's audio comes from a device on the Windows host, which
+    # this process cannot see or name. Keying its calibration on a local index
+    # would be meaningless -- and worse, would collide with whatever local
+    # device happens to sit at that index. Give it its own stable key instead.
+    device_key = "bridge" if body.source == "bridge" else _device_key_for_index(body.device_index)
     # Per-device-index sensitivity calibration (Section 11) is a separate,
     # coarser fallback from the per-device-key signal-conditioning
     # calibration (Section 4, use_saved_calibration/device_key above) -- an
     # explicit sensitivity always wins over both.
     sensitivity = body.sensitivity
-    if sensitivity is None:
+    if sensitivity is None and body.source == "device":
         sensitivity = cfgmod.get_audio_input_calibration(body.device_index)
-        if sensitivity is None:
-            sensitivity = 1.0
+    # Unconditional, not nested in the branch above: a bridge session skips
+    # the per-index lookup entirely, and leaving sensitivity as None there
+    # would hand a null straight into the gain multiplier.
+    if sensitivity is None:
+        sensitivity = 1.0
+
+    # Pre-flight the bridge here rather than letting the session thread fail:
+    # NetworkSource raises when it opens, which happens off-request, so the
+    # caller would otherwise get a cheerful 200 and a session that never
+    # produces a frame -- the exact silent no-op this feature exists to kill.
+    if body.source == "bridge" and audio_bridge.get_server() is None:
+        raise HTTPException(409, (
+            "the audio bridge listener is not running, so no audio can reach this "
+            "session. Restart the backend with SBD_AUDIO_BRIDGE enabled."))
 
     try:
         session = audio_reactive.start_session(
@@ -1450,7 +1518,13 @@ def audio_reactive_start(device_id: str, body: AudioReactiveStartBody):
             auto_resume_grace_s=body.auto_resume_grace_s, max_flash_rate_hz=body.max_flash_rate_hz,
             disable_flash_heavy=body.disable_flash_heavy, max_brightness_swing=body.max_brightness_swing,
             silence_auto_off=body.silence_auto_off, fallback_device_index=body.fallback_device_index,
+            source_kind=body.source,
         )
+    except capture_sources.CaptureError as e:
+        # No bridge listener at all -- a configuration problem the user can
+        # act on, not a transient fault. 409 rather than 400: the request was
+        # valid, the server just isn't in a state to serve it.
+        raise HTTPException(409, str(e))
     except audio_reactive.AudioConfigError as e:
         raise HTTPException(400, str(e))
     return {"ok": True, "device_key": device_key, **session.confirmation()}

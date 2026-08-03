@@ -760,8 +760,101 @@ function renderSenderInfo(sender) {
   return `<p class="panel-subtitle" style="margin-top:4px;">${parts.join(" · ")}</p>`;
 }
 
+// The bridge has four states and they need different fixes, so the chip
+// distinguishes all four rather than collapsing to connected/disconnected:
+//   off        - backend started with the listener disabled
+//   waiting    - listening, but no bridge has connected yet
+//   silent     - bridge attached but sending no sound (nothing playing, or
+//                the wrong capture device selected)
+//   live       - audio is actually arriving
+function bridgeState(b) {
+  if (!b || !b.listening) return "off";
+  if (!b.connected) return "waiting";
+  if (!b.streaming) return "silent";
+  return "live";
+}
+
+function bridgeChipClass(b) { return "bridge-" + bridgeState(b); }
+
+function bridgeChipText(b) {
+  return { off: "Bridge off", waiting: "Bridge waiting",
+           silent: "Bridge silent", live: "Bridge live" }[bridgeState(b)];
+}
+
+function bridgeChipTitle(b) {
+  const st = bridgeState(b);
+  if (st === "off") return "The backend is not listening for a bridge. Restart it with SBD_AUDIO_BRIDGE enabled.";
+  if (st === "waiting") return `Listening on port ${b.port}, but no bridge has connected. Run: python tools/sbd-audio-bridge.py --probe`;
+  if (st === "silent") {
+    const age = b.last_frame_age_s == null ? "never" : b.last_frame_age_s + "s ago";
+    return `Bridge connected from ${b.client} but no audio is arriving (last frame ${age}). Is anything playing? Is the right capture device selected?`;
+  }
+  return `Streaming from ${b.client} — ${b.frames} frames, ${b.drops} dropped, peak ${b.peak}`;
+}
+
+// The launch command is built from a path the USER types, so it is untrusted
+// input being written straight into innerHTML. Without escaping, a path
+// containing a quote would break out of the value attribute -- self-inflicted
+// rather than an attack, but broken either way.
+function escapeHtml(s) {
+  return String(s === null || s === undefined ? "" : s)
+    .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
+function escapeAttr(s) {
+  return escapeHtml(s).replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+}
+
+const BRIDGE_DIR_KEY = "sbd.bridgeHostDir";
+const BRIDGE_ARGS_KEY = "sbd.bridgeArgs";
+
+// The container knows only its own /app path, which is useless in a command
+// the user runs on Windows. Precedence: what the user typed here (remembered
+// per browser) > the SBD_BRIDGE_HOST_DIR hint from the server > a placeholder
+// they can overwrite.
+function bridgeHostDir(bridge) {
+  const saved = localStorage.getItem(BRIDGE_DIR_KEY);
+  if (saved !== null && saved !== "") return saved;
+  if (bridge && bridge.host_dir) return bridge.host_dir;
+  return "C:\path\to\smart-bulb-dashboard";
+}
+
+function bridgeArgs() {
+  const saved = localStorage.getItem(BRIDGE_ARGS_KEY);
+  return saved === null ? "" : saved;
+}
+
+function bridgeCommand(dir, args) {
+  const a = (args || "").trim();
+  // Quoted: this path very often contains spaces.
+  return `cd "${dir}" && tools\start-audio-bridge.cmd${a ? " " + a : ""}`;
+}
+
+async function refreshBridgeChip() {
+  const chip = document.querySelector("#bridge-chip");
+  if (!chip) return;
+  let b;
+  try { b = await get("/api/audio/bridge"); } catch (e) { return; }
+  chip.className = "bridge-chip " + bridgeChipClass(b);
+  chip.title = bridgeChipTitle(b);
+  const text = document.querySelector("#bridge-chip-text");
+  if (text) text.textContent = bridgeChipText(b);
+}
+
 async function renderAudio(main) {
   stopAudioPolling();
+  // Poll the bridge chip independently of the session poller: the whole point
+  // is to watch it go live while starting the bridge, which happens with no
+  // session running.
+  if (window.__bridgeChipTimer) clearInterval(window.__bridgeChipTimer);
+  window.__bridgeChipTimer = setInterval(() => {
+    if (!document.querySelector("#bridge-chip")) {
+      clearInterval(window.__bridgeChipTimer);
+      window.__bridgeChipTimer = null;
+      return;
+    }
+    refreshBridgeChip();
+  }, 2000);
   let devicesResp;
   try {
     devicesResp = await get("/api/audio/devices");
@@ -772,6 +865,14 @@ async function renderAudio(main) {
     return;
   }
   const audioDevices = devicesResp.devices || [];
+  // The container has no audio devices at all, so this list is empty there and
+  // the bridge is the only way to get sound in. Fetched here (not only in the
+  // poller) so the very first paint already shows the true state.
+  let bridge = { listening: false, connected: false, streaming: false };
+  try { bridge = await get("/api/audio/bridge"); } catch (e) {}
+  const bridgeUsable = !!bridge.listening;
+  // Default to whichever source can actually work right now.
+  const defaultSource = (audioDevices.length === 0 && bridgeUsable) ? "bridge" : "device";
   const defaultDwell = devicesResp.default_min_dwell_ms || 90;
   const dwellFloor = devicesResp.min_dwell_floor_ms || 40;
   let sessionStatus = { active: false };
@@ -789,10 +890,20 @@ async function renderAudio(main) {
   const defaultDeviceIndex = sessionStatus.device_index ?? (preferredIdx >= 0 ? audioDevices[preferredIdx].index : (audioDevices[0] ? audioDevices[0].index : null));
 
   const deviceOptions = audioDevices.map(d => `<option value="${d.index}" ${d.index === defaultDeviceIndex ? "selected" : ""}>${d.name}</option>`).join("");
+  const sourceOptions = [
+    `<option value="device" ${defaultSource === "device" ? "selected" : ""} ${audioDevices.length === 0 ? "disabled" : ""}>Local input device${audioDevices.length === 0 ? " (none on this host)" : ""}</option>`,
+    `<option value="bridge" ${defaultSource === "bridge" ? "selected" : ""} ${bridgeUsable ? "" : "disabled"}>Audio bridge (from Windows host)${bridgeUsable ? "" : " — listener off"}</option>`,
+  ].join("");
   const modeOptions = Object.entries(AUDIO_MODE_INFO).map(([id, info]) => `<option value="${id}" ${sessionStatus.mode === id ? "selected" : ""}>${info.name}</option>`).join("");
+  const hostDir = bridgeHostDir(bridge);
+  const hostArgs = bridgeArgs();
 
   main.innerHTML = `
-    <h1 class="panel-title">Audio Reactive <span class="tag on">LIVE DATA</span></h1>
+    <h1 class="panel-title">Audio Reactive <span class="tag on">LIVE DATA</span>
+      <span id="bridge-chip" class="bridge-chip ${bridgeChipClass(bridge)}" title="${bridgeChipTitle(bridge)}">
+        <span class="bridge-dot"></span><span id="bridge-chip-text">${bridgeChipText(bridge)}</span>
+      </span>
+    </h1>
     <p class="panel-subtitle">
       Bulb reacts to whatever this input device hears. Route your PC's audio through
       VoiceMeeter (or pick a real microphone) — see the Audio skill/docs for setup.
@@ -800,10 +911,33 @@ async function renderAudio(main) {
       long each color actually stays on the bulb so you can still see it change.
     </p>
 
+    <div class="bridge-launcher" id="bridge-launcher">
+      <div class="bridge-launcher-head">
+        <strong>Start the audio bridge</strong>
+        <span class="bridge-launcher-note">Runs on Windows — the container has no audio devices of its own.</span>
+      </div>
+      <label class="bridge-field">Repo folder on this PC
+        <input type="text" id="bridge-dir" value="${escapeAttr(hostDir)}" spellcheck="false"
+               placeholder="C:\path\to\smart-bulb-dashboard">
+      </label>
+      <label class="bridge-field">Extra arguments <span class="bridge-hint">(--probe finds which device has sound)</span>
+        <input type="text" id="bridge-args" value="${escapeAttr(hostArgs)}" spellcheck="false"
+               placeholder="--device 85">
+      </label>
+      <div class="bridge-cmd-row">
+        <code id="bridge-cmd">${escapeHtml(bridgeCommand(hostDir, hostArgs))}</code>
+        <button class="btn small" id="bridge-copy" type="button">Copy</button>
+        <button class="btn small ghost" id="bridge-reset" type="button" title="Forget my edits and use the server's value">Reset</button>
+      </div>
+      <p class="bridge-launcher-foot">Paste into a terminal, or double-click
+        <code>tools\start-audio-bridge.cmd</code>. Leave it open — closing the window stops the bridge.</p>
+    </div>
+
     <div class="card">
       <h3>Single-Bulb Session</h3>
       <div class="form-grid">
-        <label>Input device<select id="audio-device">${deviceOptions}</select></label>
+        <label>Audio source<select id="audio-source">${sourceOptions}</select></label>
+        <label id="audio-device-row" style="${defaultSource === "bridge" ? "display:none;" : ""}">Input device<select id="audio-device">${deviceOptions}</select></label>
         <label>Mode<select id="audio-mode">${modeOptions}</select></label>
         <label>Beat sensitivity
           <select id="audio-beat-sensitivity">
@@ -913,13 +1047,88 @@ async function renderAudio(main) {
     main.querySelector("#mono-hue-val").textContent = e.target.value + "°";
   };
 
+  // ---- audio bridge launcher -------------------------------------------
+  const dirEl = main.querySelector("#bridge-dir");
+  const argsEl = main.querySelector("#bridge-args");
+  const cmdEl = main.querySelector("#bridge-cmd");
+
+  function syncBridgeCmd() {
+    if (!dirEl || !cmdEl) return;
+    cmdEl.textContent = bridgeCommand(dirEl.value.trim(), argsEl ? argsEl.value : "");
+  }
+
+  if (dirEl) {
+    dirEl.oninput = () => {
+      // Persist per browser so the path survives a reload, and keep it as the
+      // override even if the server later supplies a hint.
+      localStorage.setItem(BRIDGE_DIR_KEY, dirEl.value);
+      syncBridgeCmd();
+    };
+  }
+  if (argsEl) {
+    argsEl.oninput = () => {
+      localStorage.setItem(BRIDGE_ARGS_KEY, argsEl.value);
+      syncBridgeCmd();
+    };
+  }
+
+  const copyBtn = main.querySelector("#bridge-copy");
+  if (copyBtn) {
+    copyBtn.onclick = async () => {
+      const text = cmdEl ? cmdEl.textContent : "";
+      try {
+        await navigator.clipboard.writeText(text);
+        toast("Command copied", "success");
+      } catch (e) {
+        // clipboard API needs a secure context; over plain http on a LAN
+        // address it simply is not there, so fall back rather than failing.
+        const ta = document.createElement("textarea");
+        ta.value = text;
+        document.body.appendChild(ta);
+        ta.select();
+        try { document.execCommand("copy"); toast("Command copied", "success"); }
+        catch (e2) { toast("Could not copy — select the text manually", "error"); }
+        document.body.removeChild(ta);
+      }
+    };
+  }
+
+  const resetBtn = main.querySelector("#bridge-reset");
+  if (resetBtn) {
+    resetBtn.onclick = () => {
+      localStorage.removeItem(BRIDGE_DIR_KEY);
+      localStorage.removeItem(BRIDGE_ARGS_KEY);
+      if (dirEl) dirEl.value = bridgeHostDir(bridge);
+      if (argsEl) argsEl.value = "";
+      syncBridgeCmd();
+      toast("Reset to the server's folder", "success");
+    };
+  }
+
+  // Show the device picker only when it applies. With the bridge selected the
+  // capture device is chosen on the Windows host, not here.
+  const sourceSel = main.querySelector("#audio-source");
+  if (sourceSel) {
+    sourceSel.onchange = () => {
+      const row = main.querySelector("#audio-device-row");
+      if (row) row.style.display = sourceSel.value === "bridge" ? "none" : "";
+    };
+  }
+
   main.querySelector("#audio-start").onclick = async () => {
-    if (audioDevices.length === 0) {
-      toast("No audio input devices available", "error");
+    const source = sourceSel ? sourceSel.value : "device";
+    if (source === "device" && audioDevices.length === 0) {
+      toast("No local audio input devices. Use the audio bridge instead.", "error");
       return;
     }
+    if (source === "bridge" && !bridgeUsable) {
+      toast("The bridge listener is not running", "error");
+      return;
+    }
+    const deviceEl = main.querySelector("#audio-device");
     await post(`/api/devices/${state.deviceId}/audio-reactive/start`, {
-      device_index: parseInt(main.querySelector("#audio-device").value, 10),
+      source,
+      device_index: (source === "bridge" || !deviceEl) ? 0 : parseInt(deviceEl.value, 10),
       mode: main.querySelector("#audio-mode").value,
       sensitivity: parseFloat(main.querySelector("#audio-sensitivity").value),
       monochrome_hue: parseFloat(main.querySelector("#mono-hue").value),

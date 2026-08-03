@@ -2,6 +2,22 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
+# libportaudio2 is not optional. sounddevice loads the PortAudio shared
+# library via CFFI at *import* time, and backend/main.py imports
+# audio_reactive at module scope (main.py:29), which imports sounddevice at
+# module scope (audio_reactive.py:12). python:3.11-slim ships no audio
+# libraries, so without this the container dies during startup with an
+# OSError before uvicorn ever binds -- it does not fail lazily when someone
+# starts an audio session.
+#
+# Installing it makes the app *import*; it does not make audio capture work.
+# A Linux container on Docker Desktop for Windows has no access to the host's
+# audio devices, so audio-reactive lighting has no input device to open. See
+# deploy/windows-service.md for the deployment that does support it.
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends libportaudio2 \
+ && rm -rf /var/lib/apt/lists/*
+
 COPY backend/requirements.txt ./backend/requirements.txt
 RUN pip install --no-cache-dir -r backend/requirements.txt
 

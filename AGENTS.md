@@ -171,3 +171,28 @@ Before considering a change complete:
   actually calls for — see how `iterations/004-pin-gate-remote-auth/` was
   verified (real lockout test, real session-expiry test, real browser
   flow) as the bar to match.
+
+## Agent skills
+
+Written by `/setup-matt-pocock-skills`. The engineering skills
+(`to-spec`, `to-tickets`, `triage`, `implement`, `wayfinder`,
+`grill-with-docs`) read these three files.
+
+### Issue tracker
+
+GitHub issues on `THEROCKSSS/smart-bulb-dashboard`, via the `gh` CLI. The
+local `forgejo` remote is an archival push target only — **never** open
+issues or post comments there. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+The five canonical roles, unchanged (`needs-triage`, `needs-info`,
+`ready-for-agent`, `ready-for-human`, `wontfix`). See
+`docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Single-context: one `CONTEXT.md` + `docs/adr/` at the repo root (neither
+created yet — that's expected). On this repo, `HANDOFF.md` and
+`docs/audio-modes.md` carry more real decision history than the ADR
+directory does. See `docs/agents/domain.md`.
