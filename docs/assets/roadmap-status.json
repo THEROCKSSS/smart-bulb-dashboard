@@ -1,10 +1,10 @@
 {
-  "generatedAt": "2026-08-03T22:51:42.617110+00:00",
+  "generatedAt": "2026-08-03T22:51:53.917045+00:00",
   "totalSections": 58,
   "statusCounts": {
-    "done": 3,
+    "done": 6,
     "planned": 32,
-    "in_progress": 23
+    "in_progress": 20
   },
   "sections": [
     {
@@ -54,9 +54,9 @@
       "startNum": 61,
       "endNum": 75,
       "itemCount": 15,
-      "status": "planned",
+      "status": "done",
       "url": "https://github.com/THEROCKSSS/smart-bulb-dashboard/issues/4",
-      "updatedAt": "2026-08-03T22:51:40Z",
+      "updatedAt": "2026-08-03T22:51:42Z",
       "milestone": "Week 1 — Audio & Orchestration"
     },
     {
@@ -67,9 +67,9 @@
       "startNum": 76,
       "endNum": 95,
       "itemCount": 20,
-      "status": "in_progress",
+      "status": "done",
       "url": "https://github.com/THEROCKSSS/smart-bulb-dashboard/issues/5",
-      "updatedAt": "2026-07-30T20:47:44Z",
+      "updatedAt": "2026-08-03T22:51:46Z",
       "milestone": "Week 1 — Audio & Orchestration"
     },
     {
@@ -80,9 +80,9 @@
       "startNum": 96,
       "endNum": 115,
       "itemCount": 20,
-      "status": "in_progress",
+      "status": "planned",
       "url": "https://github.com/THEROCKSSS/smart-bulb-dashboard/issues/6",
-      "updatedAt": "2026-07-30T20:47:49Z",
+      "updatedAt": "2026-08-03T22:51:52Z",
       "milestone": "Week 1 — Audio & Orchestration"
     },
     {
@@ -132,9 +132,9 @@
       "startNum": 176,
       "endNum": 190,
       "itemCount": 15,
-      "status": "in_progress",
+      "status": "done",
       "url": "https://github.com/THEROCKSSS/smart-bulb-dashboard/issues/10",
-      "updatedAt": "2026-07-30T20:48:18Z",
+      "updatedAt": "2026-08-03T22:51:50Z",
       "milestone": "Week 1 — Audio & Orchestration"
     },
     {
