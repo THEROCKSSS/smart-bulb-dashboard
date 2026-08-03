@@ -32,6 +32,11 @@ the real backend/data/*.json files:
     D state file (observability.json, network_state.json,
     remote_access.json) at a pytest tmp path, so no test can read or write
     the real backend/data/ copies.
+
+The one fixture here that isolates nothing:
+  - `check_all` runs a single assertion across a whole collection and
+    reports every failure together. It exists so that "the same check over
+    all 24 presets" is one test rather than 24 parametrised ones.
 """
 
 import colorsys
@@ -434,3 +439,67 @@ def auth_reset(tmp_path, monkeypatch):
     yield
     remote_auth._attempts.clear()
     remote_auth._rate_limit_buckets.clear()
+
+
+# pytest.fail() raises Failed, which derives from BaseException, not
+# Exception -- so a bare `except Exception` silently fails to catch the one
+# signal a test is most likely to send. Named here so the catch below is
+# explicit about it rather than resorting to `except BaseException`.
+_PYTEST_FAILED = pytest.fail.Exception
+
+
+@pytest.fixture
+def check_all():
+    """Run one assertion over many cases, reporting every failure at once.
+
+    This replaces `@pytest.mark.parametrize` in the specific situation where
+    the parameters are not distinct behaviours but "the same check, over
+    every member of a collection" -- all 24 genre presets, all 20 audio
+    modes, all 11 IP classifications.
+
+    Parametrising those turns one behaviour into 24 collected tests. That
+    inflates the suite count without adding a single assertion, and it
+    reports failures one at a time: break something common to every preset
+    and you get 24 red lines, then fix-and-rerun until they clear.
+
+    Collecting instead gives one test and one report naming every casualty:
+
+        AssertionError: 3 of 24 presets failed:
+          [techno_dark] references unknown colours: ['warm_white']
+          [lofi_study] min_dwell_ms 20 below floor 40
+          [punk_garage] KeyError: 'palette'
+
+    Coverage is identical -- every case still runs, and one failing case
+    still fails the suite. What changes is that you see all of them at once.
+
+    Args:
+        cases: the collection to check. Consumed once, so a generator is fine.
+        fn:    called with each case; raise (or assert) to fail that case.
+        label: noun for the report, pluralised with a bare "s".
+        name:  case -> short identifier for the report. Defaults to str().
+
+    Usage:
+        def test_every_preset_is_valid(check_all):
+            check_all(ar.AUDIO_GENRE_PRESETS, _assert_valid,
+                      label="preset", name=lambda p: p["id"])
+    """
+    def _check_all(cases, fn, label="case", name=str):
+        cases = list(cases)
+        failures = []
+        for case in cases:
+            try:
+                fn(case)
+            except (Exception, _PYTEST_FAILED) as exc:
+                # An AssertionError's message is the whole point, so show it
+                # bare. Anything else is a crash rather than a failed check,
+                # so name the type -- "KeyError: 'palette'" reads very
+                # differently from an assertion that simply did not hold.
+                detail = (str(exc) if isinstance(exc, AssertionError)
+                          else f"{type(exc).__name__}: {exc}")
+                failures.append(f"  [{name(case)}] {detail}".rstrip())
+        if failures:
+            raise AssertionError(
+                f"{len(failures)} of {len(cases)} {label}s failed:\n"
+                + "\n".join(failures)
+            )
+    return _check_all

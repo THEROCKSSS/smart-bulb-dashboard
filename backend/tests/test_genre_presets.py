@@ -22,8 +22,22 @@ def test_preset_ids_are_unique():
     assert len(ids) == len(set(ids))
 
 
-@pytest.mark.parametrize("preset", ar.AUDIO_GENRE_PRESETS, ids=lambda p: p["id"])
-def test_every_preset_is_valid_and_startable(preset):
+def _preset_id(preset):
+    return preset.get("id", "<no id>")
+
+
+def test_every_preset_is_valid_and_startable(check_all):
+    """One test over all 24 presets rather than 24 parametrised ones.
+
+    A change that breaks every preset at once -- renaming a MODES entry, say
+    -- should read as one failure listing 24 casualties, not as 24 separate
+    red lines. See the `check_all` fixture in conftest.py.
+    """
+    check_all(ar.AUDIO_GENRE_PRESETS, _assert_preset_is_valid_and_startable,
+              label="preset", name=_preset_id)
+
+
+def _assert_preset_is_valid_and_startable(preset):
     assert REQUIRED <= set(preset), f"missing {REQUIRED - set(preset)}"
     assert preset["mode"] in ar.MODES
     assert preset["beat_sensitivity"] in ar.BEAT_SENSITIVITY_PRESETS
@@ -59,9 +73,12 @@ def test_every_preset_is_valid_and_startable(preset):
         pytest.fail(f"{preset['id']} would be rejected by the API: {e}")
 
 
-@pytest.mark.parametrize("preset", ar.AUDIO_GENRE_PRESETS, ids=lambda p: p["id"])
-def test_every_preset_is_findable_by_id(preset):
-    assert ar.find_genre_preset(preset["id"]) is preset
+def test_every_preset_is_findable_by_id(check_all):
+    def _findable(preset):
+        assert ar.find_genre_preset(preset["id"]) is preset
+
+    check_all(ar.AUDIO_GENRE_PRESETS, _findable,
+              label="preset", name=_preset_id)
 
 
 def test_bpm_suggestions_point_at_presets_that_exist():

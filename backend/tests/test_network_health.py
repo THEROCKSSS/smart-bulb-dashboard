@@ -10,15 +10,16 @@ unplugged their ethernet is a test that gets ignored.
 
 import time
 
-import pytest
-
 import bulb_manager as bm
 import discovery
 import network_health
 
 
 # ------------------------------------------------------ IP classification -
-@pytest.mark.parametrize("ip,expected", [
+# One test over the whole table rather than 11 parametrised ones. This
+# classifier decides "did this request come from the open internet", so when
+# it regresses you want every misclassified address in a single report.
+CLASSIFICATION_CASES = [
     ("127.0.0.1", "loopback"),
     ("169.254.10.1", "link_local"),
     ("192.168.1.50", "private"),
@@ -40,9 +41,17 @@ import network_health
     ("203.0.113.7", "private"),
     ("not-an-ip", "unknown"),
     (None, "unknown"),
-])
-def test_classify_ip(ip, expected):
-    assert network_health.classify_ip(ip) == expected
+]
+
+
+def test_classify_ip(check_all):
+    def _classifies(case):
+        ip, expected = case
+        actual = network_health.classify_ip(ip)
+        assert actual == expected, f"got {actual!r}, expected {expected!r}"
+
+    check_all(CLASSIFICATION_CASES, _classifies, label="address",
+              name=lambda c: repr(c[0]))
 
 
 # --------------------------------------------------- connectivity modes ---

@@ -66,7 +66,7 @@ def _login(client, pin):
 
 # --------------------------------------------------------- PIN complexity --
 
-@pytest.mark.parametrize("pin", [
+WEAK_PINS = [
     "",             # empty
     "abc",          # under the minimum length
     "12345",        # under the minimum length AND a sequence
@@ -80,14 +80,24 @@ def _login(client, pin):
     "987654",       # descending sequence
     "123123",       # short block repeated to look longer
     "abababab",
-])
-def test_trivially_weak_and_dev_pins_are_refused(pin):
+]
+
+
+def test_trivially_weak_and_dev_pins_are_refused(check_all):
     """AGENTS.md is explicit that the development PINs must never survive
     into a deployment, so these are refused outright rather than warned
-    about -- there is deliberately no override flag."""
-    assert remote_auth.assess_pin(pin)["ok"] is False
-    with pytest.raises(ValueError):
-        remote_auth.enable(pin)
+    about -- there is deliberately no override flag.
+
+    One test over the whole list rather than 13 parametrised ones: if a
+    change to assess_pin() starts letting weak PINs through, the security
+    question is "which ones", and that should be one report, not 13 lines.
+    """
+    def _refused(pin):
+        assert remote_auth.assess_pin(pin)["ok"] is False, "assess_pin accepted it"
+        with pytest.raises(ValueError):
+            remote_auth.enable(pin)
+
+    check_all(WEAK_PINS, _refused, label="weak PIN", name=lambda p: repr(p))
 
 
 def test_a_real_pin_is_accepted_and_graded():

@@ -11,7 +11,6 @@ import os
 import sys
 
 import numpy as np
-import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -30,37 +29,58 @@ FUZZ_INPUTS = {
 }
 
 
+# Every fuzz check below runs the whole FUZZ_INPUTS matrix inside one test
+# via the `check_all` fixture, rather than parametrising it into one test per
+# input. Fuzzing is exactly the case where you want the full report: a change
+# that breaks NaN handling usually breaks several inputs at once, and seeing
+# "4 of 6 inputs failed" with each message beats fixing them one rerun at a
+# time. Coverage is unchanged -- every input still runs.
+FUZZ_CASES = sorted(FUZZ_INPUTS.items())
+
+
 # ------------------------------------------------------- analyze_frame() ---
-@pytest.mark.parametrize("name,factory", sorted(FUZZ_INPUTS.items()))
-def test_analyze_frame_never_crashes(name, factory):
-    samples = factory()
-    bands = ar.analyze_frame(samples)
-    assert np.isfinite(bands["rms"]), f"{name}: non-finite rms {bands['rms']}"
-    assert all(np.isfinite(e) for e in bands["energies"]), f"{name}: non-finite energies {bands['energies']}"
-    assert all(np.isfinite(f) for f in bands["fractions"]), f"{name}: non-finite fractions {bands['fractions']}"
+def test_analyze_frame_never_crashes(check_all):
+    def _check(case):
+        name, factory = case
+        samples = factory()
+        bands = ar.analyze_frame(samples)
+        assert np.isfinite(bands["rms"]), f"non-finite rms {bands['rms']}"
+        assert all(np.isfinite(e) for e in bands["energies"]), f"non-finite energies {bands['energies']}"
+        assert all(np.isfinite(f) for f in bands["fractions"]), f"non-finite fractions {bands['fractions']}"
+
+    check_all(FUZZ_CASES, _check, label="fuzz input", name=lambda c: c[0])
 
 
-@pytest.mark.parametrize("name,factory", sorted(FUZZ_INPUTS.items()))
-@pytest.mark.parametrize("n_bands", [3, 5, 8, 16])
-def test_analyze_frame_never_crashes_any_band_count(name, factory, n_bands):
-    samples = factory()
-    edges = ar.log_band_edges(n_bands)
-    bands = ar.analyze_frame(samples, band_edges=edges, extra_band_edges=edges)
-    assert len(bands["energies"]) == n_bands
-    assert all(np.isfinite(e) for e in bands["energies"])
-    assert all(np.isfinite(f) for f in bands["extra_fractions"])
+def test_analyze_frame_never_crashes_any_band_count(check_all):
+    cases = [(name, factory, n) for name, factory in FUZZ_CASES
+             for n in (3, 5, 8, 16)]
+
+    def _check(case):
+        _, factory, n_bands = case
+        samples = factory()
+        edges = ar.log_band_edges(n_bands)
+        bands = ar.analyze_frame(samples, band_edges=edges, extra_band_edges=edges)
+        assert len(bands["energies"]) == n_bands
+        assert all(np.isfinite(e) for e in bands["energies"])
+        assert all(np.isfinite(f) for f in bands["extra_fractions"])
+
+    check_all(cases, _check, label="input/band-count combination",
+              name=lambda c: f"{c[0]}@{c[2]}bands")
 
 
 # ------------------------------------------------------------ _apply_mode --
-@pytest.mark.parametrize("name,factory", sorted(FUZZ_INPUTS.items()))
-def test_every_mode_survives_garbage_input(name, factory):
-    samples = factory()
-    ctx = ar._new_ctx(sensitivity=1.0, monochrome_hue=280.0)
-    for mode in ar.MODES:
-        bands = ar.analyze_frame(samples, band_edges=ar.log_band_edges(6) if mode in
-                                  ("spectrum_gradient", "band_flash_overlay", "harmonic_pairs") else None)
-        action = ar._apply_mode(mode, bands, ctx)
-        af.assert_valid_action(action)
+def test_every_mode_survives_garbage_input(check_all):
+    def _check(case):
+        name, factory = case
+        samples = factory()
+        ctx = ar._new_ctx(sensitivity=1.0, monochrome_hue=280.0)
+        for mode in ar.MODES:
+            bands = ar.analyze_frame(samples, band_edges=ar.log_band_edges(6) if mode in
+                                      ("spectrum_gradient", "band_flash_overlay", "harmonic_pairs") else None)
+            action = ar._apply_mode(mode, bands, ctx)
+            af.assert_valid_action(action)
+
+    check_all(FUZZ_CASES, _check, label="fuzz input", name=lambda c: c[0])
 
 
 def test_repeated_garbage_frames_never_poison_ctx_state():
@@ -100,14 +120,17 @@ def test_stereo_split_survives_garbage_left_right_rms():
 
 
 # --------------------------------------------------------- SignalConditioner
-@pytest.mark.parametrize("name,factory", sorted(FUZZ_INPUTS.items()))
-def test_signal_conditioner_never_crashes(name, factory):
-    samples = factory()
-    conditioner = asig.SignalConditioner(agc_enabled=True, noise_gate_enabled=True, dc_removal_enabled=True)
-    conditioned, meter = conditioner.process(samples, frame_dt=0.0116, now=0.0)
-    assert np.all(np.isfinite(conditioned)), f"{name}: non-finite samples in conditioner output"
-    for key in ("input_rms", "output_rms", "peak", "peak_hold", "gain", "dc_offset"):
-        assert np.isfinite(meter[key]), f"{name}: non-finite meter[{key}]={meter[key]}"
+def test_signal_conditioner_never_crashes(check_all):
+    def _check(case):
+        _, factory = case
+        samples = factory()
+        conditioner = asig.SignalConditioner(agc_enabled=True, noise_gate_enabled=True, dc_removal_enabled=True)
+        conditioned, meter = conditioner.process(samples, frame_dt=0.0116, now=0.0)
+        assert np.all(np.isfinite(conditioned)), "non-finite samples in conditioner output"
+        for key in ("input_rms", "output_rms", "peak", "peak_hold", "gain", "dc_offset"):
+            assert np.isfinite(meter[key]), f"non-finite meter[{key}]={meter[key]}"
+
+    check_all(FUZZ_CASES, _check, label="fuzz input", name=lambda c: c[0])
 
 
 def test_signal_conditioner_survives_many_garbage_frames_in_a_row():

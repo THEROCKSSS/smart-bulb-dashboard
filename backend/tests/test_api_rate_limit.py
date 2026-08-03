@@ -33,7 +33,7 @@ OTHER_PUBLIC_IP = "9.9.9.9"
 
 # ------------------------------------------------------------ classification
 
-@pytest.mark.parametrize("method,path,expected", [
+TIER_CASES = [
     ("GET", "/api/devices", "read"),
     ("HEAD", "/api/devices", "read"),
     ("POST", "/api/devices/bulb-1/color", "write"),
@@ -48,9 +48,17 @@ OTHER_PUBLIC_IP = "9.9.9.9"
     # much larger budget.
     ("GET", "/api/devices/bulb-1/audio-reactive/status", "poll"),
     ("GET", "/api/system/health", "poll"),
-])
-def test_tier_classification(method, path, expected):
-    assert api_rate_limit.tier_for(method, path) == expected
+]
+
+
+def test_tier_classification(check_all):
+    def _classifies(case):
+        method, path, expected = case
+        actual = api_rate_limit.tier_for(method, path)
+        assert actual == expected, f"got {actual!r}, expected {expected!r}"
+
+    check_all(TIER_CASES, _classifies, label="route",
+              name=lambda c: f"{c[0]} {c[1]}")
 
 
 def test_page_assets_and_login_are_not_counted():
@@ -138,17 +146,29 @@ def test_unknown_tier_and_nonsense_limit_are_refused():
 
 # ------------------------------------------------------- local exemption ---
 
-@pytest.mark.parametrize("ip", [
+LOCAL_IPS = [
     "127.0.0.1", "::1", "192.168.1.42", "10.0.0.5", "172.16.3.9",
     "fd00::1", "fe80::1", "::ffff:192.168.1.42",
-])
-def test_loopback_and_lan_are_exempt_by_default(ip):
+]
+
+
+def test_loopback_and_lan_are_exempt_by_default(check_all):
     """W2-104: this limiter exists for unattended public exposure.
-    Throttling the user's own phone on their own Wi-Fi is a bug."""
-    api_rate_limit.configure(limits={"read": 1})
-    for _ in range(50):
-        assert api_rate_limit.check(ip, "GET", "/api/devices")[0] is True
-    assert api_rate_limit.metrics()["blocked"] == 0
+    Throttling the user's own phone on their own Wi-Fi is a bug.
+
+    All 8 local forms in one test: if an exemption regresses it usually
+    takes a whole family with it (every IPv6 form, say), and that is much
+    easier to read as one grouped report.
+    """
+    def _exempt(ip):
+        api_rate_limit.configure(limits={"read": 1})
+        for i in range(50):
+            allowed = api_rate_limit.check(ip, "GET", "/api/devices")[0]
+            assert allowed is True, f"throttled on request {i + 1} of 50"
+        blocked = api_rate_limit.metrics()["blocked"]
+        assert blocked == 0, f"limiter recorded {blocked} blocked requests"
+
+    check_all(LOCAL_IPS, _exempt, label="local address")
 
 
 def test_public_addresses_are_not_exempt():

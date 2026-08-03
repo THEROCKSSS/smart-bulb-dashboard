@@ -20,8 +20,6 @@ import statistics
 import sys
 import time
 
-import pytest
-
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -48,16 +46,26 @@ def _report(label, durations_ms):
     return mean, p50, p95, worst
 
 
-@pytest.mark.parametrize("mode", ar.MODES)
-def test_analyze_and_apply_mode_latency_per_mode(mode):
-    n_bands = 6 if mode in ("spectrum_gradient", "band_flash_overlay", "harmonic_pairs") else 3
+def test_analyze_and_apply_mode_latency_per_mode(check_all):
+    """All 20 modes in one test rather than 20 parametrised ones.
+
+    Latency especially wants the collected report: a regression is usually
+    in shared code and pushes several modes over the bound at once, so the
+    useful output is the full list of which modes blew the budget and by how
+    much -- not the first one alphabetically.
+    """
     samples = af.make_multi_tone([(100, 0.6), (1000, 0.3), (8000, 0.15)], duration_s=1.0)
-    durations_ms = af.time_pipeline(samples, mode=mode, n_bands=n_bands, repeats=1)
-    mean, p50, p95, worst = _report(f"analyze_frame+_apply_mode[{mode}]", durations_ms)
-    assert mean < REGRESSION_BOUND_MS, (
-        f"{mode}: mean analysis latency {mean:.4f}ms exceeds the real-time regression "
-        f"bound of {REGRESSION_BOUND_MS:.4f}ms (frame budget is {FRAME_BUDGET_MS:.2f}ms)"
-    )
+
+    def _check(mode):
+        n_bands = 6 if mode in ("spectrum_gradient", "band_flash_overlay", "harmonic_pairs") else 3
+        durations_ms = af.time_pipeline(samples, mode=mode, n_bands=n_bands, repeats=1)
+        mean, p50, p95, worst = _report(f"analyze_frame+_apply_mode[{mode}]", durations_ms)
+        assert mean < REGRESSION_BOUND_MS, (
+            f"mean analysis latency {mean:.4f}ms exceeds the real-time regression "
+            f"bound of {REGRESSION_BOUND_MS:.4f}ms (frame budget is {FRAME_BUDGET_MS:.2f}ms)"
+        )
+
+    check_all(ar.MODES, _check, label="mode")
 
 
 def test_full_process_pipeline_latency_with_signal_conditioning():

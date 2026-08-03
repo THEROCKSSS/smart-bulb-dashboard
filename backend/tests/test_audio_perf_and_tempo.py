@@ -10,7 +10,6 @@ import os
 import sys
 
 import numpy as np
-import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
@@ -32,17 +31,20 @@ def _reference_analyze(samples, n_bands):
     return energies, [e / total for e in energies]
 
 
-@pytest.mark.parametrize("n_bands", [3, 5, 6, 8])
-def test_cached_hot_path_is_bit_identical_to_the_original(n_bands):
-    rs = np.random.RandomState(7)
-    cases = [rs.rand(ar.BLOCK_SIZE) * 2 - 1 for _ in range(12)]
-    cases += [np.zeros(ar.BLOCK_SIZE), np.ones(ar.BLOCK_SIZE)]
-    for samples in cases:
-        want_e, want_f = _reference_analyze(samples, n_bands)
-        got = ar.analyze_frame(samples, n_bands=n_bands)
-        # Exact equality, not approx: the caches must not perturb the maths.
-        assert got["energies"] == want_e
-        assert got["fractions"] == want_f
+def test_cached_hot_path_is_bit_identical_to_the_original(check_all):
+    def _identical(n_bands):
+        rs = np.random.RandomState(7)
+        cases = [rs.rand(ar.BLOCK_SIZE) * 2 - 1 for _ in range(12)]
+        cases += [np.zeros(ar.BLOCK_SIZE), np.ones(ar.BLOCK_SIZE)]
+        for i, samples in enumerate(cases):
+            want_e, want_f = _reference_analyze(samples, n_bands)
+            got = ar.analyze_frame(samples, n_bands=n_bands)
+            # Exact equality, not approx: the caches must not perturb the maths.
+            assert got["energies"] == want_e, f"sample {i}: energies drifted"
+            assert got["fractions"] == want_f, f"sample {i}: fractions drifted"
+
+    check_all([3, 5, 6, 8], _identical, label="band count",
+              name=lambda n: f"{n} bands")
 
 
 def test_a_caller_mutating_band_edges_cannot_poison_the_cache():
@@ -104,15 +106,23 @@ def _detect(signal, use_bass):
     return tracker.bpm
 
 
-@pytest.mark.parametrize("bpm", [70, 100, 120, 128, 140, 174])
-def test_bass_band_onset_tracks_tempo_through_a_dense_mix(bpm):
+def test_bass_band_onset_tracks_tempo_through_a_dense_mix(check_all):
     """The reason bass_energy exists. Broadband rms sums the whole mix, so a
     loud sustained pad plus vocal-range content raises the floor the kick has
     to clear; measured, broadband drops to roughly 1-in-9 correct on this
-    signal while the low band stays locked on."""
-    got = _detect(_beat_track(bpm, density=2), use_bass=True)
-    assert got is not None
-    assert abs(got - bpm) <= 3, f"expected ~{bpm} BPM, got {got}"
+    signal while the low band stays locked on.
+
+    All 6 tempos in one test. This is the 9/9-vs-1/9 measurement the handoff
+    quotes, so the meaningful result is the whole sweep -- "5 of 6 tempos
+    failed" is the number that tells you the bass path regressed.
+    """
+    def _tracks(bpm):
+        got = _detect(_beat_track(bpm, density=2), use_bass=True)
+        assert got is not None, "no tempo detected at all"
+        assert abs(got - bpm) <= 3, f"expected ~{bpm} BPM, got {got}"
+
+    check_all([70, 100, 120, 128, 140, 174], _tracks, label="tempo",
+              name=lambda b: f"{b} BPM")
 
 
 def test_switching_onset_source_mid_session_does_not_fake_a_beat():

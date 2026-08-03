@@ -67,20 +67,29 @@ GOLDEN_6BAND_MODES = {
 }
 
 
-@pytest.mark.parametrize("mode,expected", sorted(GOLDEN_3BAND_MODES.items()))
-def test_golden_3band_mode(mode, expected):
-    action = _run(mode, n_bands=3)
-    assert action[0] == expected[0]
-    for actual, exp in zip(action[1:], expected[1:]):
-        assert actual == pytest.approx(exp, abs=TOL)
+def _assert_golden(mode, expected, n_bands):
+    action = _run(mode, n_bands=n_bands)
+    assert action[0] == expected[0], f"action type {action[0]!r} != {expected[0]!r}"
+    for i, (actual, exp) in enumerate(zip(action[1:], expected[1:]), start=1):
+        assert actual == pytest.approx(exp, abs=TOL), (
+            f"field {i}: {actual!r} != {exp!r} (tolerance {TOL})"
+        )
 
 
-@pytest.mark.parametrize("mode,expected", sorted(GOLDEN_6BAND_MODES.items()))
-def test_golden_6band_mode(mode, expected):
-    action = _run(mode, n_bands=6)
-    assert action[0] == expected[0]
-    for actual, exp in zip(action[1:], expected[1:]):
-        assert actual == pytest.approx(exp, abs=TOL)
+# One test per band count rather than one per mode. A golden-value change is
+# almost never limited to a single mode -- retuning a shared smoothing
+# constant shifts most of them at once -- so the useful failure output is
+# every drifted mode with its actual-vs-expected, in one report.
+def test_golden_3band_mode(check_all):
+    check_all(sorted(GOLDEN_3BAND_MODES.items()),
+              lambda case: _assert_golden(case[0], case[1], n_bands=3),
+              label="mode", name=lambda c: c[0])
+
+
+def test_golden_6band_mode(check_all):
+    check_all(sorted(GOLDEN_6BAND_MODES.items()),
+              lambda case: _assert_golden(case[0], case[1], n_bands=6),
+              label="mode", name=lambda c: c[0])
 
 
 def test_golden_stereo_split():

@@ -159,11 +159,19 @@ DEVICE_GET_PATHS = [
 ]
 
 
-@pytest.mark.parametrize("template", DEVICE_GET_PATHS)
-def test_no_per_device_endpoint_returns_a_local_key(client, fake_config, template):
-    resp = client.get(template.format(id="bulb-1"))
-    for key in FIXTURE_KEYS:
-        assert key not in resp.text
+def test_no_per_device_endpoint_returns_a_local_key(client, fake_config, check_all):
+    """Every per-device GET in one test rather than one per route.
+
+    This is a leak sweep: the question it answers is "does any route expose
+    the key", so a regression that adds the key to a shared serialiser
+    should report every affected route at once, not just the first.
+    """
+    def _no_key(template):
+        resp = client.get(template.format(id="bulb-1"))
+        leaked = [key for key in FIXTURE_KEYS if key in resp.text]
+        assert not leaked, f"response contains {leaked}"
+
+    check_all(DEVICE_GET_PATHS, _no_key, label="device route")
 
 
 def test_device_list_and_patch_responses_are_redacted(client, fake_config):

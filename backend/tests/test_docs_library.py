@@ -7,8 +7,6 @@ to a path -- and these tests exist to keep it structural.
 import os
 import sys
 
-import pytest
-
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 import docs_library as dl  # noqa: E402
@@ -46,7 +44,7 @@ def test_listing_never_ships_document_bodies():
             assert not any(k.startswith("_") for k in entry)
 
 
-@pytest.mark.parametrize("attempt", [
+TRAVERSAL_ATTEMPTS = [
     "../backend/config",
     "../../etc/passwd",
     "..%2F..%2Fbackend%2Fconfig",
@@ -55,11 +53,22 @@ def test_listing_never_ships_document_bodies():
     "backend/config",
     "config",
     "",
-])
-def test_traversal_and_unknown_slugs_return_nothing(attempt):
+]
+
+
+def test_traversal_and_unknown_slugs_return_nothing(check_all):
     """Not 'is sanitised' -- there is no path to sanitise. Anything without a
-    discovered slug simply has no entry."""
-    assert dl.get_doc(attempt) is None
+    discovered slug simply has no entry.
+
+    All 8 attempts in one test: if slug lookup ever regresses into path
+    resolution, you want the full list of what got through in one report.
+    """
+    def _returns_nothing(attempt):
+        got = dl.get_doc(attempt)
+        assert got is None, f"resolved to {got!r}"
+
+    check_all(TRAVERSAL_ATTEMPTS, _returns_nothing, label="traversal attempt",
+              name=repr)
 
 
 def test_hidden_docs_stay_hidden():
