@@ -49,10 +49,14 @@
 
   <main class="main">
     <p class="eyebrow">Audio-Reactive Lighting</p>
-    <h1>The bulb reacts to sound. Fourteen ways.</h1>
+    <h1>The bulb reacts to sound. Twenty ways.</h1>
     <p class="lede">Capture from a VoiceMeeter/virtual-cable device (whatever's playing on your PC) or a real microphone (whatever's audible in the room). Pick a mode, hit start.</p>
 
-    <h2>The 14 modes</h2>
+    <div class="callout">
+      <p><strong>If you run this in Docker, read this first.</strong> A Linux container on Docker Desktop for Windows has no access to the host's audio devices, so a session started there runs, reports itself running, and never reacts to a sound — no error, just a bulb that sits still. Two supported ways round it: <strong>bridge mode</strong> (a small Windows tool streams audio in; the dashboard keeps serving) or <strong>native mode</strong> (one command swaps the container for a host backend). See <a href="#modes-of-operation">Bridge vs. native</a>.</p>
+    </div>
+
+    <h2>The 20 modes</h2>
     <table>
       <thead><tr><th>Mode</th><th>What it does</th></tr></thead>
       <tbody>
@@ -70,37 +74,78 @@
         <tr><td><code>breathing_silence</code></td><td>Slow ambient breathing during quiet passages instead of going flat.</td></tr>
         <tr><td><code>harmonic_pairs</code> <span class="tag accent">v0.3.0</span></td><td>Finds the two most-energetic non-adjacent bands and blends between two complementary (180°-apart) hue anchors by their energy ratio.</td></tr>
         <tr><td><code>kick_snare_split</code> <span class="tag accent">v0.3.0</span></td><td>Bass energy drives brightness (kick-like pulses); a mid/high band drives a hue swing on top (snare/hihat accent).</td></tr>
+        <tr><td><code>energy_contour</code></td><td>Hue follows the overall energy envelope rather than any single band.</td></tr>
+        <tr><td><code>bass_only_pulse</code></td><td>Ignores everything above the low band — pure kick response.</td></tr>
+        <tr><td><code>mirror_mode</code></td><td>Hue reflects around a fixed centre point instead of travelling in one direction.</td></tr>
+        <tr><td><code>random_walk_hue</code></td><td>Hue drifts by bounded random steps, nudged by the audio rather than driven by it.</td></tr>
+        <tr><td><code>silence_flash_recover</code></td><td>Marks the return of sound after a long pause with a flash.</td></tr>
+        <tr><td><code>crescendo_ramp</code></td><td>Tracks whether energy is building over a couple of seconds and ramps with it.</td></tr>
       </tbody>
     </table>
+    <p>Speech is not music: on a podcast or a stream, the bass-led modes barely move and beat detection is close to meaningless. Reach for the level-driven ones — <code>vu_meter</code>, <code>energy_contour</code>, <code>weighted_blend</code> — and a longer dwell.</p>
     <div class="callout">
       <p>A real flicker bug was found and fixed while building <code>harmonic_pairs</code>: two hue anchors exactly 180° apart cancel to a zero vector under a shortest-arc blend at a 50/50 energy split, so it walks a fixed direction between the anchors instead — caught by its own test suite before shipping.</p>
     </div>
 
-    <h2>Latency vs. visibility</h2>
-    <p>“Down to the millisecond” isn't physically achievable on this hardware — the bulb itself has a ~50–100ms round-trip floor. What's actually tunable are two separate numbers:</p>
+    <h2 id="modes-of-operation">Bridge vs. native</h2>
+    <p>Both are first-class. Pick by what you're doing:</p>
+    <table>
+      <thead><tr><th></th><th>Bridge mode</th><th>Native mode</th></tr></thead>
+      <tbody>
+        <tr><td>Dashboard</td><td>keeps serving from the container</td><td>container stopped, host serves</td></tr>
+        <tr><td>Added capture latency</td><td>~1–2ms loopback hop</td><td>zero</td></tr>
+        <tr><td>Start it</td><td><code>tools\start-audio-bridge.cmd</code></td><td><code>tools\native-audio-mode.cmd</code></td></tr>
+        <tr><td>Use it for</td><td>everyday and remote use</td><td>judging presets by ear</td></tr>
+      </tbody>
+    </table>
+    <p>Native mode serves the same port, so the local and tailnet URLs both keep working across the switch, and the container is restored on every exit path — Ctrl-C, a crash, a hard kill. Bridge mode's <strong>capture device is chosen in the dashboard</strong>: the list is reported by the capture tool itself, because the container cannot enumerate the host's audio devices. Loopback devices are grouped above microphones, since a microphone hears the room rather than what the computer is playing.</p>
+
+    <h2>Latency, measured rather than claimed</h2>
+    <p>Analysis runs on a short <strong>hop</strong> over a longer <strong>window</strong>, because one number cannot do both jobs: the hop sets latency, the window sets frequency resolution. Shrinking a single combined block buys latency and destroys the low-frequency resolution beat detection depends on.</p>
     <ul>
-      <li><strong>Decision latency</strong> — how fast the pipeline notices a change and computes a new target. Sub-15ms internally (512-sample capture blocks, zero-padded to a 4096-point FFT for band accuracy).</li>
-      <li><strong>Display dwell (<code>min_dwell_ms</code>)</strong> — how long a color has to stay on the bulb before the next one can replace it. Default 90ms, floor 40ms. Turn it down for a snappier reaction, up for something calmer and easier to actually watch change.</li>
+      <li><strong>Hop — 256 samples (5.8ms).</strong> How often a colour decision is made. Shorter costs CPU; the default runs at roughly 3% of one core.</li>
+      <li><strong>Window — 1024 samples (23.2ms, 43Hz per bin).</strong> How much audio each decision sees. <em>Longer is not better:</em> raising it to 2048 measurably costs tempo accuracy, because a longer window smears the transient it is trying to locate.</li>
+      <li><strong>Display dwell (<code>min_dwell_ms</code>)</strong> — how long a colour stays before the next replaces it. Default 90ms, floor 40ms. Editable <em>while a session runs</em>, and saved when you move it.</li>
     </ul>
+    <p>The dashboard reports each stage live, with a typical figure and a worst case, so latency is a number you can read rather than a claim. Measured on real hardware:</p>
+    <table>
+      <thead><tr><th>Stage</th><th>Typical</th><th>p95</th><th>Who controls it</th></tr></thead>
+      <tbody>
+        <tr><td>Capture</td><td>5.8ms</td><td>27.4ms</td><td>you (hop size)</td></tr>
+        <tr><td>Analysis</td><td>0.6ms</td><td>0.9ms</td><td>you (window size)</td></tr>
+        <tr><td><strong>Software total</strong></td><td><strong>6.4ms</strong></td><td>28.3ms</td><td><strong>you</strong></td></tr>
+        <tr><td>Bulb round-trip</td><td>11.2ms</td><td>63.6ms</td><td>nobody</td></tr>
+      </tbody>
+    </table>
+    <div class="callout">
+      <p><strong>The bulb is the floor, and it is not close.</strong> Its round-trip was measured between 11ms and 637ms on the same lamp within an hour — at worst about a hundred times the entire software budget. No setting in this project changes that; it is Wi-Fi, Tuya's protocol and the lamp's firmware. If the lights feel laggy and the dashboard shows the software stages in single-digit milliseconds, the answer isn't a setting.</p>
+    </div>
     <p>The sender always transmits the <em>freshest</em> computed value when its dwell window opens — never a backlog — so raising the analysis rate never causes lag.</p>
 
     <h2>Multi-bulb orchestration</h2>
-    <p>One shared audio analysis drives every bulb in a group via one of three role modes:</p>
+    <p>One shared audio analysis drives every bulb in a group via one of five role modes:</p>
     <table>
       <thead><tr><th>Role</th><th>Effect</th></tr></thead>
       <tbody>
         <tr><td><code>unison</code></td><td>Every bulb shows the identical color.</td></tr>
         <tr><td><code>phase_offset</code></td><td>Same effect, hue shifted per bulb — a chase.</td></tr>
         <tr><td><code>band_split</code></td><td>Bulb <em>i</em> primarily reacts to band <em>i</em> — a literal “bass bulb”/“treble bulb” setup.</td></tr>
+        <tr><td><code>wave</code></td><td>Identical colour, with a brightness crest travelling across the ordered bulb list.</td></tr>
+        <tr><td><code>mirror</code></td><td>Bulbs paired front-to-back; each pair's second bulb mirrors the first's hue.</td></tr>
       </tbody>
     </table>
     <p>Each bulb keeps its own independent send thread, so one slow or offline bulb in a group never stalls the others.</p>
 
     <div class="callout">
-      <p><strong>Known limitation:</strong> the hue anchors and beat thresholds are verified correct <em>in direction</em> (synthetic tones land near the right anchor, louder audio raises brightness) but not yet tuned by taste against real music with the bulb online — see the <a href="handoff.html">Build History</a> for why.</p>
+      <p><strong>Known limitation:</strong> the 24 genre presets are reasoned, not tuned by ear. Every blocker to doing it is now cleared — audio reaches the container, the capture device is selectable in the UI, dwell is adjustable live, and latency is measured and inside budget — but nobody has yet sat down with real music and used their judgement. See the <a href="handoff.html">Build History</a>.</p>
+    </div>
+
+    <div class="callout">
+      <p><strong>Only one physical bulb exists.</strong> Every multi-bulb feature above — groups, zones, the five role modes, failover — is tested against fakes and has never run on real hardware.</p>
     </div>
 
     <p>Full design rationale, the two real bugs found while building this (a blocking-I/O freeze and a circular hue-smoothing bug), and setup details: <a href="https://github.com/THEROCKSSS/smart-bulb-dashboard/blob/master/docs/music-reactive-lighting.md">the complete design doc</a>, or <a href="https://github.com/THEROCKSSS/smart-bulb-dashboard/tree/master/.claude/skills/bulb-dashboard-audio">the step-by-step skill</a>.</p>
+    <p>Every knob with its cost, a symptom-to-setting troubleshooting table, the full latency budget and Windows audio-source setup: <a href="https://github.com/THEROCKSSS/smart-bulb-dashboard/blob/master/docs/audio-latency.md">the audio latency guide</a>. All 20 modes explained with tuning guidance: <a href="https://github.com/THEROCKSSS/smart-bulb-dashboard/blob/master/docs/audio-modes.md">the modes reference</a>. Both are also browsable inside the dashboard under System → Docs.</p>
 
     <footer class="site-footer">
       <div>

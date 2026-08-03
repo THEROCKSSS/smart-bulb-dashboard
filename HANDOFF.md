@@ -18,15 +18,20 @@
 
 ## Current state
 
-`master` was at `8097c82` when this was written, pushed to GitHub, working
-tree clean and nothing unpushed, with **693 tests passing**
+`master` was at `4925f40` when this was written, pushed to GitHub, working
+tree clean and nothing unpushed, with **729 tests passing**
 (`backend/tests/` + `cli/tests/`).
 
 The count went **836 -> 658** deliberately, then to 671 as bridge tests
-landed, then to 693 with the latency-instrumentation tests: 17 families of
-parametrised tests were collapsed into single tests that still run every case
-but report all failures together. No coverage was lost — if you are comparing
-against an older handoff, 836 is not the number to restore.
+landed, then to 729 across the latency-instrumentation, hop/window,
+live-dwell and bridge-protocol-v2 work: 17 families of parametrised tests were
+collapsed into single tests that still run every case but report all failures
+together. No coverage was lost — if you are comparing against an older
+handoff, 836 is not the number to restore.
+
+**Audio-reactive lighting works end to end as of this session**, verified on
+the real bulb from real audio through the bridge: software latency 6.4ms,
+bulb responding, colours changing. That had never been true before.
 
 Note the roadmap-sync CI bot pushes `docs/assets/roadmap-status.json`
 whenever issues change, so `git push` will be rejected as non-fast-forward
@@ -178,6 +183,77 @@ Measured live after the change: capture 5.8ms, analysis 0.6ms, **software
 6.44ms — `within_target: true`**. Analysis costs 0.17ms per 5.8ms hop, about
 **3% of one core**. Real tempo locked on real audio (140.4, 124.0, 110.4 BPM).
 
+### Then: making it actually usable (same session, second half)
+
+The spec closed, and then a real attempt to *use* it exposed a chain of
+problems that no test would have caught. The trigger: the bridge chip read
+"waiting" with a podcast playing and the lights did nothing.
+
+- **The bridge tool simply was not running.** "Waiting" was correct. But
+  everything below is what the attempt to fix that uncovered.
+- **`start-audio-bridge.cmd` hardcoded `--device 85`.** That device is silent
+  whenever desktop audio routes through Voicemeeter rather than VB-Cable — so
+  the bridge would connect, stream flawlessly, and deliver nothing but zeros.
+  Now defaults to `--auto`.
+- **`--auto` is loopback-first, not loudest-first.** Measured with a podcast
+  playing: a microphone hearing the speakers read peak **0.53** while the clean
+  Voicemeeter feed read **0.23**. Loudest-wins streams the room — coughs and
+  keyboard included — instead of the audio.
+- **The bridge chip gained a fifth state, `ready`.** The four it had could not
+  express "audio is arriving but no session is consuming it": the chip said
+  "live", the audio really was live, and the bulb sat still because nobody had
+  pressed Start. Driven off the server's existing subscriber count.
+- **Min dwell is now live-editable and self-persisting.** Tuning by ear means
+  moving one control and hearing the difference; stop/change/start destroys
+  that comparison. `BulbSender` gained a wake event so *lowering* the dwell
+  mid-wait applies immediately rather than after the old value elapses —
+  3000ms → 40ms used to take three seconds to take effect.
+- **The bridge now sends hop-sized (256) frames.** It was sending 512 to match
+  the *old* `BLOCK_SIZE`, which put an 11.6ms floor under a 5.8ms pipeline.
+  Live before: **12.294ms, `within_target: false`**. After: **7.989ms, true**.
+  Both audio paths now meet the requirement; before this only native did.
+- **Bridge protocol v2 — the capture device is now chosen in the dashboard.**
+  `DEV0` (host → container) carries the tool's device inventory; `CTL0`
+  (container → host) carries a control message back down the same socket,
+  which until then only ever carried audio one way. The tool polls between
+  frames and reopens on the new device.
+
+  This needed a protocol change rather than reusing the existing "Input
+  device" dropdown because **that dropdown lists the container's devices** —
+  always empty in Docker, i.e. the wrong list for the one mode that most needs
+  a picker. Verified live: 85 → 77 → 85, `device_index` following each time.
+
+### More real bugs, all found by running it rather than reviewing it
+
+1. **`MSG_WAITALL` is unsupported on Windows** (`WinError 10045`) — the only
+   platform the capture tool runs on. Used in the new control reader; caught
+   by a test before it ever ran on the host. Replaced with an explicit
+   recv-exactly loop on both sides.
+2. **A control-socket race.** The socket was registered in the client worker
+   thread while `_client_addr` was claimed in the accept loop, so `status()`
+   could report a connected bridge that could not be steered. Passed in
+   isolation, failed under full-suite load. Both are now claimed together.
+3. **The live-dwell persistence silently saved nothing.**
+   `load_last_session()` returns the *record* (`{device_id, config,
+   saved_at}`), not the config, and `save_last_session()` sanitises to a field
+   whitelist — so writing at the wrong level was a no-op.
+4. **The in-app docs browser was empty in every container deployment.** The
+   Dockerfile never copied `docs/`; it only ever worked from a host checkout.
+   Querying `docs_library` inside the running container returned
+   `{"categories": [], "total": 0}`. Now 25 docs indexed.
+
+### Security event this session
+
+The PIN gate was **reset and re-armed, and its `secret_key` rotated**, because
+the old key was accidentally exposed while debugging (a redaction filter that
+excluded `hash`/`salt`/`pin` but not `secret_key`). Every pre-leak session is
+dead. The old state file is kept as
+`backend/data/remote_auth.json.compromised-*.bak` — gitignored, and safe to
+delete.
+
+**The PIN itself is deliberately not recorded here** (see "Credentials /
+config"). If you need it, ask the repo owner.
+
 ## What was done in Round 7
 
 Verified state, not claims — every item below was checked by running it.
@@ -240,17 +316,22 @@ Verified state, not claims — every item below was checked by running it.
 
 ## What's NOT done (the gap)
 
-- **The #75 audio spec is closed** (all of #76–#82). Two things it deliberately
-  did *not* settle:
-  - **The bridge still ships 512-sample frames.** Native capture now asks the
-    device for hop-sized blocks, so native mode genuinely reaches 5.8ms. A
-    bridge session's floor is whatever frame size the host tool sends — the
-    Latency card's `floor_source` will say `source delivery` rather than
-    `configured hop` when that is what is binding. Making the bridge tool send
-    256-sample frames is the follow-up, and it is a host-side change only.
-  - **Presets are still not tuned by ear.** #77 exists precisely to make that
-    possible and it now works; nobody has actually done it yet. This remains
-    the single highest-value audio task.
+- **The #75 audio spec is closed** (all of #76–#82), and the bridge frame-size
+  follow-up it left open is done too — both audio paths now measure inside the
+  10ms budget.
+- **Presets are STILL not tuned by ear.** Everything that was blocking it is
+  now cleared: audio reaches the container, the device is selectable in the
+  UI, dwell is live-editable, and latency is measured and inside budget. What
+  is missing is somebody sitting down with real music and using their
+  judgement. **This is the single highest-value remaining audio task**, and it
+  is now purely a matter of doing it.
+  - A session got as far as `vu_meter` at 150ms dwell against speech. Nothing
+    was saved as a preset, and no genre preset was touched.
+  - Note for whoever does it: a **podcast is the wrong material** for tuning
+    the genre presets. It is speech — almost no bass, no beat — so bass-led
+    modes barely move and beat detection is meaningless. Tune genre presets
+    against the genre's actual music. A separate "Speech / Podcast" preset is
+    a real gap worth filling, since all 24 existing presets are music genres.
 - **Week 3 is ~20% done.** Only Phase A (the CVE fix, #74) shipped as a
   planned phase. The rest of Week 3 — Home Assistant, HomeKit, Alexa/Google,
   voice control, Discord bot, webhooks, PWA, scenes/effects expansion,
@@ -331,7 +412,18 @@ around that and they are both first-class. Pick by what you are doing:
 | Use when | normal use, remote use | judging presets against real music |
 
 **Bridge mode** leaves everything up and streams PCM from the host into the
-container on 8503. **Native mode** is one command each way:
+container on 8503. Two things worth knowing:
+
+- **Which device it captures is chosen in the dashboard**, under "Start the
+  audio bridge" → Capture device. The list comes from the capture tool itself
+  (protocol v2's `DEV0`), because the container cannot enumerate host audio
+  devices — the "Input device" dropdown next to it lists the *container's*
+  devices and is always empty in Docker. Loopback devices are grouped first.
+- **`tools\start-audio-bridge.cmd` with no arguments auto-picks** a device
+  that actually has sound on it, loopback-first. Do not hardcode an index;
+  the right one changes with the routing.
+
+**Native mode** is one command each way:
 
 ```bash
 tools\native-audio-mode.cmd            # stop container, serve natively, Ctrl-C to end

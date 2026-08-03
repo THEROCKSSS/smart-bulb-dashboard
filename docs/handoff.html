@@ -50,7 +50,7 @@
   <main class="main">
     <p class="eyebrow">Build History</p>
     <h1>How this actually got built.</h1>
-    <p class="lede">Four rounds so far. This is the condensed version — the expanded, blow-by-blow write-up of each real bug (what broke, how it was found, how it was fixed, and how the fix was verified) lives in the repo's <code>iterations/</code> directory and <code>HANDOFF.md</code>.</p>
+    <p class="lede">Eight rounds so far. This is the condensed version — the expanded, blow-by-blow write-up of each real bug (what broke, how it was found, how it was fixed, and how the fix was verified) lives in the repo's <code>iterations/</code> directory and <code>HANDOFF.md</code>.</p>
 
     <h2>Round 1 — local control from zero</h2>
     <p>Started with no credentials at all for a Bytech A19 Wi-Fi RGB+CCT bulb. A mitmproxy interception attempt failed (the Tuya app's real API traffic runs over HTTP/3/QUIC, which slips past a standard proxy). The Tuya IoT Platform's QR-link step scanned but never confirmed — a known data-center-mismatch bug. What actually worked: <code>tuya-device-sharing-sdk</code>, the same cloud-assisted QR-login flow Home Assistant's own Tuya integration uses, needing only the app's User Code — no developer platform project at all. Verified with real color changes: red, then blue, then yellow, watched on the physical bulb.</p>
@@ -85,10 +85,31 @@
     </ul>
     <p>All verified with real timing tests and Playwright screenshots against the actual unreachable device — full backend suite stayed green (353/353) throughout.</p>
 
+    <h2>Rounds 6 &amp; 7 — Week 2 hardening, then CVEs, live streaming and the docs browser</h2>
+    <p>Week 2 shipped in four phases and closed: PIN-gate hardening (configurable lockout with exponential backoff, enforced PIN complexity, separately-revocable guest PINs, IPv6-correct per-IP tracking) and a general per-IP API rate limiter; TLS and reverse proxy (validated Caddy and nginx configs, systemd units, trusted-proxy <code>X-Forwarded-For</code> handling, a <code>/healthz</code> probe); audit logging, secrets management and backup/restore; then observability and network resilience.</p>
+    <p>Round 7 closed both applicable starlette CVEs (FastAPI 0.115.6 → 0.141.1), made audio analysis 57% faster with bit-identical output, moved beat detection onto the bass band rather than broadband RMS — measured <strong>9/9</strong> tempos correct against <strong>1/9</strong> on a dense mix — added a live SSE stream, expanded the genre presets from 8 to 24, and built the in-app documentation browser. Six real bugs, including a <code>local_key</code> leak through a tinytuya exception string, and auth-state file corruption that bricked the entire dashboard because a non-atomic write left half a file the gate read on every request.</p>
+
+    <h2>Round 8 — audio-reactive lighting actually works</h2>
+    <p>The flagship feature had never once worked in the way the dashboard is actually deployed. A Linux container on Docker Desktop for Windows has no access to host audio devices, so a session there ran, reported itself running, and never reacted to a sound. This round closed that end to end, and for the first time the bulb reacted to real audio through the deployed container.</p>
+    <p>Latency stopped being a claim and became a number: per-stage capture, analysis and bulb round-trip, each with a typical figure and a worst case, live in the dashboard. Then analysis was rebuilt to run a short <strong>hop</strong> over a longer <strong>window</strong>, so latency and frequency resolution stopped fighting each other. Software sound-to-decision went from <strong>12.19ms to 6.44ms</strong>, inside the 10ms target — proven by the instrumentation rather than asserted. <code>analyze_frame()</code> itself was not modified; all 21 golden-value tests passed with no expected values changed, which is what proves the change was timing and nothing else.</p>
+    <p>The interesting failures were the ones only real hardware exposed:</p>
+    <ul>
+      <li><strong>The instrumentation flattered itself.</strong> Capture latency was first measured as the median gap between capture callbacks. Against DirectSound that read 0.93ms while the mean was 11.59ms — the backend delivers in bursts, so half the gaps are sub-millisecond while the data is no fresher. A 12ms pipeline reported 1.5ms and claimed it met the target. Capture is now the block period plus delivery lateness, with the raw gaps kept as a separate delivery-health signal.</li>
+      <li><strong>Then it flattered itself again, differently.</strong> With a 256-sample hop it reported a 5.8ms floor even when the source only delivered every 20ms. A decision can never be fresher than its input, so the floor became <code>max(configured hop, observed delivery period)</code> — and the dashboard now names which one is binding.</li>
+      <li><strong>A longer analysis window is not better.</strong> 2048 samples resolves bass twice as finely as 1024 and tracks one fewer tempo; 4096 tracks half of them, all biased high. A longer window smears the transient it is trying to locate. The default is the measured compromise, not a guess.</li>
+      <li><strong>The launcher hardcoded a capture device that was silent.</strong> It would connect, stream flawlessly and deliver nothing but zeros. Auto-detection replaced it — and “pick the loudest” turned out to be wrong too, choosing a microphone hearing the speakers (peak 0.53) over a clean loopback feed (0.23). Loopback wins now, because a microphone hears the room.</li>
+      <li><strong>The status chip could not describe the failure it was looking at.</strong> Audio arriving with no session consuming it read as “live” while the bulb sat still. It now says so explicitly.</li>
+      <li><strong><code>MSG_WAITALL</code> is unsupported on Windows</strong> — the only platform the capture tool runs on. Caught by a test before it ever ran on the host.</li>
+      <li><strong>The in-app docs browser was empty in every container deployment.</strong> The Dockerfile never copied <code>docs/</code>; it had only ever worked from a host checkout.</li>
+    </ul>
+    <p>Also shipped: a one-command switch between container and native-host audio, minimum dwell adjustable while a session runs (so tuning by ear doesn't mean stopping and restarting), and a bridge protocol revision that lets the capture device be chosen in the dashboard — necessary because the container cannot enumerate the host's audio devices, so the tool now reports its own inventory over the same socket.</p>
+    <p>729 tests passing, up from 671 at the start of the round.</p>
+
     <h2>Known-fragile / watch for</h2>
     <ul>
       <li>The physical bulb genuinely drops off Wi-Fi periodically — observed multiple times across every build session, unprompted. This is bulb/router behavior, not a dashboard bug.</li>
-      <li>Audio-reactive mode tuning (hue anchors, beat thresholds) is verified correct in direction via synthetic tones, not yet tuned by ear against real music with the bulb online.</li>
+      <li>The bulb's round-trip is wildly variable: measured between <strong>11ms and 637ms on the same lamp within an hour</strong>. Any latency that feels wrong should be checked against the dashboard's per-stage panel before blaming a setting — at worst the bulb alone is ~100× the entire software budget.</li>
+      <li>Audio-reactive mode tuning (hue anchors, beat thresholds) is verified correct in direction via synthetic tones, and the 24 genre presets are reasoned rather than tuned by ear. Every blocker to doing it properly is now cleared; the judgement pass itself is still outstanding.</li>
       <li><code>docker-compose.yml</code>'s <code>network_mode: host</code> only works on Linux Docker hosts.</li>
     </ul>
 
