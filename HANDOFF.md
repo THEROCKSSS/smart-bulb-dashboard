@@ -10,7 +10,7 @@
 |---|---|
 | **Date** | 2026-08-03 |
 | **Repo** | https://github.com/THEROCKSSS/smart-bulb-dashboard (also mirrored to local Forgejo) |
-| **Branch** | `master`, at or after `8097c82` (hash as written; later commits are fine — `git log` is the source of truth) |
+| **Branch** | `master`, at or after `99c6b68` (hash as written; later commits are fine — `git log` is the source of truth) |
 | **Local URL** | http://127.0.0.1:8502 |
 | **Tailnet URL** | https://owens-pc-vpn.tailff2683.ts.net:8502 |
 | **PIN** | not in this repo — see "Credentials / config" |
