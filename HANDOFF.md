@@ -18,8 +18,20 @@
 
 ## Current state
 
-`master` was at `83b7ed5` when this was written, working tree clean and
-nothing unpushed, with **836 tests passing** (`backend/tests/` + `cli/tests/`), all four CI workflows green.
+`master` was at `bcdbcbd` when this was written, pushed to GitHub, working
+tree clean and nothing unpushed, with **671 tests passing**
+(`backend/tests/` + `cli/tests/`).
+
+The count went **836 -> 658** deliberately, then to 671 as bridge tests
+landed: 17 families of parametrised tests were collapsed into single tests
+that still run every case but report all failures together. No coverage was
+lost — if you are comparing against an older handoff, 836 is not the number
+to restore.
+
+Note the roadmap-sync CI bot pushes `docs/assets/roadmap-status.json`
+whenever issues change, so `git push` will be rejected as non-fast-forward
+surprisingly often. Rebase; its commits touch only that one file and have
+never conflicted.
 Roadmap **Weeks 1 and 2 are merged and closed**; Week 3 is partly done.
 There is exactly **one branch** (`master`) and one tag
 (`prototype/nav-layouts-50`, holding 50 throwaway nav prototypes — the two
@@ -268,8 +280,19 @@ The established loop, confirmed with the owner: **build one week as four
 parallel phases → hub re-verifies every phase itself → hand-merge → owner
 tests → next week.** See `.claude/skills/phase-delegation-loop/`.
 
-0. **Low-latency audio bridge — spec #75, tickets #76–#82.** Specced and
-   ticketed, not started. Audio-reactive lighting **does not work in the
+0. **Low-latency audio bridge — spec #75, tickets #76–#82.**
+   **#76, #79 and #81 are done, closed and pushed** (the capture-source
+   seam, the wire protocol + network source, and the host capture tool).
+   The bridge works end to end: real desktop audio drove the bulb through
+   the container at a measured 147 BPM.
+
+   **Frontier — startable now, no open blockers: #77 and #78.**
+   #77 is the native audio mode (one command to swap the container for a
+   host backend); #78 is per-stage latency instrumentation, which #80 then
+   needs in order to prove it reaches ≤10ms. #82 (docs) is last on purpose
+   so it documents measured reality.
+
+   Original ticket note, still true for what remains: Audio-reactive lighting **does not work in the
    container** (no host audio devices), so this gates item 1 below unless you
    use the host path. Two tickets are startable now with no blockers:
    **#76** (capture source seam — the prefactor everything else needs) and
