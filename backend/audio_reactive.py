@@ -14,6 +14,7 @@ import sounddevice as sd
 import audio_signal
 import audio_presets
 import audio_safety
+import audio_latency
 import capture_sources
 from scenes_presets import PRESET_COLORS
 
@@ -544,8 +545,12 @@ class BulbSender:
 
     LATENCY_HISTORY_LEN = 50  # rolling window exposed via status() for a latency-graph UI
 
-    def __init__(self, controller, min_dwell_ms=DEFAULT_MIN_DWELL_MS):
+    def __init__(self, controller, min_dwell_ms=DEFAULT_MIN_DWELL_MS, tracker=None):
         self.controller = controller
+        # The session's shared latency tracker, so this sender's round-trip
+        # lands in the same per-stage report as capture and analysis. Defaults
+        # to the no-op tracker for senders built outside a session.
+        self.tracker = tracker if tracker is not None else audio_latency.NullLatencyTracker()
         self.min_dwell_ms = max(MIN_DWELL_FLOOR_MS, min_dwell_ms)
         self._pending = None
         self._lock = threading.Lock()
@@ -657,7 +662,10 @@ class BulbSender:
             if action is None or self._stop.is_set():
                 continue
             self._captured.append((time.time() - self._capture_t0, action))
-            t0 = time.time()
+            # perf_counter, not time.time: this is a duration, and time.time
+            # is subject to clock adjustments that can make a send look
+            # instantaneous or negative.
+            t0 = time.perf_counter()
             try:
                 kind = action[0]
                 if kind == "hsv":
@@ -670,8 +678,13 @@ class BulbSender:
             except Exception as e:
                 self._error = str(e)
                 self._consecutive_failures += 1
-            self._last_latency_ms = round((time.time() - t0) * 1000, 1)
+            elapsed_ms = (time.perf_counter() - t0) * 1000
+            self._last_latency_ms = round(elapsed_ms, 1)
             self._latency_history.append(self._last_latency_ms)
+            # The hardware floor, into the session's per-stage report. Recorded
+            # for failed sends too: a bulb that times out is precisely when
+            # someone is staring at the latency panel asking what is wrong.
+            self.tracker.record_bulb(elapsed_ms)
             self._last_sent_at = time.time()
 
             # Live colour view. Published from the sender rather than the
@@ -1600,7 +1613,12 @@ class AudioSession:
         self.n_bands = max(N_BANDS_MIN, min(N_BANDS_MAX, n_bands))
         self.band_edges = log_band_edges(self.n_bands)
         self.ctx = _new_ctx(sensitivity, monochrome_hue)
-        self.sender = BulbSender(controller, min_dwell_ms)
+        # Built before the sender so both halves of the pipeline report into
+        # one place: capture and analysis from _process, bulb round-trip from
+        # the sender's own send loop.
+        self.latency = audio_latency.LatencyTracker(
+            block_period_ms=(BLOCK_SIZE / float(SAMPLE_RATE)) * 1000.0)
+        self.sender = BulbSender(controller, min_dwell_ms, tracker=self.latency)
         self.tempo = TempoTracker(beat_sensitivity=beat_sensitivity)
 
         # Signal conditioning (Section 4: AGC / noise gate / clip detection /
@@ -1712,6 +1730,8 @@ class AudioSession:
                 "latest_full_bands", {"n_bands": self.n_bands, "fractions": [], "energies": []}),
             "signal": self.conditioner.last_meter or {},
             "sender": self.sender.status(),
+            "latency": self.latency.summary(),
+            "source": self.source_kind,
             "tempo": self.tempo.status(),
             "error": self._error,
             "started_at": self._started_at,
@@ -1734,10 +1754,12 @@ class AudioSession:
         if self.source_factory is not None:
             return self.source_factory(self._process, channels)
         if self.source_kind == "bridge":
-            return capture_sources.NetworkSource(self._process)
+            return capture_sources.NetworkSource(
+                self._process, on_dropped=self.latency.note_dropped)
         return capture_sources.SoundDeviceSource(
             device_index=self.device_index, channels=channels,
-            samplerate=SAMPLE_RATE, blocksize=BLOCK_SIZE, callback=self._process)
+            samplerate=SAMPLE_RATE, blocksize=BLOCK_SIZE, callback=self._process,
+            on_dropped=self.latency.note_dropped)
 
     def _run(self):
         consecutive_failures = 0
@@ -1745,6 +1767,10 @@ class AudioSession:
             channels = 2 if self._stereo else 1
             try:
                 stream = self._open_source(channels)
+                # A reopened stream starts a fresh arrival chain. Without this
+                # the gap spanning the restart is charged as one enormous late
+                # frame that no listener ever actually experienced.
+                self.latency.reset_stream()
                 with stream:
                     consecutive_failures = 0  # a clean open resets the failure streak
                     while not self._stop.is_set():
@@ -1787,7 +1813,17 @@ class AudioSession:
                     return
 
     def _process(self, indata):
-        now = time.time()
+        # Two perf_counter reads and a bounded deque append per frame -- see
+        # audio_latency's cost note. `t_arrive` doubles as the analysis start,
+        # so timing the stage costs one extra read, not two.
+        t_arrive = time.perf_counter()
+        self.latency.record_arrival(t_arrive)
+        try:
+            self._process_frame(indata, time.time())
+        finally:
+            self.latency.record_analysis((time.perf_counter() - t_arrive) * 1000.0)
+
+    def _process_frame(self, indata, now):
         if self._stereo and indata.shape[1] >= 2:
             left, right = indata[:, 0], indata[:, 1]
             self.ctx["left_rms"] = float(np.sqrt(np.mean(np.square(left))) + 1e-12)
@@ -1906,7 +1942,13 @@ class GroupAudioSession:
         self.fallback_device_index = fallback_device_index
         self.mode = mode if mode in MODES else "band_fixed"
         self.role_mode = role_mode if role_mode in ROLE_MODES else "unison"
-        self.senders = [BulbSender(c, min_dwell_ms) for c in controllers]
+        # One tracker for the whole group: every bulb's sender feeds the same
+        # `bulb` stage, so the reported round-trip is the group's aggregate.
+        # That is the useful reading -- a group is only as responsive as its
+        # slowest bulb, and per-bulb figures are already in each sender.
+        self.latency = audio_latency.LatencyTracker(
+            block_period_ms=(BLOCK_SIZE / float(SAMPLE_RATE)) * 1000.0)
+        self.senders = [BulbSender(c, min_dwell_ms, tracker=self.latency) for c in controllers]
         self.ctxs = [_new_ctx(sensitivity, monochrome_hue) for _ in controllers]
         self.tempo = TempoTracker(beat_sensitivity=beat_sensitivity)
         self.hue_offsets = hue_offsets
@@ -2006,6 +2048,7 @@ class GroupAudioSession:
             "bulb_count": n,
             "bulbs": bulbs,
             "tempo": self.tempo.status(),
+            "latency": self.latency.summary(),
             "error": self._error,
             "started_at": self._started_at,
             "elapsed_s": round(now - self._started_at, 1),
@@ -2022,8 +2065,11 @@ class GroupAudioSession:
         while not self._stop.is_set():
             try:
                 def callback(indata, frames, time_info, status_flags):
+                    if status_flags and getattr(status_flags, "input_overflow", False):
+                        self.latency.note_dropped(1)
                     self._process(indata[:, 0])
 
+                self.latency.reset_stream()
                 with sd.InputStream(device=self.device_index, channels=1, samplerate=SAMPLE_RATE,
                                      blocksize=BLOCK_SIZE, latency="low", callback=callback):
                     consecutive_failures = 0
@@ -2066,7 +2112,14 @@ class GroupAudioSession:
         return action
 
     def _process(self, samples):
-        now = time.time()
+        t_arrive = time.perf_counter()
+        self.latency.record_arrival(t_arrive)
+        try:
+            self._process_frame(samples, time.time())
+        finally:
+            self.latency.record_analysis((time.perf_counter() - t_arrive) * 1000.0)
+
+    def _process_frame(self, samples, now):
         n = len(self.controllers)
         rms_check = float(np.sqrt(np.mean(np.square(samples))))
         if rms_check > 0.0008:

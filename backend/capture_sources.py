@@ -37,7 +37,8 @@ class SoundDeviceSource:
 
     kind = "device"
 
-    def __init__(self, device_index, channels, samplerate, blocksize, callback, latency="low"):
+    def __init__(self, device_index, channels, samplerate, blocksize, callback,
+                 latency="low", on_dropped=None):
         self.device_index = device_index
         self.requested_channels = channels
         self.channels = channels
@@ -45,12 +46,23 @@ class SoundDeviceSource:
         self.blocksize = blocksize
         self.callback = callback
         self.latency = latency
+        self.on_dropped = on_dropped
+        self.overflows = 0
         self._stream = None
 
     def __enter__(self):
         import sounddevice as sd
 
         def _cb(indata, frames, time_info, status_flags):
+            # PortAudio has been telling us about dropped input all along and
+            # this callback threw the flag away. An overflow means samples
+            # existed and never reached analysis -- invisible in every other
+            # metric, and exactly the thing that makes reactive lighting feel
+            # like it "skips" for no traceable reason.
+            if status_flags and getattr(status_flags, "input_overflow", False):
+                self.overflows += 1
+                if self.on_dropped is not None:
+                    self.on_dropped(1)
             self.callback(indata)
 
         channels = self.requested_channels
@@ -81,7 +93,8 @@ class SoundDeviceSource:
         return False
 
     def status(self):
-        return {"kind": self.kind, "device_index": self.device_index, "channels": self.channels}
+        return {"kind": self.kind, "device_index": self.device_index,
+                "channels": self.channels, "overflows": self.overflows}
 
 
 class NetworkSource:
@@ -96,11 +109,13 @@ class NetworkSource:
 
     kind = "bridge"
 
-    def __init__(self, callback, server=None, require_connected=False):
+    def __init__(self, callback, server=None, require_connected=False, on_dropped=None):
         self.callback = callback
         self._server = server
         self._sub = None
         self._frames = 0
+        self.on_dropped = on_dropped
+        self._seen_drops = 0
         self._lock = threading.Lock()
 
     def __enter__(self):
@@ -117,6 +132,14 @@ class NetworkSource:
         def _cb(block):
             with self._lock:
                 self._frames += 1
+                # The server already counts frames it dropped from a full
+                # subscriber queue; forward the delta so a bridge drop and a
+                # device overflow land in one number. A plain int read, no
+                # status() dict built on the hot path.
+                total = getattr(server, "_drops", 0)
+                delta, self._seen_drops = total - self._seen_drops, total
+            if delta > 0 and self.on_dropped is not None:
+                self.on_dropped(delta)
             self.callback(block)
 
         self._sub = server.subscribe(_cb)

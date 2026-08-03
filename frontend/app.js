@@ -760,6 +760,91 @@ function renderSenderInfo(sender) {
   return `<p class="panel-subtitle" style="margin-top:4px;">${parts.join(" · ")}</p>`;
 }
 
+function fmtMs(v) { return v == null ? "—" : `${Number(v).toFixed(1)}ms`; }
+
+// Per-stage latency, not one total. The three stages have different ceilings
+// and only two of them are ours: capture and analysis are the software budget
+// the ≤10ms requirement is actually about, while the bulb round-trip is a
+// hardware floor no setting can move. Presenting them as one number is what
+// makes someone conclude the software is slow and start tuning knobs that
+// cannot possibly help — so the hardware row is labelled as such, and the
+// verdict chip is scored against the software stages alone.
+function renderLatencyPanel(latency) {
+  if (!latency) {
+    return `<div class="empty-state">No latency measured yet — start a session and the
+      per-stage numbers appear here.</div>`;
+  }
+  const budget = latency.budget || {};
+  const stages = latency.stages || {};
+  const frames = latency.frames || {};
+  const target = budget.target_ms;
+  const soft = budget.software_p50_ms;
+  const measured = soft != null;
+  const ok = budget.within_target;
+
+  const rows = ["capture", "analysis", "bulb"].map(key => {
+    const s = stages[key];
+    if (!s) return "";
+    const hw = s.kind === "hardware";
+    return `<tr class="${hw ? "lat-hw" : ""}">
+        <th scope="row">${s.label}${hw ? ' <span class="lat-tag">hardware floor</span>' : ""}</th>
+        <td class="num">${fmtMs(s.p50_ms)}</td>
+        <td class="num">${fmtMs(s.p95_ms)}</td>
+        <td class="num">${fmtMs(s.worst_ever_ms)}</td>
+        <td class="num dim">${s.count || 0}</td>
+      </tr>`;
+  }).join("");
+
+  const verdict = !measured
+    ? `<span class="lat-chip lat-idle">awaiting frames</span>`
+    : `<span class="lat-chip ${ok ? "lat-ok" : "lat-over"}">
+         software ${fmtMs(soft)} ${ok ? "≤" : ">"} ${fmtMs(target)} target
+       </span>`;
+
+  const late = frames.late || 0;
+  const dropped = frames.dropped || 0;
+  const health = (late || dropped)
+    ? `<span class="lat-warn">${late} late · ${dropped} dropped</span>`
+    : `<span class="dim">no late or dropped frames</span>`;
+
+  return `
+    <div class="lat-head">
+      ${verdict}
+      <span class="dim">block period ${fmtMs(latency.block_period_ms)} · rolling window ${latency.window} frames</span>
+    </div>
+    <div class="lat-table-wrap">
+      <table class="lat-table">
+        <thead>
+          <tr><th scope="col">Stage</th><th scope="col">Typical</th><th scope="col">p95</th>
+              <th scope="col">Worst</th><th scope="col">Frames</th></tr>
+        </thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>
+    <p class="panel-subtitle lat-note">
+      Sound-to-decision is <strong>capture + analysis</strong> ${measured ? `= ${fmtMs(soft)}` : ""} —
+      that is the part settings can change. The bulb round-trip
+      ${stages.bulb && stages.bulb.p50_ms != null ? `(${fmtMs(stages.bulb.p50_ms)})` : ""}
+      is the lamp's own hardware and no setting makes it faster.
+    </p>
+    ${renderDeliveryNote(stages.capture)}
+    <p class="panel-subtitle">${frames.processed || 0} frames processed · ${health}</p>`;
+}
+
+// Capture latency is the block period plus lateness, never the median gap
+// between callbacks — a bursty audio backend delivers blocks back-to-back and
+// then pauses, so half its gaps are sub-millisecond while the data is no
+// fresher for it. The raw gaps are still worth showing, as delivery health.
+function renderDeliveryNote(capture) {
+  if (!capture || capture.interval_p50_ms == null) return "";
+  const bursty = capture.interval_p50_ms < capture.floor_ms * 0.5;
+  return `<p class="panel-subtitle dim">
+      Capture floor ${fmtMs(capture.floor_ms)} (the block period) · delivery gaps
+      typically ${fmtMs(capture.interval_p50_ms)}, p95 ${fmtMs(capture.interval_p95_ms)}${
+        bursty ? " — this backend delivers in bursts, so the gaps are uneven by nature" : ""}.
+    </p>`;
+}
+
 // The bridge has four states and they need different fixes, so the chip
 // distinguishes all four rather than collapsing to connected/disconnected:
 //   off        - backend started with the listener disabled
@@ -976,6 +1061,15 @@ async function renderAudio(main) {
       <div class="row">
         <button id="tap-tempo-btn" class="primary" ${sessionStatus.active ? "" : "disabled"}>Tap Tempo</button>
       </div>
+    </div>
+
+    <div class="card">
+      <h3>Latency <span class="tag ${sessionStatus.active ? "on" : "off"}">${sessionStatus.active ? "LIVE DATA" : "IDLE"}</span></h3>
+      <p class="panel-subtitle">
+        Measured per stage on this session — not an estimate. Typical is the median
+        over the rolling window; worst is the largest spike since the session started.
+      </p>
+      <div id="latency-wrap">${renderLatencyPanel(sessionStatus.latency)}</div>
     </div>
 
     <div class="card">
@@ -1238,6 +1332,8 @@ async function renderAudio(main) {
         wrap.innerHTML = renderBandMeter(st.bands);
         const tempoWrap = document.getElementById("tempo-wrap");
         if (tempoWrap) tempoWrap.innerHTML = renderTempoInfo(st.tempo);
+        const latWrap = document.getElementById("latency-wrap");
+        if (latWrap) latWrap.innerHTML = renderLatencyPanel(st.latency);
         if (!st.active) renderAudio(main);
       } catch (e) { /* transient poll miss, ignore */ }
     }, 300);

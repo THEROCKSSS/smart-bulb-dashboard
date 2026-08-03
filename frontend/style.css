@@ -1051,3 +1051,89 @@ kbd {
     width: 100%;
   }
 }
+
+/* ---- Per-stage latency panel -------------------------------------------- */
+/* Three stages, two of them ours. The table exists rather than a row of big
+   numbers because the useful reading is typical-vs-worst per stage: a good
+   median hiding a 300ms spike is the exact failure this panel has to expose. */
+.lat-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+
+.lat-chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 3px 10px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  border: 1px solid transparent;
+}
+
+.lat-ok    { color: #4cc98a; background: #16261d; border-color: #244634; }
+.lat-over  { color: #d8a13a; background: #2a2318; border-color: #4a3b1d; }
+.lat-idle  { color: #8b8b93; background: #26262b; border-color: #35353c; }
+
+/* Wide content scrolls inside its own container so the card never forces the
+   page to scroll sideways on a phone. */
+.lat-table-wrap { overflow-x: auto; }
+
+.lat-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-variant-numeric: tabular-nums;
+}
+
+.lat-table th,
+.lat-table td {
+  padding: 7px 10px;
+  text-align: left;
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+}
+
+.lat-table thead th {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-faint);
+  border-bottom-color: var(--border);
+}
+
+.lat-table tbody th {
+  font-weight: 500;
+  color: var(--text);
+}
+
+.lat-table .num { text-align: right; }
+.lat-table td.dim { text-align: right; color: var(--text-faint); font-size: 12px; }
+.lat-table tbody tr:last-child th,
+.lat-table tbody tr:last-child td { border-bottom: none; }
+
+/* The hardware row reads as information, not as a problem to fix — it is
+   dimmed rather than coloured like a warning, because nothing is wrong with
+   it and nothing can be done about it. */
+.lat-hw th, .lat-hw td { color: var(--text-dim); }
+
+.lat-tag {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-faint);
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid var(--border);
+}
+
+.lat-note { margin-top: 10px; }
+.lat-warn { color: var(--warning); }

@@ -23,6 +23,11 @@ backend/venv/
 __pycache__/
 *.pyc
 
+# Native audio mode's saved container state (tools/sbd-native-audio.ps1).
+# Machine-local and meaningless anywhere else -- it records what THIS host's
+# container was doing before the switch, so the restore can put it back.
+.state/
+
 # Logs
 *.log
 server.log

@@ -8,25 +8,25 @@
 
 | | |
 |---|---|
-| **Date** | 2026-08-01 |
+| **Date** | 2026-08-03 |
 | **Repo** | https://github.com/THEROCKSSS/smart-bulb-dashboard (also mirrored to local Forgejo) |
-| **Branch** | `master`, at or after `83b7ed5` (hash as written; later commits are fine — `git log` is the source of truth) |
+| **Branch** | `master`, at or after `8097c82` (hash as written; later commits are fine — `git log` is the source of truth) |
 | **Local URL** | http://127.0.0.1:8502 |
 | **Tailnet URL** | https://owens-pc-vpn.tailff2683.ts.net:8502 |
 | **PIN** | not in this repo — see "Credentials / config" |
-| **Lineage** | Rounds 1–6 below. This is Round 7. |
+| **Lineage** | Rounds 1–7 below. This is Round 8. |
 
 ## Current state
 
-`master` was at `bcdbcbd` when this was written, pushed to GitHub, working
-tree clean and nothing unpushed, with **671 tests passing**
+`master` was at `8097c82` when this was written, pushed to GitHub, working
+tree clean and nothing unpushed, with **693 tests passing**
 (`backend/tests/` + `cli/tests/`).
 
 The count went **836 -> 658** deliberately, then to 671 as bridge tests
-landed: 17 families of parametrised tests were collapsed into single tests
-that still run every case but report all failures together. No coverage was
-lost — if you are comparing against an older handoff, 836 is not the number
-to restore.
+landed, then to 693 with the latency-instrumentation tests: 17 families of
+parametrised tests were collapsed into single tests that still run every case
+but report all failures together. No coverage was lost — if you are comparing
+against an older handoff, 836 is not the number to restore.
 
 Note the roadmap-sync CI bot pushes `docs/assets/roadmap-status.json`
 whenever issues change, so `git push` will be rejected as non-fast-forward
@@ -66,7 +66,69 @@ The physical bulb (`Bytech A19`, `192.168.0.134`) was reachable as of this
 writing, which had not been true for most of this project's history; it does
 drop off Wi-Fi periodically, so check before concluding the code is broken.
 
-## What was done this session (Round 7)
+## What was done this session (Round 8)
+
+Closed two of the four remaining tickets on the #75 low-latency audio spec.
+Every number below was measured on this machine against the real bulb, not
+derived from the design.
+
+- **#78 — per-stage latency instrumentation.** New `backend/audio_latency.py`.
+  A running session now reports **capture**, **analysis** and **bulb
+  round-trip** separately, each with a representative figure *and* a worst
+  case, plus late/dropped frame counts. Surfaced in `status()`, through the
+  existing API routes unchanged, and in a new **Latency** card on the Audio
+  page. Before this the only figure anywhere was `BulbSender._last_latency_ms`
+  — one number, bulb only, no worst case.
+- **#77 — native audio mode.** `tools\native-audio-mode.cmd` (and the
+  `tools\sbd-native-audio.ps1` it drives) switches the dashboard between
+  container mode and host mode in one command each way, on the same port.
+  See "The two audio paths" below.
+- **Instrumentation overhead measured**: 1.43 µs/frame against the ~111 µs the
+  analysis itself costs — 1.3%, on a path that runs ~86x/second.
+- **Dropped frames are now counted at all.** `SoundDeviceSource` was throwing
+  PortAudio's `status_flags` away, so input overflow — samples that existed
+  and never reached analysis — was invisible in every metric. The bridge
+  server's own drop counter is now consumed too.
+
+### Measured on the real bulb (12s session, real audio, 1031 frames)
+
+| Stage | Typical | p95 | Worst |
+|---|---|---|---|
+| Capture | 11.61ms (the block period) | 30.6ms | 46.1ms |
+| Analysis | 0.58ms | 0.92ms | 5.0ms |
+| Bulb round-trip | 11.3ms | 87.9ms | **637ms** |
+
+Software budget **12.19ms against a 10ms target — `within_target: false`.**
+That is the honest current state and exactly what **#80** exists to fix: at
+`BLOCK_SIZE = 512` / 44100Hz the pipeline is over budget before any bridge hop
+is added.
+
+Note the bulb round-trip is far more *variable* than the spec's "111-152ms"
+suggests — p50 as low as 11ms, p95 88ms, worst 637ms in a single 12s run.
+When #82 writes the latency budget, use the spread, not a single figure.
+
+### Real bug found and fixed — in this session's own instrumentation
+
+The first version measured capture latency as the **median gap between
+capture callbacks**. Run live against DirectSound it reported p50 **0.93ms**
+with a mean of **11.59ms**: the backend delivers blocks in bursts — several
+back-to-back, then a ~30ms pause — so half the gaps are sub-millisecond while
+the data is no fresher for it. Those back-to-back blocks are a backlog being
+flushed, and their samples are correspondingly stale.
+
+The effect was a 12ms pipeline reporting **1.5ms** and declaring
+`within_target: true` — the exact false pass the ticket exists to prevent, and
+it would have let #80 claim victory without changing anything.
+
+Capture is now reported as **block period + delivery lateness**, with the raw
+gaps kept alongside as a delivery-health diagnostic where a bursty median is
+informative rather than a lie. `test_bursty_delivery_cannot_flatter_the_capture_figure`
+replays the observed burst shape as a regression guard.
+
+The lesson generalises: a median is the wrong statistic for anything delivered
+in bursts, and only running it against real hardware exposed it.
+
+## What was done in Round 7
 
 Verified state, not claims — every item below was checked by running it.
 
@@ -128,6 +190,24 @@ Verified state, not claims — every item below was checked by running it.
 
 ## What's NOT done (the gap)
 
+- **The #75 audio spec is 4/6 done.** Shipped: #76 capture seam, #79 bridge
+  protocol, #81 the Windows capture tool, #78 latency instrumentation, #77
+  native mode. **Still open:**
+  - **#80 — sub-10ms analysis.** Decouple *hop* from *window*: keep a long
+    window so bass stays resolvable (bass-band onset tracking gets 9/9 tempos
+    where broadband RMS gets 1/9) and advance it by a short hop. Latency is set
+    by the hop, frequency resolution by the window. **Must not touch
+    `analyze_frame()`** — the 21 golden-value tests assert bit-identical output
+    and are the guard proving the change is timing-only. Note `FFT_SIZE = 4096`
+    already zero-pads, which interpolates bins without adding real resolution,
+    so the window must stay long and only the hop shrinks. The measurement to
+    prove it now exists: watch `budget.within_target` flip to true.
+    When you do this, pass the **hop** period as the tracker's
+    `block_period_ms` — capture latency is bounded by how often a block is
+    produced, and the derived capture figure depends on that being right.
+  - **#82 — documentation.** Deliberately last so it documents measured
+    reality. Needs both modes, every setting's trade-off, a symptom-to-setting
+    table, and the honest budget including the bulb's hardware floor.
 - **Week 3 is ~20% done.** Only Phase A (the CVE fix, #74) shipped as a
   planned phase. The rest of Week 3 — Home Assistant, HomeKit, Alexa/Google,
   voice control, Discord bot, webhooks, PWA, scenes/effects expansion,
@@ -194,9 +274,42 @@ already baked into the image's CMD and is REQUIRED, not optional: uvicorn
 trusts `X-Forwarded-For` from `127.0.0.1` by default, which lets any local
 process forge its source IP and dodge the PIN-gate lockout.
 
-**Audio path — host, no container.** The container cannot reach Windows
-audio devices, so anything involving a microphone or loopback capture needs
-the backend on the host. Stop the container first or 8502 is taken:
+### The two audio paths
+
+The container cannot reach Windows audio devices — a session started there
+runs, reports itself running, and never reacts to sound. There are two ways
+around that and they are both first-class. Pick by what you are doing:
+
+| | **Bridge mode** (everyday) | **Native mode** (tuning by ear) |
+|---|---|---|
+| Dashboard | keeps serving from the container | container stopped, host serves |
+| Added capture latency | ~1-2ms loopback hop | zero |
+| Start with | `tools\start-audio-bridge.cmd` | `tools\native-audio-mode.cmd` |
+| Use when | normal use, remote use | judging presets against real music |
+
+**Bridge mode** leaves everything up and streams PCM from the host into the
+container on 8503. **Native mode** is one command each way:
+
+```bash
+tools\native-audio-mode.cmd            # stop container, serve natively, Ctrl-C to end
+tools\native-audio-mode.cmd status     # which mode is serving right now
+tools\native-audio-mode.cmd off        # restore the container after a hard kill
+```
+
+Native mode serves the **same** `127.0.0.1:8502`, so the dashboard URL and the
+tailnet URL both keep working across the switch (verified: tailnet `/healthz`
+returned 200 while native mode was serving). The container is restored in a
+`finally` block, so Ctrl-C, a crash, or a hard kill all put it back — verified
+by killing uvicorn outright and watching the container come up again. If the
+port is held by something unrelated it refuses **before** touching the
+container, naming the process.
+
+One trap it already handles: three processes listen on 8502 on this machine —
+`com.docker.backend` on 127.0.0.1 plus `tailscaled` on both tailnet addresses.
+Only the 127.0.0.1 bind can conflict; checking "the first listener on the port"
+picks tailscaled and refuses to start in the completely normal case.
+
+The older manual route still works:
 
 ```bash
 docker stop smart-bulb-dashboard
