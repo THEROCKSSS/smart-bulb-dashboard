@@ -65,7 +65,17 @@ MAGIC_FRAME = b"FRM0"
 PROTOCOL_VERSION = 1
 
 TARGET_SAMPLE_RATE = 44100   # what the analysis pipeline expects
-TARGET_BLOCK = 512           # matches the backend's BLOCK_SIZE
+# Must track the backend's analysis HOP (audio_hop.DEFAULT_HOP_SIZE), not its
+# old BLOCK_SIZE. Since issue #80 the backend decides a colour every hop, but a
+# decision can never be fresher than the audio it is made from -- so shipping
+# 512-sample frames put an 11.6ms floor under a 5.8ms pipeline no matter how
+# short the hop was. Measured live on a bridge session with 512: software
+# latency 12.3ms and `within_target: false`, with the dashboard correctly
+# reporting `floor_source: "source delivery"` rather than blaming the hop.
+#
+# 256 @ 44100Hz = 5.8ms, matching the hop. Costs twice as many TCP writes
+# (~172/s, ~344KB/s over loopback), which is nothing.
+TARGET_BLOCK = 256
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8503
 

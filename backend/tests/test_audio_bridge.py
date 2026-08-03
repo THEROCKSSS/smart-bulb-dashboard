@@ -310,3 +310,25 @@ def test_auto_device_pick_prefers_loopback_over_a_louder_microphone(check_all):
               if not tool._is_loopback_like(n) else None, label="loopback name")
     check_all(not_loopback, lambda n: (_ for _ in ()).throw(AssertionError(f"{n!r} wrongly detected as loopback"))
               if tool._is_loopback_like(n) else None, label="microphone name")
+
+
+def test_bridge_frame_size_tracks_the_analysis_hop():
+    """A decision can never be fresher than the audio it is made from.
+
+    The bridge shipped 512-sample frames matched to the backend's old
+    BLOCK_SIZE. Since #80 the backend decides every hop (256), so 512-sample
+    frames put an 11.6ms floor under a 5.8ms pipeline. Measured live on a
+    bridge session before this was fixed: software latency 12.3ms,
+    `within_target: false`, `floor_source: "source delivery"`.
+
+    Pinned as a test because the two live in different files -- the backend's
+    hop and the host tool's frame size -- and nothing else would notice them
+    drifting apart.
+    """
+    import audio_hop
+
+    tool = _bridge_tool()
+    assert tool.TARGET_BLOCK == audio_hop.DEFAULT_HOP_SIZE, (
+        f"bridge sends {tool.TARGET_BLOCK}-sample frames but the backend's hop is "
+        f"{audio_hop.DEFAULT_HOP_SIZE}; a bridge session's latency floor would be "
+        f"the larger of the two")
