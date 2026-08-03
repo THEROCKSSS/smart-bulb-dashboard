@@ -68,9 +68,17 @@ drop off Wi-Fi periodically, so check before concluding the code is broken.
 
 ## What was done this session (Round 8)
 
-Closed two of the four remaining tickets on the #75 low-latency audio spec.
-Every number below was measured on this machine against the real bulb, not
-derived from the design.
+**Closed the #75 low-latency audio spec — all four remaining tickets.** Every
+number below was measured on this machine against the real bulb, not derived
+from the design.
+
+- **#78** per-stage latency instrumentation
+- **#77** one-command native audio mode
+- **#80** sub-10ms analysis via hop/window decoupling
+- **#82** the latency documentation
+
+**Headline: software sound-to-decision went 12.19ms → 6.44ms, inside the 10ms
+target, proven by the instrumentation rather than asserted.**
 
 - **#78 — per-stage latency instrumentation.** New `backend/audio_latency.py`.
   A running session now reports **capture**, **analysis** and **bulb
@@ -127,6 +135,48 @@ replays the observed burst shape as a regression guard.
 
 The lesson generalises: a median is the wrong statistic for anything delivered
 in bursts, and only running it against real hardware exposed it.
+
+A second, related honesty fix landed with #80: shrinking the hop to 256 made
+the tracker report a 5.8ms floor even when the *source* only delivered every
+20ms. A decision cannot be fresher than the audio it is made from, so the
+capture floor is now `max(configured hop, observed delivery period)`, and
+`floor_source` says which one is binding. The observed period uses the **mean**
+gap, not the median, for the burst reason above.
+
+### #80 — hop and window are now separate numbers
+
+`backend/audio_hop.py`. The pipeline used to analyse 512-sample blocks, where
+one number set both latency (11.6ms) and frequency resolution (86Hz), and
+improving either ruined the other. Now:
+
+- **hop 256** (5.8ms) — how often analysis runs; sets latency
+- **window 1024** (23.2ms, 43Hz/bin) — how much it sees; sets resolution
+
+Strictly better than 512/512 on *both* axes, plus unchanged beat accuracy.
+`analyze_frame()` was not modified — the 21 golden-value tests pass with no
+expected values touched, which is the guard proving this changed timing only.
+
+**Window 1024 is a measured choice, not a guess.** 2048 was tried first and is
+worse where it counts:
+
+| Window | Bass resolution | Tempos tracked (dense-mix fixture) |
+|---|---|---|
+| 1024 | 43Hz | **6 / 6** |
+| 2048 | 21.5Hz | 5 / 6 — 174 BPM read as 178.2 |
+| 4096 | 10.8Hz | 3 / 6, all biased high |
+
+A longer window smears the transient it is trying to locate. Verified
+independent of the new beat refractory — disabling it gives identical BPM, so
+the window really is the variable. **Do not raise it to "improve" bass.**
+
+Overlapping windows would let one kick clear the threshold in several
+consecutive frames, so `TempoTracker` gained an opt-in `beat_refractory_s`
+(80ms, well under the 345ms period of the fastest fixture tempo). It defaults
+to **off**, so every pre-existing caller and test keeps its exact behaviour.
+
+Measured live after the change: capture 5.8ms, analysis 0.6ms, **software
+6.44ms — `within_target: true`**. Analysis costs 0.17ms per 5.8ms hop, about
+**3% of one core**. Real tempo locked on real audio (140.4, 124.0, 110.4 BPM).
 
 ## What was done in Round 7
 
@@ -190,24 +240,17 @@ Verified state, not claims — every item below was checked by running it.
 
 ## What's NOT done (the gap)
 
-- **The #75 audio spec is 4/6 done.** Shipped: #76 capture seam, #79 bridge
-  protocol, #81 the Windows capture tool, #78 latency instrumentation, #77
-  native mode. **Still open:**
-  - **#80 — sub-10ms analysis.** Decouple *hop* from *window*: keep a long
-    window so bass stays resolvable (bass-band onset tracking gets 9/9 tempos
-    where broadband RMS gets 1/9) and advance it by a short hop. Latency is set
-    by the hop, frequency resolution by the window. **Must not touch
-    `analyze_frame()`** — the 21 golden-value tests assert bit-identical output
-    and are the guard proving the change is timing-only. Note `FFT_SIZE = 4096`
-    already zero-pads, which interpolates bins without adding real resolution,
-    so the window must stay long and only the hop shrinks. The measurement to
-    prove it now exists: watch `budget.within_target` flip to true.
-    When you do this, pass the **hop** period as the tracker's
-    `block_period_ms` — capture latency is bounded by how often a block is
-    produced, and the derived capture figure depends on that being right.
-  - **#82 — documentation.** Deliberately last so it documents measured
-    reality. Needs both modes, every setting's trade-off, a symptom-to-setting
-    table, and the honest budget including the bulb's hardware floor.
+- **The #75 audio spec is closed** (all of #76–#82). Two things it deliberately
+  did *not* settle:
+  - **The bridge still ships 512-sample frames.** Native capture now asks the
+    device for hop-sized blocks, so native mode genuinely reaches 5.8ms. A
+    bridge session's floor is whatever frame size the host tool sends — the
+    Latency card's `floor_source` will say `source delivery` rather than
+    `configured hop` when that is what is binding. Making the bridge tool send
+    256-sample frames is the follow-up, and it is a host-side change only.
+  - **Presets are still not tuned by ear.** #77 exists precisely to make that
+    possible and it now works; nobody has actually done it yet. This remains
+    the single highest-value audio task.
 - **Week 3 is ~20% done.** Only Phase A (the CVE fix, #74) shipped as a
   planned phase. The rest of Week 3 — Home Assistant, HomeKit, Alexa/Google,
   voice control, Discord bot, webhooks, PWA, scenes/effects expansion,
@@ -308,6 +351,11 @@ One trap it already handles: three processes listen on 8502 on this machine —
 `com.docker.backend` on 127.0.0.1 plus `tailscaled` on both tailnet addresses.
 Only the 127.0.0.1 bind can conflict; checking "the first listener on the port"
 picks tailscaled and refuses to start in the completely normal case.
+
+Full detail — every setting's trade-off, a symptom-to-setting table, the honest
+latency budget, and Windows audio-source setup — is in
+**[`docs/audio-latency.md`](docs/audio-latency.md)**, also browsable in-app
+under System → Docs.
 
 The older manual route still works:
 

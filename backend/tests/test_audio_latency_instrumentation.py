@@ -32,7 +32,8 @@ import audio_latency as al  # noqa: E402
 import audio_reactive as ar  # noqa: E402
 import capture_sources  # noqa: E402
 
-BLOCK_PERIOD_MS = (ar.BLOCK_SIZE / float(ar.SAMPLE_RATE)) * 1000.0  # ~11.6ms
+BLOCK_PERIOD_MS = (ar.BLOCK_SIZE / float(ar.SAMPLE_RATE)) * 1000.0        # ~11.6ms
+HOP_PERIOD_MS = (ar.DEFAULT_HOP_SIZE / float(ar.SAMPLE_RATE)) * 1000.0    # ~5.8ms
 
 
 class StubController:
@@ -306,12 +307,13 @@ def test_injected_analysis_delay_shows_up_in_the_analysis_stage(monkeypatch):
     session.latency = tracker
     session.sender.tracker = tracker
     try:
-        block = np.asarray(af.make_tone(440, 0.05)[:ar.BLOCK_SIZE], dtype=np.float32).reshape(-1, 1)
-        for _ in range(5):
-            session._process(block)
+        # Enough audio to fill the analysis window and then run several hops.
+        block = np.asarray(af.make_tone(440, 0.3)[:ar.DEFAULT_WINDOW_SIZE * 2],
+                           dtype=np.float32).reshape(-1, 1)
+        session._process(block)
 
         analysis = tracker.summary()["stages"]["analysis"]
-        assert analysis["count"] == 5
+        assert analysis["count"] >= 5, "the hop scheduler should have run several analyses"
         assert 10.0 < analysis["p50_ms"] < 300.0, f"expected ~20ms, got {analysis['p50_ms']}ms"
     finally:
         session.sender.stop()
@@ -346,15 +348,22 @@ def test_a_live_session_measures_capture_analysis_and_reports_them(monkeypatch):
     assert lat["frames"]["processed"] >= 12
 
     capture = lat["stages"]["capture"]
+    # The source delivers every 20ms, which is slower than the hop. The floor
+    # must follow the *source*, not the hop -- a decision cannot be fresher
+    # than the audio it is made from.
     assert 8.0 < capture["p50_ms"] < 90.0, (
-        f"expected a capture interval near {interval_s * 1000}ms, got {capture['p50_ms']}ms")
+        f"expected a capture floor near {interval_s * 1000}ms, got {capture['p50_ms']}ms")
+    assert capture["floor_source"] == "source delivery"
+    assert capture["observed_period_ms"] > capture["configured_period_ms"]
 
     analysis = lat["stages"]["analysis"]
     assert analysis["count"] >= 12
     assert analysis["p50_ms"] > 0.0, "real analysis cannot take literally zero time"
     assert analysis["p50_ms"] < 50.0, "analysis should be far cheaper than the block period"
 
-    assert lat["block_period_ms"] == pytest.approx(BLOCK_PERIOD_MS, abs=0.1)
+    # A session's configured period is its HOP (#80), not the old 512-sample
+    # block: the hop is what bounds how often a decision is produced.
+    assert lat["block_period_ms"] == pytest.approx(HOP_PERIOD_MS, abs=0.1)
     assert lat["budget"]["target_ms"] == al.SOFTWARE_TARGET_MS
 
 

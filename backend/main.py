@@ -322,6 +322,15 @@ class AudioReactiveStartBody(BaseModel):
     max_brightness_swing: float | None = None
     silence_auto_off: bool = True
     fallback_device_index: int | None = None
+    # --- hop/window (issue #80) -------------------------------------------
+    # `hop_size` is how often analysis runs and sets decision latency;
+    # `window_size` is how much audio each run sees and sets frequency
+    # resolution. Shorter hop = lower latency, more CPU. Longer window = finer
+    # bass resolution but smeared transients, which measurably costs tempo
+    # accuracy past 1024 -- see audio_hop's DEFAULT_WINDOW_SIZE comment.
+    # None means "use the shipped defaults".
+    hop_size: int | None = None
+    window_size: int | None = None
     # "device" = capture locally (host deployments). "bridge" = consume audio
     # streamed in by tools/sbd-audio-bridge.py, which is the only thing that
     # works when the backend runs in a container with no audio devices.
@@ -1519,6 +1528,7 @@ def audio_reactive_start(device_id: str, body: AudioReactiveStartBody):
             disable_flash_heavy=body.disable_flash_heavy, max_brightness_swing=body.max_brightness_swing,
             silence_auto_off=body.silence_auto_off, fallback_device_index=body.fallback_device_index,
             source_kind=body.source,
+            hop_size=body.hop_size, window_size=body.window_size,
         )
     except capture_sources.CaptureError as e:
         # No bridge listener at all -- a configuration problem the user can

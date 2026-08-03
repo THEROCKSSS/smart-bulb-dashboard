@@ -36,6 +36,7 @@ DOC_ROOTS = [
 # Docs whose category is more useful than the directory they happen to sit in.
 CATEGORY_BY_SLUG = {
     "audio-modes": "Audio",
+    "audio-latency": "Audio",
     "music-reactive-lighting": "Audio",
     "remote-access-security": "Security",
     "pin-gate-threat-model": "Security",

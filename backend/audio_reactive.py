@@ -15,6 +15,7 @@ import audio_signal
 import audio_presets
 import audio_safety
 import audio_latency
+import audio_hop
 import capture_sources
 from scenes_presets import PRESET_COLORS
 
@@ -28,6 +29,18 @@ BLOCK_SIZE = 512
 FFT_SIZE = 4096  # zero-pad the window before rfft for finer band resolution
                  # without adding latency (padding is free — it's the block
                  # size above that actually bounds how fresh the data is).
+
+# Issue #80: how often analysis runs (the hop) is now separate from how much
+# audio each run sees (the window). The hop sets latency, the window sets
+# frequency resolution -- see audio_hop for why one number could not do both.
+DEFAULT_HOP_SIZE = audio_hop.DEFAULT_HOP_SIZE        # 256 -> 5.8ms decision latency
+DEFAULT_WINDOW_SIZE = audio_hop.DEFAULT_WINDOW_SIZE  # 2048 -> 21.5Hz bass resolution
+
+# Suppression window for the repeat beats that overlapping analysis windows
+# would otherwise report for a single kick. 80ms is comfortably shorter than
+# the 345ms beat period of the fastest tempo in the test fixture (174 BPM), so
+# it can never swallow a real beat.
+BEAT_REFRACTORY_S = 0.080
 
 DEFAULT_MIN_DWELL_MS = 90  # matches this bulb's measured ~50-100ms round trip
 MIN_DWELL_FLOOR_MS = 40    # refuse anything sillier than this — see docs
@@ -1393,8 +1406,21 @@ class TempoTracker:
     `analyze_frame` call per callback.
     """
 
-    def __init__(self, frame_dt=None, beat_sensitivity=DEFAULT_BEAT_SENSITIVITY):
+    def __init__(self, frame_dt=None, beat_sensitivity=DEFAULT_BEAT_SENSITIVITY,
+                 beat_refractory_s=0.0):
         self.frame_dt = frame_dt or (BLOCK_SIZE / SAMPLE_RATE)
+        # Overlapping analysis windows (issue #80) see the same kick in several
+        # consecutive frames, so one onset can clear the threshold repeatedly
+        # and report several beats where a listener hears one. A refractory
+        # period suppresses the repeats without touching the onset maths.
+        #
+        # Off by default (0.0): at the non-overlapping 512-sample cadence a
+        # kick occupies one or two frames and there is nothing to suppress, so
+        # every existing caller and test keeps its exact current behaviour.
+        self.beat_refractory_s = max(0.0, beat_refractory_s)
+        self._refractory_frames = (int(self.beat_refractory_s / self.frame_dt)
+                                   if self.beat_refractory_s > 0 else 0)
+        self._frames_since_beat = None
         maxlen = max(TEMPO_MIN_HISTORY_FRAMES, int(TEMPO_HISTORY_SECONDS / self.frame_dt))
         self.onset_history = collections.deque(maxlen=maxlen)
         self._prev_energy = 0.0
@@ -1458,7 +1484,17 @@ class TempoTracker:
         self._prev_energy = value
         self.onset_history.append(onset)
         self.last_onset = onset
-        self.is_beat = onset > 0.0 and onset > self.adaptive_threshold
+
+        fired = onset > 0.0 and onset > self.adaptive_threshold
+        if self._refractory_frames > 0:
+            if self._frames_since_beat is not None:
+                self._frames_since_beat += 1
+                if fired and self._frames_since_beat <= self._refractory_frames:
+                    # Same kick, still inside the window it is smeared across.
+                    fired = False
+            if fired:
+                self._frames_since_beat = 0
+        self.is_beat = fired
 
         if rms < SILENCE_RMS_THRESHOLD:
             self._silence_frames += 1
@@ -1593,7 +1629,8 @@ class AudioSession:
                  max_duration_s=None, warmup_s=0.0, auto_resume_grace_s=DEFAULT_AUTO_RESUME_GRACE_S,
                  max_flash_rate_hz=None, disable_flash_heavy=False, max_brightness_swing=None,
                  silence_auto_off=True, fallback_device_index=None,
-                 source_kind="device", source_factory=None):
+                 source_kind="device", source_factory=None,
+                 hop_size=None, window_size=None):
         self.controller = controller
         self.requested_device_index = device_index
         # source_kind "bridge" means audio arrives from the host-side capture
@@ -1613,13 +1650,28 @@ class AudioSession:
         self.n_bands = max(N_BANDS_MIN, min(N_BANDS_MAX, n_bands))
         self.band_edges = log_band_edges(self.n_bands)
         self.ctx = _new_ctx(sensitivity, monochrome_hue)
+        # Hop/window decoupling (#80). The hop is what actually bounds
+        # latency, so it -- not the window and not the arriving block size --
+        # is what the latency tracker is told about.
+        self.hop_buffer = audio_hop.HopBuffer(
+            window=window_size or DEFAULT_WINDOW_SIZE,
+            hop=hop_size or DEFAULT_HOP_SIZE)
+        self.hop_size = self.hop_buffer.hop
+        self.window_size = self.hop_buffer.window
+        self.frame_dt = self.hop_size / float(SAMPLE_RATE)
+
         # Built before the sender so both halves of the pipeline report into
         # one place: capture and analysis from _process, bulb round-trip from
         # the sender's own send loop.
         self.latency = audio_latency.LatencyTracker(
-            block_period_ms=(BLOCK_SIZE / float(SAMPLE_RATE)) * 1000.0)
+            block_period_ms=self.frame_dt * 1000.0)
         self.sender = BulbSender(controller, min_dwell_ms, tracker=self.latency)
-        self.tempo = TempoTracker(beat_sensitivity=beat_sensitivity)
+        # frame_dt drives the tempo autocorrelation's seconds-per-frame, so it
+        # must follow the hop or every BPM estimate scales wrong. The
+        # refractory is on because the windows now overlap.
+        self.tempo = TempoTracker(frame_dt=self.frame_dt,
+                                  beat_sensitivity=beat_sensitivity,
+                                  beat_refractory_s=BEAT_REFRACTORY_S)
 
         # Signal conditioning (Section 4: AGC / noise gate / clip detection /
         # DC removal / per-band gain). `device_key` lets a previously saved
@@ -1714,6 +1766,8 @@ class AudioSession:
             "max_duration_s": self.max_duration_s,
             "warmup_s": self.warmup_s,
             "max_flash_rate_hz": self.max_flash_rate_hz,
+            "hop_size": self.hop_size,
+            "window_size": self.window_size,
         }
 
     def status(self):
@@ -1731,6 +1785,7 @@ class AudioSession:
             "signal": self.conditioner.last_meter or {},
             "sender": self.sender.status(),
             "latency": self.latency.summary(),
+            "analysis": self.hop_buffer.status(),
             "source": self.source_kind,
             "tempo": self.tempo.status(),
             "error": self._error,
@@ -1756,9 +1811,14 @@ class AudioSession:
         if self.source_kind == "bridge":
             return capture_sources.NetworkSource(
                 self._process, on_dropped=self.latency.note_dropped)
+        # Ask the device for hop-sized blocks. The hop buffer copes with any
+        # size the source actually delivers, but a device handing over 512
+        # samples every 11.6ms puts an 11.6ms floor under the whole pipeline
+        # no matter how short the hop is -- the decision cannot be fresher
+        # than the audio.
         return capture_sources.SoundDeviceSource(
             device_index=self.device_index, channels=channels,
-            samplerate=SAMPLE_RATE, blocksize=BLOCK_SIZE, callback=self._process,
+            samplerate=SAMPLE_RATE, blocksize=self.hop_size, callback=self._process,
             on_dropped=self.latency.note_dropped)
 
     def _run(self):
@@ -1813,36 +1873,84 @@ class AudioSession:
                     return
 
     def _process(self, indata):
-        # Two perf_counter reads and a bounded deque append per frame -- see
-        # audio_latency's cost note. `t_arrive` doubles as the analysis start,
-        # so timing the stage costs one extra read, not two.
-        t_arrive = time.perf_counter()
-        self.latency.record_arrival(t_arrive)
-        try:
-            self._process_frame(indata, time.time())
-        finally:
-            self.latency.record_analysis((time.perf_counter() - t_arrive) * 1000.0)
+        """Capture callback. Arrival bookkeeping happens per *block*; analysis
+        happens per *hop*, which may be zero, one or several times per block
+        depending on how the source chose to deliver.
 
-    def _process_frame(self, indata, now):
-        if self._stereo and indata.shape[1] >= 2:
+        Signal conditioning stays here, on the arriving block, rather than
+        moving into the per-window path: the conditioner is stateful (AGC
+        envelopes, DC removal) and expects to see each sample exactly once.
+        Running it on overlapping windows would feed it the same audio eight
+        times over and wreck its time constants.
+        """
+        now = time.time()
+        # Arrival is recorded per BLOCK, not per hop. Extra hops within one
+        # block are computed from audio already in hand -- they give finer
+        # time resolution retrospectively, but they do not make the newest
+        # decision any fresher, and counting them as arrivals would report a
+        # latency the pipeline does not actually achieve.
+        self.latency.record_arrival(time.perf_counter())
+
+        if self._stereo and indata.ndim > 1 and indata.shape[1] >= 2:
             left, right = indata[:, 0], indata[:, 1]
             self.ctx["left_rms"] = float(np.sqrt(np.mean(np.square(left))) + 1e-12)
             self.ctx["right_rms"] = float(np.sqrt(np.mean(np.square(right))) + 1e-12)
             samples = (left + right) / 2.0
         else:
-            samples = indata[:, 0]
+            samples = indata[:, 0] if indata.ndim > 1 else indata
+
+        # The silence check deliberately uses RAW samples, so a low noise-gate
+        # floor can never mask genuine activity from the timeout's view.
+        rms_check = float(np.sqrt(np.mean(np.square(samples))))
+        if rms_check > SILENCE_RMS_THRESHOLD:
+            self._last_audio_at = now
+
+        conditioned, _meter = self.conditioner.process(samples)
+
+        for window in self.hop_buffer.push(conditioned):
+            t_hop = time.perf_counter()
+            try:
+                self._analyze_window(window, now)
+            finally:
+                self.latency.record_analysis((time.perf_counter() - t_hop) * 1000.0)
+
+    def _process_frame(self, indata, now):
+        """Analyse one arriving block directly, with no hop scheduling.
+
+        Kept for callers that drive the pipeline synchronously -- the wiring
+        tests hand `_process_frame` a single block and expect exactly one
+        analysis out of it, which the hop path deliberately does not promise.
+        """
+        if self._stereo and indata.ndim > 1 and indata.shape[1] >= 2:
+            left, right = indata[:, 0], indata[:, 1]
+            self.ctx["left_rms"] = float(np.sqrt(np.mean(np.square(left))) + 1e-12)
+            self.ctx["right_rms"] = float(np.sqrt(np.mean(np.square(right))) + 1e-12)
+            samples = (left + right) / 2.0
+        else:
+            samples = indata[:, 0] if indata.ndim > 1 else indata
 
         rms_check = float(np.sqrt(np.mean(np.square(samples))))
         if rms_check > 0.0008:
             self._last_audio_at = now
-        # NOTE: the tempo update happens AFTER analysis now (see below), so it
-        # can use the low band rather than broadband rms as its onset signal.
 
         # Signal conditioning (DC removal / noise gate / AGC) runs on the
         # RAW captured samples -- the silence-timeout check above deliberately
         # uses `samples` (not conditioned), so a low noise-gate floor can
         # never mask genuine audio activity from the timeout's perspective.
-        conditioned, meter = self.conditioner.process(samples)
+        conditioned, _meter = self.conditioner.process(samples)
+        self._analyze_window(conditioned, now)
+
+    def _analyze_window(self, conditioned, now):
+        """One analysis pass over one window of already-conditioned audio.
+
+        This is the whole decision path -- bands, tempo, mode, safety, dispatch
+        -- and it is what the hop scheduler calls. `analyze_frame()` itself is
+        not modified by #80; it simply receives a longer array than it used to,
+        which is why the golden-value tests still hold.
+        """
+        # NOTE: the tempo update happens AFTER analysis, so it can use the low
+        # band rather than broadband rms as its onset signal.
+        rms_check = float(np.sqrt(np.mean(np.square(conditioned))))
 
         n_bands = self.n_bands if self.mode in ("spectrum_gradient", "band_flash_overlay", "harmonic_pairs") else 3
         mode_edges = log_band_edges(n_bands) if n_bands != 3 else None
@@ -2203,13 +2311,21 @@ def start_session(controller, device_index, mode="band_fixed", sensitivity=1.0,
                    max_duration_s=None, warmup_s=0.0, auto_resume_grace_s=DEFAULT_AUTO_RESUME_GRACE_S,
                    max_flash_rate_hz=None, disable_flash_heavy=False, max_brightness_swing=None,
                    silence_auto_off=True, fallback_device_index=None,
-                   source_kind="device", source_factory=None):
+                   source_kind="device", source_factory=None,
+                   hop_size=None, window_size=None):
     """Raises AudioConfigError on an invalid config (caller turns this into
     an HTTP 400) before anything is started. On success, persists this
     config as the "last known good session" for this device (Section 8's
     one-click resume-after-restart) and returns the started AudioSession —
     call `.confirmation()` on it for exactly what was applied."""
     validate_start_config(n_bands, min_dwell_ms, max_duration_s, warmup_s, mode, disable_flash_heavy)
+    # Validate here, before anything starts, so a bad hop/window is a clean
+    # 400 rather than an exception thrown from the session constructor.
+    try:
+        audio_hop.validate_hop_window(hop_size or DEFAULT_HOP_SIZE,
+                                      window_size or DEFAULT_WINDOW_SIZE)
+    except audio_hop.HopConfigError as e:
+        raise AudioConfigError(str(e))
     with _sessions_lock:
         existing = _sessions.get(controller.cfg["id"])
         if existing and existing.is_alive():
@@ -2225,7 +2341,8 @@ def start_session(controller, device_index, mode="band_fixed", sensitivity=1.0,
                                 auto_resume_grace_s=auto_resume_grace_s, max_flash_rate_hz=max_flash_rate_hz,
                                 disable_flash_heavy=disable_flash_heavy, max_brightness_swing=max_brightness_swing,
                                 silence_auto_off=silence_auto_off, fallback_device_index=fallback_device_index,
-                                source_kind=source_kind, source_factory=source_factory)
+                                source_kind=source_kind, source_factory=source_factory,
+                                hop_size=hop_size, window_size=window_size)
         _sessions[controller.cfg["id"]] = session
         session.start()
     audio_presets.save_last_session(controller.cfg["id"], {

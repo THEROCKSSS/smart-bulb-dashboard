@@ -160,10 +160,9 @@ class LatencyTracker:
         # `_capture_summary` and the module docstring for why a measured
         # median gap is the wrong number.
         self._stages = {"analysis": StageWindow(window), "bulb": StageWindow(window)}
-        # How far past the nominal block period each delivery ran. Zero for a
-        # block that arrived on or ahead of schedule.
-        self._excess = StageWindow(window)
-        # Raw inter-arrival gaps, kept for delivery health (burstiness, stalls).
+        # Raw inter-arrival gaps between arriving BLOCKS. Everything about the
+        # capture stage is derived from these at read time -- see
+        # `_capture_summary`.
         self._interval = StageWindow(window)
         self._window = window
         self._counter_lock = threading.Lock()
@@ -186,9 +185,6 @@ class LatencyTracker:
             return None
         interval_ms = (at - previous) * 1000.0
         self._interval.record(interval_ms)
-        # A block that arrived early is part of a burst, not a fast capture --
-        # it contributes no excess, and the floor still applies to it.
-        self._excess.record(max(0.0, interval_ms - self.block_period_ms))
         if interval_ms > self.block_period_ms * LATE_ARRIVAL_FACTOR:
             with self._counter_lock:
                 self._late += 1
@@ -229,33 +225,63 @@ class LatencyTracker:
         }
 
     def _capture_summary(self):
-        """Capture latency = the block period, plus however far behind
-        schedule delivery ran. See the module docstring for why this is
-        derived rather than measured as a median gap."""
-        excess = self._excess.summary()
-        interval = self._interval.summary()
-        period = round(self.block_period_ms, 3)
+        """Capture latency = the effective floor, plus delivery lateness.
 
-        def _plus(v):
-            return round(period + v, 3) if v is not None else period
+        The floor is `max(configured period, observed delivery period)` and
+        both halves are load-bearing:
+
+        * The **configured period** is the hop -- how often a decision is
+          produced.
+        * The **observed period** is how often audio actually arrives. A
+          decision cannot be fresher than its input, so shortening the hop
+          past the source's delivery cadence buys nothing real. Shrink the hop
+          to 256 while the bridge still ships 512-sample frames and the honest
+          latency is still 11.6ms, not 5.8ms.
+
+        Observed period uses the **mean** gap, not the median. A bursty
+        backend delivers several blocks back-to-back then pauses, so its
+        median gap is near zero while its mean lands exactly on the true
+        cadence (measured live: p50 0.836ms, mean 11.595ms, nominal 11.61ms).
+        """
+        gaps, count, worst_ever, total = self._interval.snapshot()
+        configured = round(self.block_period_ms, 3)
+        if not gaps:
+            return {
+                "p50_ms": configured, "p95_ms": configured, "max_ms": configured,
+                "mean_ms": configured, "worst_ever_ms": configured,
+                "count": 0, "window_n": 0,
+                "floor_ms": configured, "configured_period_ms": configured,
+                "observed_period_ms": None, "floor_source": "configured",
+                "interval_p50_ms": None, "interval_p95_ms": None, "interval_mean_ms": None,
+            }
+
+        observed = sum(gaps) / len(gaps)
+        floor = max(self.block_period_ms, observed)
+        # Lateness is measured against the floor the pipeline actually runs at,
+        # so a source that is merely slower than the hop is not also charged
+        # for being "late" on every single block.
+        excess = sorted(max(0.0, g - floor) for g in gaps)
+        ordered_gaps = sorted(gaps)
 
         return {
-            "p50_ms": _plus(excess["p50_ms"]),
-            "p95_ms": _plus(excess["p95_ms"]),
-            "max_ms": _plus(excess["max_ms"]),
-            "mean_ms": _plus(excess["mean_ms"]),
-            "worst_ever_ms": _plus(excess["worst_ever_ms"]),
-            "count": excess["count"],
-            "window_n": excess["window_n"],
-            # The structural part, split out so a reader can see how much of
-            # the figure is configuration and how much is the source misbehaving.
-            "floor_ms": period,
-            "excess_p95_ms": excess["p95_ms"],
+            "p50_ms": round(floor + percentile(excess, 0.50), 3),
+            "p95_ms": round(floor + percentile(excess, 0.95), 3),
+            "max_ms": round(floor + excess[-1], 3),
+            "mean_ms": round(floor + sum(excess) / len(excess), 3),
+            "worst_ever_ms": round(max(floor, worst_ever), 3),
+            "count": count,
+            "window_n": len(gaps),
+            "floor_ms": round(floor, 3),
+            # Split out so a reader can tell "the hop is the limit" from "the
+            # source is the limit" -- they need completely different fixes.
+            "configured_period_ms": configured,
+            "observed_period_ms": round(observed, 3),
+            "floor_source": "source delivery" if observed > self.block_period_ms else "configured hop",
             # Delivery health. A bursty backend shows a tiny median gap and a
             # large p95 here; that is diagnostic, not a latency claim.
-            "interval_p50_ms": interval["p50_ms"],
-            "interval_p95_ms": interval["p95_ms"],
-            "interval_mean_ms": interval["mean_ms"],
+            "interval_p50_ms": round(percentile(ordered_gaps, 0.50), 3),
+            "interval_p95_ms": round(percentile(ordered_gaps, 0.95), 3),
+            "interval_mean_ms": round(observed, 3),
         }
 
     def summary(self):

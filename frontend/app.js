@@ -769,7 +769,7 @@ function fmtMs(v) { return v == null ? "—" : `${Number(v).toFixed(1)}ms`; }
 // makes someone conclude the software is slow and start tuning knobs that
 // cannot possibly help — so the hardware row is labelled as such, and the
 // verdict chip is scored against the software stages alone.
-function renderLatencyPanel(latency) {
+function renderLatencyPanel(latency, analysis) {
   if (!latency) {
     return `<div class="empty-state">No latency measured yet — start a session and the
       per-stage numbers appear here.</div>`;
@@ -828,7 +828,26 @@ function renderLatencyPanel(latency) {
       is the lamp's own hardware and no setting makes it faster.
     </p>
     ${renderDeliveryNote(stages.capture)}
+    ${renderAnalysisNote(analysis)}
     <p class="panel-subtitle">${frames.processed || 0} frames processed · ${health}</p>`;
+}
+
+// The hop/window trade, stated where someone changing it can see it. These
+// pull in opposite directions and the defaults are a measured compromise, not
+// a guess: window 2048 resolves bass twice as finely as 1024 and loses a
+// tempo doing it, because a longer window smears the transient it is trying
+// to locate.
+function renderAnalysisNote(analysis) {
+  if (!analysis) return "";
+  const hopMs = (analysis.hop / 44100) * 1000;
+  const winMs = (analysis.window / 44100) * 1000;
+  const binHz = 44100 / analysis.window;
+  return `<p class="panel-subtitle dim">
+      Hop ${analysis.hop} samples (${hopMs.toFixed(1)}ms) — sets latency; shorter costs CPU.
+      Window ${analysis.window} samples (${winMs.toFixed(1)}ms, ${binHz.toFixed(0)}Hz per bin) —
+      sets frequency resolution; longer smears transients and costs beat accuracy.
+      Overlap ${analysis.overlap} samples.
+    </p>`;
 }
 
 // Capture latency is the block period plus lateness, never the median gap
@@ -1069,7 +1088,7 @@ async function renderAudio(main) {
         Measured per stage on this session — not an estimate. Typical is the median
         over the rolling window; worst is the largest spike since the session started.
       </p>
-      <div id="latency-wrap">${renderLatencyPanel(sessionStatus.latency)}</div>
+      <div id="latency-wrap">${renderLatencyPanel(sessionStatus.latency, sessionStatus.analysis)}</div>
     </div>
 
     <div class="card">
@@ -1333,7 +1352,7 @@ async function renderAudio(main) {
         const tempoWrap = document.getElementById("tempo-wrap");
         if (tempoWrap) tempoWrap.innerHTML = renderTempoInfo(st.tempo);
         const latWrap = document.getElementById("latency-wrap");
-        if (latWrap) latWrap.innerHTML = renderLatencyPanel(st.latency);
+        if (latWrap) latWrap.innerHTML = renderLatencyPanel(st.latency, st.analysis);
         if (!st.active) renderAudio(main);
       } catch (e) { /* transient poll miss, ignore */ }
     }, 300);
