@@ -13,7 +13,7 @@
 | **Branch** | `master`, at or after `83b7ed5` (hash as written; later commits are fine — `git log` is the source of truth) |
 | **Local URL** | http://127.0.0.1:8502 |
 | **Tailnet URL** | https://owens-pc-vpn.tailff2683.ts.net:8502 |
-| **PIN** | `143490` |
+| **PIN** | not in this repo — see "Credentials / config" |
 | **Lineage** | Rounds 1–6 below. This is Round 7. |
 
 ## Current state
@@ -210,7 +210,8 @@ cd backend
 venv/Scripts/python.exe -m uvicorn main:app --host 127.0.0.1 --port 8502 --no-proxy-headers
 ```
 
-Then open http://127.0.0.1:8502 and unlock with PIN `143490`.
+Then open http://127.0.0.1:8502 and unlock with the household PIN (not
+recorded here — see "Credentials / config" below).
 
 If the tailnet URL is not serving:
 
@@ -226,8 +227,15 @@ aside to reset the PIN gate to its disabled default.
 
 ## Credentials / config
 
-- **Dashboard PIN**: `143490`. Session TTL 30 days. Rotate if this file
-  travels beyond this machine.
+- **Dashboard PIN**: **deliberately not written down in this repo.** This
+  repository is public, so any PIN committed here is a published PIN — and
+  git history keeps it even after the line is deleted, which is why the
+  previous value was *rotated* rather than merely redacted. Ask the repo
+  owner for the current one.
+  Session TTL 30 days. Locked out with no way in? The gate reads
+  `backend/data/remote_auth.json` on every request; move that file aside and
+  the gate returns to its disabled default, then set a fresh PIN from the
+  UI. Do not "fix" a lost PIN by committing the new one.
 - **Bulb**: `Bytech A19`, `192.168.0.134`, Tuya protocol v3.5. Credentials
   live in `backend/config.json`, which is **git-ignored and must never be
   committed**. `config.example.json` is the template.
@@ -254,6 +262,12 @@ has required history rewrites before.
 5. **Never trust a subagent's self-report.** Re-run the tests yourself. Every
    parallel-phase round so far has produced cross-phase bugs that only
    appeared once branches were combined.
+6. **Never write a live credential into this repository — it is public.**
+   The dashboard PIN lived in this file for five rounds and was therefore
+   published on GitHub the whole time. Deleting the line is not a fix: git
+   history keeps it, so the value had to be rotated. Credentials belong in
+   `backend/config.json` or `.env` (both git-ignored) or in chat, never in
+   a tracked file. Before committing, `git grep` for the current PIN.
 
 ## Known issues / blockers
 
@@ -632,9 +646,10 @@ tailscale serve --bg --https=8502 http://127.0.0.1:8502    # re-create if missin
 
 ### Credentials / config
 
-- **Local server PIN**: `143490` (set this session for the Tailscale
-  exposure — rotate it if this handoff is ever shared beyond this
-  machine's owner). Session TTL: 30 days once logged in.
+- **Local server PIN**: set this session for the Tailscale exposure. The
+  value that used to be recorded here has since been rotated, because this
+  repository is public and it had already been published. Session TTL: 30
+  days once logged in.
 - **Tailscale URL**: `https://owens-pc-vpn.tailff2683.ts.net:8502`
   (tailnet-only — reachable from any device signed into the same
   Tailscale account, not the public internet).
@@ -658,7 +673,8 @@ top of this file for current state. Tracked in
 issues #64–#67 (one per phase). 353/353 backend tests pass. A real backend
 server is running locally against this branch's code:
 `127.0.0.1:8502` (also reachable over the tailnet at
-`https://owens-pc-vpn.tailff2683.ts.net:8502`, PIN `143490`).
+`https://owens-pc-vpn.tailff2683.ts.net:8502`, PIN held by the repo
+owner — this value has since been rotated).
 
 ### What was done this round
 
