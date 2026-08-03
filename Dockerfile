@@ -24,6 +24,19 @@ RUN pip install --no-cache-dir -r backend/requirements.txt
 COPY backend ./backend
 COPY frontend ./frontend
 
+# The in-app documentation browser (System -> Docs) reads real markdown off
+# disk via backend/docs_library.py, whose DOC_ROOTS are docs/, the project
+# root and iterations/. None of that was in the image, so the browser was
+# silently EMPTY in every container deployment -- it only ever worked when the
+# backend ran from a host checkout. Found by querying docs_library inside the
+# running container and getting `{"categories": [], "total": 0}`.
+#
+# Markdown only, and only the directories that are actually indexed: this is
+# documentation for the person using the app, not the repo.
+COPY docs ./docs
+COPY iterations ./iterations
+COPY *.md ./
+
 WORKDIR /app/backend
 EXPOSE 8500
 
