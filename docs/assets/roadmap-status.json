@@ -1,5 +1,5 @@
 {
-  "generatedAt": "2026-08-03T22:53:45.820326+00:00",
+  "generatedAt": "2026-08-03T22:54:23.222103+00:00",
   "totalSections": 58,
   "statusCounts": {
     "done": 21,
@@ -238,7 +238,7 @@
       "itemCount": 20,
       "status": "in_progress",
       "url": "https://github.com/THEROCKSSS/smart-bulb-dashboard/issues/18",
-      "updatedAt": "2026-08-01T18:16:34Z",
+      "updatedAt": "2026-08-03T22:53:53Z",
       "milestone": "Week 2 — Remote Access & Security"
     },
     {
@@ -264,7 +264,7 @@
       "itemCount": 20,
       "status": "in_progress",
       "url": "https://github.com/THEROCKSSS/smart-bulb-dashboard/issues/20",
-      "updatedAt": "2026-08-01T18:16:36Z",
+      "updatedAt": "2026-08-03T22:53:54Z",
       "milestone": "Week 2 — Remote Access & Security"
     },
     {
