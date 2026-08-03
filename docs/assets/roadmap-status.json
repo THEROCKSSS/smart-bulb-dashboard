@@ -1,9 +1,9 @@
 {
-  "generatedAt": "2026-08-03T22:52:54.115235+00:00",
+  "generatedAt": "2026-08-03T22:53:12.984880+00:00",
   "totalSections": 58,
   "statusCounts": {
-    "done": 15,
-    "in_progress": 12,
+    "done": 19,
+    "in_progress": 8,
     "planned": 31
   },
   "sections": [
@@ -301,9 +301,9 @@
       "startNum": 161,
       "endNum": 175,
       "itemCount": 15,
-      "status": "in_progress",
+      "status": "done",
       "url": "https://github.com/THEROCKSSS/smart-bulb-dashboard/issues/23",
-      "updatedAt": "2026-08-03T22:52:52Z",
+      "updatedAt": "2026-08-03T22:52:55Z",
       "milestone": "Week 2 — Remote Access & Security"
     },
     {
@@ -314,9 +314,9 @@
       "startNum": 176,
       "endNum": 195,
       "itemCount": 20,
-      "status": "in_progress",
+      "status": "done",
       "url": "https://github.com/THEROCKSSS/smart-bulb-dashboard/issues/24",
-      "updatedAt": "2026-08-01T18:16:44Z",
+      "updatedAt": "2026-08-03T22:53:04Z",
       "milestone": "Week 2 — Remote Access & Security"
     },
     {
@@ -327,9 +327,9 @@
       "startNum": 196,
       "endNum": 210,
       "itemCount": 15,
-      "status": "planned",
+      "status": "done",
       "url": "https://github.com/THEROCKSSS/smart-bulb-dashboard/issues/25",
-      "updatedAt": "2026-07-29T02:26:42Z",
+      "updatedAt": "2026-08-03T22:53:08Z",
       "milestone": "Week 2 — Remote Access & Security"
     },
     {
@@ -340,9 +340,9 @@
       "startNum": 211,
       "endNum": 225,
       "itemCount": 15,
-      "status": "in_progress",
+      "status": "done",
       "url": "https://github.com/THEROCKSSS/smart-bulb-dashboard/issues/26",
-      "updatedAt": "2026-08-01T18:16:45Z",
+      "updatedAt": "2026-08-03T22:52:59Z",
       "milestone": "Week 2 — Remote Access & Security"
     },
     {
@@ -353,9 +353,9 @@
       "startNum": 226,
       "endNum": 240,
       "itemCount": 15,
-      "status": "in_progress",
+      "status": "planned",
       "url": "https://github.com/THEROCKSSS/smart-bulb-dashboard/issues/27",
-      "updatedAt": "2026-08-01T18:16:47Z",
+      "updatedAt": "2026-08-03T22:53:11Z",
       "milestone": "Week 2 — Remote Access & Security"
     },
     {
