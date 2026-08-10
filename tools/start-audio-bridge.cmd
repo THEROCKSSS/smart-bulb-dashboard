@@ -36,8 +36,11 @@ set ARGS=%*
 if "%ARGS%"=="" set ARGS=--auto
 
 echo Smart Bulb Dashboard - audio bridge
-echo   dashboard: http://127.0.0.1:8502/#/audio
+echo   dashboard: http://127.0.0.1:8504/#/audio
 echo   bridge port: 8503
+echo.
+echo   Streaming alone does NOT move the lights. Open the Audio page above,
+echo   enter the PIN, and start a session with source "bridge".
 echo.
 echo Press Ctrl-C to stop.
 echo.
