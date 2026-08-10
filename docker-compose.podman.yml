@@ -14,17 +14,19 @@
 # `tailscale serve` ports) fails, while 8555 succeeds.
 #
 # ---------------------------------------------------------------------------
-# THIS NEEDS ONE COMMAND FROM OWEN TO FINISH — the tailnet URL is unchanged:
+# DONE — no further action needed. The serve mapping was repointed with:
 #
 #   tailscale serve --bg --https=8502 http://127.0.0.1:8504
 #
-# The serve mapping currently points at 127.0.0.1:8502, which is exactly the
-# port the container can no longer take. Repointing it at 8504 keeps the URL
-# people actually use (https://owens-pc-vpn.tailff2683.ts.net:8502) identical.
+# so the URL people actually use is unchanged. Verified 2026-08-10:
 #
-# Doing this is strictly better than leaving it: as things stand the container
-# does not start at all, so that tailnet URL is already dead. This gets the
-# dashboard running again, and the one command above reconnects the URL to it.
+#   tailscale serve status
+#     https://owens-pc-vpn.tailff2683.ts.net:8502 -> proxy http://127.0.0.1:8504
+#
+#   GET https://owens-pc-vpn.tailff2683.ts.net:8502/healthz -> 200 {"status":"ok"}
+#
+# If that mapping is ever lost, the symptom is a dead tailnet URL while
+# http://127.0.0.1:8504 still works — re-run the command above to fix it.
 #
 # 8503 is untouched — nothing else claims it.
 
