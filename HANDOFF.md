@@ -122,12 +122,63 @@ gate exactly as configured.
 value 100%`, DPS 24 = `00f003e803e8` — pure blue at full brightness. It was
 hue 1 / sat 89% / val 23% before. Container reports `Up (healthy)`.
 
-**Forgejo is behind by these two commits.** The pre-receive hook rejects them:
+**Forgejo could not be pushed to directly.** The pre-receive hook rejects it:
 `User 'claude-code' is not allowed to push to branch 'master' in
 'agentsoul/smart-bulb-dashboard'`. That is branch protection against this
-agent's identity, not a broken remote, and AGENTS.md calls Forgejo an archival
-target only — so GitHub (the real remote) is current and Forgejo needs one push
-as `agentsoul` to catch up. No side branch was created to work around it.
+agent's identity, not a broken remote or a client-side permission prompt —
+retrying or approving something locally will never clear it. The fix is either
+a push as `agentsoul`, or adding `claude-code` to the branch's push whitelist.
+
+Rather than force it or invent a side branch, the route the hook itself
+suggests was used: **AGit → Forgejo PR #1**
+(http://localhost:3000/agentsoul/smart-bulb-dashboard/pulls/1), whose head
+matches GitHub's `master` exactly. Merging it brings Forgejo current, including
+the seven roadmap-sync commits it had also missed.
+
+    git push forgejo HEAD:refs/for/master/<descriptor>   # how it was opened
+
+### Audio bridge — brought online, end-to-end verified
+
+The backend runs in a Linux container and **cannot see Windows audio devices**,
+so audio-reactive sessions there need two separate things running. Having only
+one is silent lights and no error message anywhere, which is the trap:
+
+1. `tools/start-audio-bridge.cmd` on the **Windows host** — captures and streams
+   PCM to the backend's listener on 8503.
+2. A **session with `source="bridge"`** started on the backend. A bridge with no
+   session streams into a void.
+
+`--auto` (the launcher default) picks the loudest input at startup. `--probe`
+showed this machine carries signal on several: `[124] Voicemeeter Out 6` at
+peak 0.2686 was the clear winner, well above `[85] CABLE Output` (0.0791) and
+`[77] Voicemeeter Out B1` (0.0219). Note `[81]` is the **webcam microphone** —
+it shows signal because it hears the room, and picking it would make the lights
+react to ambient noise instead of the music. Do not hardcode a device index;
+that hardcoding is exactly what `--auto` was introduced to fix.
+
+Verified from the backend side, not from the bridge's own console output:
+`netstat` showed `127.0.0.1:63035 -> 127.0.0.1:8503 ESTABLISHED`, and the
+process held steady CPU (~29s), which is real capture work rather than an idle
+socket. Then the bulb itself was sampled over 15s: **4 distinct colours, hue
+9 -> 150, brightness 80-100%** — reacting to music, confirmed at the device.
+
+**Runtime state cannot be inspected with `podman exec python -c`.** That was
+tried and is misleading: `audio_bridge.status()` in a fresh interpreter reports
+`listening: false` because the module global belongs to *the running server
+process*, not the throwaway one. Same trap for `controller.history()`, which
+reads 0 entries. Use the socket, the on-disk files in `backend/data/`, or the
+API. This also means `start_session` **cannot** be triggered by importing the
+backend — it would attach to an interpreter that exits immediately.
+
+New in `tools/`, because that gap needed closing: **`start-audio-session.py`**
+(+ `.cmd`) does login-and-start in one command with a hidden `getpass` PIN
+prompt — never echoed, never in argv, so it stays out of shell history.
+`--stop` reverses it; `--pin-env` covers schedulers with no terminal.
+
+`start-audio-bridge.cmd` was also printing a dead dashboard URL (`:8502`) and
+never mentioned that streaming alone moves nothing. Both fixed.
+
+## What was done in Round 8
 
 ## What was done in Round 8
 
