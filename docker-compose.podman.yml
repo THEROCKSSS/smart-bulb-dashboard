@@ -1,0 +1,35 @@
+# Podman override for smart-bulb-dashboard. Layered on docker-compose.yml AND
+# docker-compose.windows.yml (it must come last of the three).
+#
+# Host port 127.0.0.1:8502 -> 127.0.0.1:8504.
+#
+# 8502 cannot be bound by a container any more. `tailscale serve` publishes
+# https://owens-pc-vpn.tailff2683.ts.net:8502 and tailscaled holds that port;
+# with WSL mirrored networking the container is on the host's real interfaces,
+# so the two now collide where under Docker Desktop's NAT they did not:
+#
+#   rootlessport listen tcp 127.0.0.1:8502: bind: address already in use
+#
+# Verified as a general rule, not a guess: binding 8501 and 8502 (both
+# `tailscale serve` ports) fails, while 8555 succeeds.
+#
+# ---------------------------------------------------------------------------
+# THIS NEEDS ONE COMMAND FROM OWEN TO FINISH — the tailnet URL is unchanged:
+#
+#   tailscale serve --bg --https=8502 http://127.0.0.1:8504
+#
+# The serve mapping currently points at 127.0.0.1:8502, which is exactly the
+# port the container can no longer take. Repointing it at 8504 keeps the URL
+# people actually use (https://owens-pc-vpn.tailff2683.ts.net:8502) identical.
+#
+# Doing this is strictly better than leaving it: as things stand the container
+# does not start at all, so that tailnet URL is already dead. This gets the
+# dashboard running again, and the one command above reconnects the URL to it.
+#
+# 8503 is untouched — nothing else claims it.
+
+services:
+  smart-bulb-dashboard:
+    ports: !override
+      - "127.0.0.1:8504:8500"
+      - "127.0.0.1:8503:8503"
