@@ -1,5 +1,55 @@
 # Handoff
 
+## Current session — September 13, 2026
+
+- Agent: Codex. Prior session record is preserved below.
+- Work: full lighting-studio frontend redesign on `feat/lighting-studio-redesign`,
+  based on `09a30db`. Local implementation is complete; the hardware request is blocked.
+- Runtime: rootless Podman `smart-bulb-dashboard`, image
+  `docker.io/library/apps-smart-bulb-dashboard:latest`, rebuilt and recreated using
+  the existing three compose files with project name `apps`. Other services were
+  not recreated. The service initially had been stopped for five weeks.
+- URLs: http://127.0.0.1:8504 and
+  https://owens-pc-vpn.tailff2683.ts.net:8502 — both health checks returned 200.
+- Frontend: shared charcoal/amber theme, persistent navigation, CSS bulb preview,
+  immediate control rendering, pending/confirmed power state, queued slider writes,
+  phone bottom navigation, native scene/preset buttons, and redesigned PIN screen.
+  Implementation notes and verification commands: `docs/frontend-design.md`.
+- Verification: 744 backend/CLI tests passed; Chromium journeys passed on deployed
+  assets at five viewport widths; all 14 live dashboard views loaded without page
+  errors; served asset hashes matched source. Screenshots use synthetic data.
+- Review fixes: stale focused quick controls, temperature draft persistence,
+  command ordering, skip-link routing, and global recovery routes with no devices.
+- **Unfinished: turn the bulb off.** LAN discovery matched its saved identity,
+  IP and protocol. Every real control attempt returned `Check device key or version`,
+  including exclusive host access and the HTTP power endpoint. Final readback was
+  `online: false`, `power: null`; never report the bulb as confirmed off.
+- **Auth differs from historical notes below:** the current runtime reports
+  `enabled: false`, `authenticated: true`, and displays its existing exposure warning.
+  A local `remote_auth.json.reset-20260912` exists. No PIN enable/disable or credential
+  change was requested or performed. The older handoff's claim that the PIN gate is
+  enabled is not current evidence.
+- Credentials remain in ignored `backend/config.json` / `.env`; no values were
+  printed or copied into tracked files. Home Assistant had no Tuya integration to
+  reuse. `.dockerignore` now excludes credentials, runtime state and the host venv
+  from future image builds.
+
+### Resume
+
+1. Inspect this branch with `git status` and `git log -1`.
+2. If needed, start the existing service: `podman start smart-bulb-dashboard`.
+3. For an intentional rebuild from this repo in PowerShell:
+   `podman build --format docker -t docker.io/library/apps-smart-bulb-dashboard:latest .`
+   then `podman compose -p apps -f docker-compose.yml -f docker-compose.windows.yml -f docker-compose.podman.yml up -d --no-deps --no-build smart-bulb-dashboard`.
+4. Use `python -B tools/verify-frontend.py` for browser regression checks; it requires
+   a Python environment with Playwright/Chromium. Test commands use API fixtures.
+5. To resolve the light-off request, obtain/verify the current local device key
+   through the existing authorized setup. Do not reset/re-pair the bulb or replace
+   its PIN merely to make a test pass. There is no verified phone-free key recovery
+   available in this session.
+
+## Historical handoff (August 10 and earlier)
+
 > **START HERE.** This file is a recovery document, not a product spec.
 > Everything below the "Round 1" heading is history, kept for context.
 > This top section is the only part that describes the project *now*.

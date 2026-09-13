@@ -112,9 +112,13 @@ async function api(path, opts) {
       throw new Error(body.detail || `HTTP ${res.status}`);
     }
     const ct = res.headers.get("content-type") || "";
-    return ct.includes("application/json") ? res.json() : res.text();
+    const data = ct.includes("application/json") ? await res.json() : await res.text();
+    // Tuya can return a protocol error inside an otherwise successful HTTP 200.
+    if (data?.result?.Error) throw new Error("The bulb rejected the command. Check its connection and device settings.");
+    return data;
   } catch (e) {
     if (e.message !== "authentication required") toast(`Error: ${e.message}`, "error");
+    e.apiNotified = true;
     throw e;
   }
 }
@@ -263,6 +267,7 @@ function currentRoute() {
 
 async function router() {
   const route = currentRoute();
+  controlEditing = false;
   lsSet(LS_KEY_ROUTE, route.key);
   if (controlKeyHandler) {
     document.removeEventListener("keydown", controlKeyHandler);
@@ -290,10 +295,16 @@ async function router() {
   }
   document.querySelectorAll(".nav-item").forEach(n => {
     n.classList.toggle("active", n.dataset.route === route.page);
+    if (n.dataset.route === route.page) n.setAttribute("aria-current", "page");
+    else n.removeAttribute("aria-current");
   });
   const main = document.getElementById("main");
   main.innerHTML = `<div class="empty-state loading">Loading…</div>`;
   const page = PAGES[route.page];
+  if (!state.deviceId && (route.page === "light" || route.page === "audio" || route.page === "automation" || ["system/history", "system/diagnostics"].includes(route.key))) {
+    main.innerHTML = `<div class="empty-state"><h1>No lights connected yet</h1><p>Add a bulb in System settings to start shaping your space.</p><a href="#/system/settings">Open settings</a></div>`;
+    return;
+  }
   try {
     if (page.merged) {
       await page.merged(main);
@@ -312,8 +323,10 @@ async function router() {
       await tab.render(panel);
     }
   } catch (e) {
+    if (currentRoute().key !== route.key) return;
     const target = main.querySelector("#subtab-panel") || main;
-    target.innerHTML = `<div class="empty-state">Failed to load this panel: ${e.message}</div>`;
+    target.innerHTML = `<div class="empty-state">Failed to load this panel: ${escHtml(e.message)}<p><button id="retry-panel">Try again</button></p></div>`;
+    target.querySelector("#retry-panel").onclick = router;
   }
   // Every panel replaces #main's contents, so the exposure banner has to be
   // re-inserted after each render rather than living in the shell. It stays
@@ -360,7 +373,7 @@ function paintExposureBanner() {
 window.addEventListener("hashchange", router);
 document.getElementById("sidebar").addEventListener("click", (e) => {
   const item = e.target.closest(".nav-item");
-  if (item) location.hash = "#/" + item.dataset.route;
+  if (item) { e.preventDefault(); location.hash = item.getAttribute("href"); }
 });
 document.getElementById("main").addEventListener("click", (e) => {
   const tab = e.target.closest(".subtab");
@@ -373,6 +386,8 @@ async function loadDevices() {
   const sel = document.getElementById("device-select");
   sel.innerHTML = "";
   if (state.devices.length === 0) {
+    state.deviceId = null;
+    state.lastStatus = null;
     sel.innerHTML = `<option>No devices configured</option>`;
     return;
   }
@@ -392,7 +407,15 @@ async function loadDevices() {
 document.getElementById("device-select").addEventListener("change", (e) => {
   state.deviceId = e.target.value;
   lsSet(LS_KEY_DEVICE, state.deviceId);
+  state.lastStatus = null;
+  state.hasPolledOnce = false;
+  state.lastSeenAt = null;
+  state.consecutiveOfflinePolls = 0;
+  commandEpoch++;
+  controlEditing = false;
+  renderQuickControl();
   router();
+  pollStatus();
 });
 
 // --------------------------------------------------------- status badge --
@@ -419,6 +442,7 @@ function formatAgo(ms) {
 function renderStatusText() {
   const text = document.getElementById("status-text");
   if (!text || !state.hasPolledOnce) return; // still on the initial "connecting…" text, first poll in flight
+  if (powerBusy) { text.textContent = "PENDING · confirming power"; return; }
   const agoPart = state.lastSeenAt ? ` · last seen ${formatAgo(Date.now() - state.lastSeenAt)}` : "";
   // `renderControl()` (below) caches whatever /status returns into
   // state.lastStatus unconditionally, including a definitive {online: false}
@@ -437,11 +461,19 @@ function renderStatusText() {
   }
 }
 
-async function pollStatus(quiet) {
-  if (!state.deviceId) return;
+const statusInFlight = new Set();
+async function pollStatus() {
+  const device = state.deviceId;
+  if (!device || statusInFlight.has(device) || powerBusy || document.hidden) return;
+  const epoch = commandEpoch;
+  statusInFlight.add(device);
   const badge = document.getElementById("status-badge");
   try {
-    const st = await fetch(`${API}/api/devices/${state.deviceId}/status`).then(r => r.json());
+    const response = await fetch(`${API}/api/devices/${device}/status`, { signal: AbortSignal.timeout(8000) });
+    if (response.status === 401) { showPinGate(); return; }
+    if (!response.ok) throw new Error("Status unavailable");
+    const st = await response.json();
+    if (device !== state.deviceId || epoch !== commandEpoch) return;
     if (st.online) {
       state.consecutiveOfflinePolls = 0;
       state.lastStatus = st;
@@ -449,26 +481,29 @@ async function pollStatus(quiet) {
       badge.classList.add("live");
     } else {
       state.consecutiveOfflinePolls++;
-      if (state.consecutiveOfflinePolls >= OFFLINE_CONFIRM_THRESHOLD) {
-        badge.classList.remove("live");
-      }
-    }
-  } catch (e) {
-    state.consecutiveOfflinePolls++;
-    if (state.consecutiveOfflinePolls >= OFFLINE_CONFIRM_THRESHOLD) {
+      if (!state.lastStatus || state.consecutiveOfflinePolls >= OFFLINE_CONFIRM_THRESHOLD) state.lastStatus = st;
       badge.classList.remove("live");
     }
+  } catch (e) {
+    if (device !== state.deviceId || epoch !== commandEpoch) return;
+    state.consecutiveOfflinePolls++;
+    if (state.consecutiveOfflinePolls >= OFFLINE_CONFIRM_THRESHOLD) {
+      state.lastStatus = { online: false };
+      badge.classList.remove("live");
+    }
+  } finally {
+    statusInFlight.delete(device);
   }
   state.hasPolledOnce = true;
   renderStatusText();
   renderQuickControl();
+  paintControlStatus();
 }
 
 function startPolling() {
   if (state.statusPollHandle) clearInterval(state.statusPollHandle);
   if (state.lastSeenTickHandle) clearInterval(state.lastSeenTickHandle);
   pollStatus();
-  setTimeout(pollStatus, 1200); // quick re-check shortly after first load
   state.statusPollHandle = setInterval(pollStatus, 4000);
   // Status badge lives in the topbar (outside any panel), so this ticks for the whole
   // app lifetime rather than being torn down in router() like the panel-scoped handles.
@@ -476,165 +511,6 @@ function startPolling() {
 }
 
 // ================================================================ PANELS ==
-
-async function renderControl(main) {
-  const st = state.lastStatus || await get(`/api/devices/${state.deviceId}/status`);
-  state.lastStatus = st;
-  const rgb = st.hue != null ? hsvToRgb(st.hue, st.saturation_pct ?? 100, st.value_pct ?? 100) : [255, 255, 255];
-
-  main.innerHTML = `
-    <h1 class="panel-title">Control</h1>
-    <p class="panel-subtitle">Direct power, brightness and color control — <span class="tag ${st.online ? "on" : "error"}">${st.online ? "LIVE DATA" : "OFFLINE"}</span></p>
-    <p class="panel-subtitle kbd-hint"><kbd>Space</kbd> toggles power · <kbd>&#8593;</kbd> / <kbd>&#8595;</kbd> brightness &plusmn;5%</p>
-
-    <div class="card">
-      <div class="preview-swatch" id="preview-swatch" style="background: ${rgbToHex(...rgb)}"></div>
-      <button id="power-toggle" class="big-toggle ${st.power ? "primary" : ""}">${st.power ? "TURN OFF" : "TURN ON"}</button>
-    </div>
-
-    <div class="card">
-      <h3>Brightness</h3>
-      <div class="slider-row">
-        <label><span>Brightness</span><span id="brightness-val">${st.mode === "colour" ? (st.value_pct ?? 100) : (st.brightness_pct ?? 100)}%</span></label>
-        <input type="range" id="brightness-slider" min="1" max="100" value="${st.mode === "colour" ? (st.value_pct ?? 100) : (st.brightness_pct ?? 100)}">
-      </div>
-    </div>
-
-    <div class="card">
-      <h3>Color (HSV)</h3>
-      <div class="slider-row hue-slider">
-        <label><span>Hue</span><span id="hue-val">${Math.round(st.hue ?? 0)}°</span></label>
-        <input type="range" id="hue-slider" min="0" max="359" value="${Math.round(st.hue ?? 0)}">
-      </div>
-      <div class="slider-row">
-        <label><span>Saturation</span><span id="sat-val">${st.saturation_pct ?? 100}%</span></label>
-        <input type="range" id="sat-slider" min="0" max="100" value="${st.saturation_pct ?? 100}">
-      </div>
-      <div class="row" style="margin-top:8px;">
-        <label style="font-size:12px;color:var(--text-dim);">Or pick exact RGB:</label>
-        <input type="color" id="rgb-picker" value="${rgbToHex(...rgb)}">
-      </div>
-    </div>
-
-    <div class="card">
-      <h3>White Mode</h3>
-      <div class="slider-row">
-        <label><span>Color Temperature (0=warm, 100=cool)</span><span id="temp-val">${st.color_temp_pct ?? 50}%</span></label>
-        <input type="range" id="temp-slider" min="0" max="100" value="${st.color_temp_pct ?? 50}">
-      </div>
-      <button id="apply-white">Switch to White Mode</button>
-    </div>
-
-    <div class="card">
-      <h3>Quick Actions</h3>
-      <div class="row">
-        <button id="btn-random">🎲 Random Color</button>
-        <button id="btn-identify">📍 Identify Bulb (blink)</button>
-        <button id="btn-flash">🚨 Flash Alert</button>
-      </div>
-    </div>
-  `;
-
-  main.querySelector("#power-toggle").onclick = async () => {
-    await post(`/api/devices/${state.deviceId}/power`, { on: !st.power });
-    state.lastStatus = null;
-    router();
-  };
-
-  const brightnessSlider = main.querySelector("#brightness-slider");
-  brightnessSlider.oninput = () => {
-    main.querySelector("#brightness-val").textContent = brightnessSlider.value + "%";
-  };
-  brightnessSlider.onchange = async () => {
-    await post(`/api/devices/${state.deviceId}/brightness`, { value: parseInt(brightnessSlider.value) });
-    toast("Brightness updated", "success");
-  };
-
-  const hueSlider = main.querySelector("#hue-slider");
-  const satSlider = main.querySelector("#sat-slider");
-  const updatePreview = () => {
-    const [r, g, b] = hsvToRgb(parseFloat(hueSlider.value), parseFloat(satSlider.value), 100);
-    main.querySelector("#preview-swatch").style.background = rgbToHex(r, g, b);
-    main.querySelector("#hue-val").textContent = Math.round(hueSlider.value) + "°";
-    main.querySelector("#sat-val").textContent = satSlider.value + "%";
-  };
-  hueSlider.oninput = updatePreview;
-  satSlider.oninput = updatePreview;
-  const commitHsv = async () => {
-    await post(`/api/devices/${state.deviceId}/color/hsv`, {
-      h: parseFloat(hueSlider.value), s: parseFloat(satSlider.value), v: 100,
-    });
-    toast("Color updated", "success");
-  };
-  hueSlider.onchange = commitHsv;
-  satSlider.onchange = commitHsv;
-
-  main.querySelector("#rgb-picker").onchange = async (e) => {
-    const hex = e.target.value;
-    const r = parseInt(hex.slice(1, 3), 16), g = parseInt(hex.slice(3, 5), 16), b = parseInt(hex.slice(5, 7), 16);
-    await post(`/api/devices/${state.deviceId}/color`, { r, g, b });
-    toast("Color updated", "success");
-  };
-
-  const tempSlider = main.querySelector("#temp-slider");
-  tempSlider.oninput = () => { main.querySelector("#temp-val").textContent = tempSlider.value + "%"; };
-  main.querySelector("#apply-white").onclick = async () => {
-    await post(`/api/devices/${state.deviceId}/white`, {
-      brightness: parseInt(brightnessSlider.value), color_temp: parseInt(tempSlider.value),
-    });
-    toast("Switched to white mode", "success");
-  };
-
-  main.querySelector("#btn-random").onclick = async () => {
-    await post(`/api/devices/${state.deviceId}/color/random`);
-    toast("Random color applied", "success");
-  };
-  main.querySelector("#btn-identify").onclick = async () => {
-    toast("Blinking bulb…");
-    await post(`/api/devices/${state.deviceId}/identify`);
-  };
-  main.querySelector("#btn-flash").onclick = async () => {
-    await post(`/api/devices/${state.deviceId}/flash-alert`, { r: 255, g: 0, b: 0, times: 3 });
-    toast("Flash alert sent", "success");
-  };
-
-  // Keyboard shortcuts — only wired while the Control panel is mounted (router()
-  // removes this listener the instant another panel loads, see the `controlKeyHandler`
-  // cleanup there), and skipped while any input/select/textarea has focus so this
-  // never hijacks typing or a slider's own native arrow-key handling elsewhere in the app.
-  const BRIGHTNESS_KEY_STEP = 5; // percent per Up/Down press
-  // Arrow keys fire one keydown per press — and repeat rapidly while held — so
-  // committing on every one sent a POST to the bulb per keypress AND stacked a
-  // "Brightness updated" toast per keypress. The slider UI still updates on
-  // every press (that's just a local `input` event, no network), but the actual
-  // commit is debounced so a burst of presses lands as one request and one toast.
-  const KEY_COMMIT_DEBOUNCE_MS = 400;
-  function handleControlKeydown(e) {
-    const active = document.activeElement;
-    const tag = active && active.tagName;
-    if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || (active && active.isContentEditable)) return;
-    if (e.code === "Space" || e.key === " ") {
-      e.preventDefault();
-      const toggleBtn = main.querySelector("#power-toggle");
-      if (toggleBtn) toggleBtn.click();
-    } else if (e.key === "ArrowUp" || e.key === "ArrowDown") {
-      e.preventDefault();
-      const slider = main.querySelector("#brightness-slider");
-      if (!slider) return;
-      const delta = e.key === "ArrowUp" ? BRIGHTNESS_KEY_STEP : -BRIGHTNESS_KEY_STEP;
-      const next = Math.max(1, Math.min(100, parseInt(slider.value, 10) + delta));
-      slider.value = String(next);
-      slider.dispatchEvent(new Event("input"));
-      clearTimeout(controlKeyCommitTimer);
-      controlKeyCommitTimer = setTimeout(function () {
-        controlKeyCommitTimer = null;
-        slider.dispatchEvent(new Event("change"));
-      }, KEY_COMMIT_DEBOUNCE_MS);
-    }
-  }
-  document.addEventListener("keydown", handleControlKeydown);
-  controlKeyHandler = handleControlKeydown;
-}
 
 async function renderScenes(main) {
   state.scenes = state.scenes.length ? state.scenes : await get("/api/scenes");
@@ -645,10 +521,10 @@ async function renderScenes(main) {
   `;
   const grid = main.querySelector("#scene-grid");
   state.scenes.forEach(s => {
-    const card = el(`<div class="scene-card" title="${s.description}">
-      <div class="name">${s.name}</div>
-      <div class="desc">${s.description}</div>
-    </div>`);
+    const card = el(`<button type="button" class="scene-card" title="${escAttr(s.description)}">
+      <div class="name">${escHtml(s.name)}</div>
+      <div class="desc">${escHtml(s.description)}</div>
+    </button>`);
     card.onclick = async () => {
       await post(`/api/devices/${state.deviceId}/scenes/apply`, { scene_id: s.id });
       toast(`Scene "${s.name}" applied`, "success");
@@ -667,7 +543,7 @@ async function renderEffects(main) {
     <p class="panel-subtitle">Animated lighting effects that run continuously until stopped</p>
     <div class="card row">
       <label style="font-size:12px;color:var(--text-dim);">Speed</label>
-      <input type="range" id="effect-speed" min="0.2" max="3" step="0.1" value="1" style="width:160px;">
+      <input type="range" id="effect-speed" aria-label="Effect speed" min="0.2" max="3" step="0.1" value="1" style="width:160px;">
       <button id="stop-effect" class="danger" ${current ? "" : "disabled"}>Stop Current Effect${current ? " (" + current + ")" : ""}</button>
     </div>
     <div class="grid" id="effect-grid"></div>
@@ -679,10 +555,10 @@ async function renderEffects(main) {
   };
   const grid = main.querySelector("#effect-grid");
   state.effects.forEach(fx => {
-    const card = el(`<div class="effect-card" title="${fx.description}">
+    const card = el(`<button type="button" class="effect-card" title="${fx.description}">
       <div class="name">${fx.name}${current === fx.id ? " ▶" : ""}</div>
       <div class="desc">${fx.description}</div>
-    </div>`);
+    </button>`);
     card.onclick = async () => {
       const speed = parseFloat(main.querySelector("#effect-speed").value);
       await post(`/api/devices/${state.deviceId}/effects/start`, { effect: fx.id, speed });
@@ -1455,10 +1331,10 @@ async function renderAudio(main) {
   const presetGrid = main.querySelector("#audio-preset-grid");
   const allPresets = audioPresetsResp.presets || [];
   allPresets.forEach(preset => {
-    const card = el(`<div class="effect-card" title="${preset.description || ""}">
+    const card = el(`<button type="button" class="effect-card" title="${preset.description || ""}">
       <div class="name">${preset.name}${preset.custom ? " ★" : ""}</div>
       <div class="desc">${preset.description || "Custom preset"}</div>
-    </div>`);
+    </button>`);
     card.onclick = async () => {
       const source = main.querySelector("#audio-source").value;
       // Only LOCAL capture needs a device. Requiring one unconditionally made
@@ -1604,9 +1480,9 @@ async function renderPresets(main) {
   const favGrid = main.querySelector("#fav-grid");
   favorites.forEach(f => {
     const hex = rgbToHex(...f.rgb);
-    const card = el(`<div class="swatch" style="background:${hex}" title="${f.name}">
+    const card = el(`<button type="button" class="swatch" style="background:${hex}" title="${f.name}">
       <span class="label">${f.name}</span>
-    </div>`);
+    </button>`);
     card.onclick = async () => {
       await post(`/api/devices/${state.deviceId}/color`, { r: f.rgb[0], g: f.rgb[1], b: f.rgb[2] });
       toast(`Applied "${f.name}"`, "success");
@@ -1623,9 +1499,9 @@ async function renderPresets(main) {
   const presetGrid = main.querySelector("#preset-grid");
   state.presets.forEach(p => {
     const hex = rgbToHex(...p.rgb);
-    const card = el(`<div class="swatch" style="background:${hex}" title="${p.name}">
+    const card = el(`<button type="button" class="swatch" style="background:${hex}" title="${p.name}">
       <span class="label">${p.name}</span>
-    </div>`);
+    </button>`);
     card.onclick = async () => {
       await post(`/api/devices/${state.deviceId}/presets/apply`, { preset_id: p.id });
       toast(`Applied "${p.name}"`, "success");
@@ -3482,78 +3358,55 @@ function renderLiveBadge() {
 // navigation — the whole point is that power/brightness are reachable no
 // matter which page you're on.
 let quickCtlBusy = false;
+let quickCtlPendingFocus = null;
 
 function renderQuickControl() {
-  const el = document.getElementById("quickctl");
-  if (!el) return;
+  const panel = document.getElementById("quickctl");
+  if (!panel || quickCtlBusy) return;
+  const focusedId = panel.contains(document.activeElement) ? document.activeElement.id
+    : document.activeElement === document.body ? quickCtlPendingFocus : null;
+  quickCtlPendingFocus = focusedId;
   const st = state.lastStatus;
-  const dev = state.devices.find(d => d.id === state.deviceId);
-  const name = dev ? dev.name : "No device";
-
-  if (!st || st.online === false) {
-    el.innerHTML =
-      `<h4>Quick control</h4>` +
-      `<div class="qc-device">${escHtml(name)}</div>` +
-      `<p class="qc-offline">Offline — controls hidden until the bulb answers again.</p>`;
-    return;
-  }
-
-  // Don't stomp the slider the user is currently dragging.
-  if (quickCtlBusy) return;
-
-  const pct = st.mode === "colour" ? (st.value_pct ?? 100) : (st.brightness_pct ?? 100);
-  const rgb = st.hue != null ? hsvToRgb(st.hue, st.saturation_pct ?? 100, st.value_pct ?? 100) : [255, 255, 255];
-
-  el.innerHTML = `
-    <h4>Quick control</h4>
+  const ready = st?.online === true && state.consecutiveOfflinePolls < OFFLINE_CONFIRM_THRESHOLD;
+  const name = state.devices.find(d => d.id === state.deviceId)?.name || "Your light";
+  const previewColor = ready && st.mode === "colour" ? rgbToHex(...hsvToRgb(st.hue ?? 0, st.saturation_pct ?? 100, 100)) : "#ffe2aa";
+  if (live.unsubBulb) { live.unsubBulb(); live.unsubBulb = null; }
+  panel.innerHTML = `<div class="qc-heading"><span class="eyebrow">AT A GLANCE</span><span class="live-dot"></span></div>
     <div class="qc-device">${escHtml(name)}</div>
-    <div class="qc-swatch" id="qc-swatch" style="background:${rgbToHex(...rgb)}"></div>
-    <div class="qc-row"><span class="live-dot"></span><span id="qc-live-hex" class="qc-live-hex">idle</span></div>
-    <button id="qc-power" class="qc-power ${st.power ? "primary" : ""}">${st.power ? "TURN OFF" : "TURN ON"}</button>
-    <div class="qc-row"><span>Brightness</span><span id="qc-bval">${pct}%</span></div>
-    <input type="range" id="qc-bright" min="1" max="100" value="${pct}">
-  `;
-
-  el.querySelector("#qc-power").onclick = async () => {
-    await post(`/api/devices/${state.deviceId}/power`, { on: !st.power });
-    state.lastStatus = null;
-    pollStatus();
-    // The Control panel mirrors this state, so re-render it if it's on screen.
-    if (currentRoute().key === "light/control") router();
-  };
-
-  // Live colour. The swatch above shows polled status; this overlays what the
-  // audio sender is ACTUALLY pushing to the bulb, which during a session
-  // changes far faster than the poll interval. Unsubscribes on next render so
-  // handlers don't pile up every time the poll re-renders this panel.
-  if (live.unsubBulb) live.unsubBulb();
-  live.unsubBulb = liveOn("bulb", (ev) => {
-    if (ev.device_id !== state.deviceId || !ev.hex) return;
-    const sw = document.getElementById("qc-swatch");
-    if (!sw) return;
-    sw.style.background = ev.hex;
-    const lbl = document.getElementById("qc-live-hex");
-    if (lbl) lbl.textContent = `${ev.hex} · ${ev.latency_ms}ms`;
+    <div class="qc-illustration ${ready && st.power ? "is-on" : ""}" style="--light-color:${previewColor}">${bulbMarkup()}</div>
+    <div class="qc-state">${powerBusy ? "Confirming…" : ready ? (st.power ? "Light is on" : "Light is off") : state.hasPolledOnce ? "Connection unavailable" : "Connecting to your bulb"}</div>
+    <p class="qc-offline">${ready ? "LIVE DATA · Your current light" : "Live status will appear when the bulb responds."}</p>
+    <button id="qc-power" class="qc-power ${ready && st.power ? "primary" : ""}" ${!ready || powerBusy ? "disabled" : ""}>${powerBusy ? "Confirming…" : ready && st.power ? "Turn off" : "Turn on"}</button>
+    ${ready ? `<div class="qc-row"><label for="qc-bright">Brightness</label><span id="qc-bval">${st.mode === "colour" ? st.value_pct : st.brightness_pct}%</span></div>
+    <input aria-label="Quick brightness" type="range" id="qc-bright" min="1" max="100" value="${st.mode === "colour" ? st.value_pct : st.brightness_pct}" ${powerBusy ? "disabled" : ""}>
+    <span id="qc-live-hex" class="qc-live-hex"></span>` : `<button class="text-button" id="qc-retry">Retry connection</button>`}
+    <div class="qc-explore"><span class="eyebrow">MAKE IT YOURS</span>
+      <a id="qc-scene-link" href="#/light/looks"><span>Find your scene<small>A look for every moment</small></span><span aria-hidden="true">↗</span></a>
+      <a id="qc-audio-link" href="#/audio/session"><span>Feel the music<small>Let your light listen</small></span><span aria-hidden="true">↗</span></a>
+      <a id="qc-automation-link" href="#/automation"><span>Set your rhythm<small>Wake up. Wind down.</small></span><span aria-hidden="true">↗</span></a></div>`;
+  panel.querySelector("#qc-power").onclick = () => setPower(!state.lastStatus?.power);
+  const retry = panel.querySelector("#qc-retry");
+  if (retry) retry.onclick = () => pollStatus();
+  const slider = panel.querySelector("#qc-bright");
+  if (slider) {
+    slider.oninput = () => { quickCtlBusy = true; panel.querySelector("#qc-bval").textContent = slider.value + "%"; };
+    slider.onchange = async () => {
+      const device = state.deviceId;
+      commandEpoch++;
+      try { await post(`/api/devices/${device}/brightness`, { value: Number(slider.value) }); }
+      catch (error) { /* api() already reports the error */ }
+      finally { quickCtlBusy = false; commandEpoch++; pollStatus(); }
+    };
+    slider.onblur = () => { quickCtlBusy = false; };
+  }
+  live.unsubBulb = liveOn("bulb", event => {
+    if (event.device_id !== state.deviceId || !event.hex) return;
+    panel.querySelector(".qc-illustration")?.style.setProperty("--light-color", event.hex);
+    const label = panel.querySelector("#qc-live-hex");
+    if (label) label.textContent = `${event.hex} · ${event.latency_ms}ms`;
   });
-
-  // This panel re-renders on every status poll, which replaces its .live-dot
-  // with a fresh grey one. `ready` only fires at connect, so without this the
-  // indicator would go stale within seconds and claim the stream was down
-  // while it was happily delivering events.
   renderLiveBadge();
-
-  const slider = el.querySelector("#qc-bright");
-  slider.oninput = () => {
-    quickCtlBusy = true;
-    el.querySelector("#qc-bval").textContent = slider.value + "%";
-  };
-  slider.onchange = async () => {
-    await post(`/api/devices/${state.deviceId}/brightness`, { value: parseInt(slider.value, 10) });
-    quickCtlBusy = false;
-    toast("Brightness updated", "success");
-    state.lastStatus = null;
-    pollStatus();
-  };
+  if (focusedId) panel.querySelector(`#${focusedId}`)?.focus({ preventScroll: true });
 }
 
 // ------------------------------------------------------- merged panels --
@@ -4023,10 +3876,12 @@ async function renderDocs(main) {
 
 // ------------------------------------------------------------ pin gate --
 function showPinGate() {
+  document.querySelector(".app-shell").inert = true;
   document.getElementById("pin-gate-overlay").style.display = "flex";
   document.getElementById("pin-input").focus();
 }
 function hidePinGate() {
+  document.querySelector(".app-shell").inert = false;
   document.getElementById("pin-gate-overlay").style.display = "none";
 }
 
@@ -4077,6 +3932,7 @@ async function bootDashboard() {
   // validation is needed here.
   state.deviceId = lsGet(LS_KEY_DEVICE);
   await loadDevices();
+  renderQuickControl();
   startPolling();
   if (!location.hash) {
     // `ROUTES` was the pre-consolidation one-panel-per-tab map and no longer
@@ -4087,7 +3943,7 @@ async function bootDashboard() {
     // is why a first visit looked fine and this survived review.
     // routeExists() validates against the current PAGES map instead.
     const savedRoute = lsGet(LS_KEY_ROUTE);
-    location.hash = "#/" + (savedRoute && routeExists(savedRoute) ? savedRoute : DEFAULT_ROUTE);
+    history.replaceState(null, "", "#/" + (savedRoute && routeExists(savedRoute) ? savedRoute : DEFAULT_ROUTE));
   }
   router();
   // Deliberately not awaited: a banner about remote exposure must not hold up
@@ -4103,6 +3959,16 @@ async function bootDashboard() {
       showPinGate();
       return;
     }
-  } catch (e) { /* auth-status check failed open — same as PIN gate disabled */ }
-  await bootDashboard();
+  } catch (e) {
+    document.getElementById("main").innerHTML = `<div class="empty-state"><h1>Cannot reach your studio</h1><p>Check that the dashboard is running, then reload this page.</p></div>`;
+    return;
+  }
+  try { await bootDashboard(); } catch (e) { /* api() presents actionable errors */ }
 })();
+
+// Reconnect promptly when the user returns; background tabs do no status I/O.
+document.addEventListener("visibilitychange", () => { if (!document.hidden) pollStatus(); });
+document.querySelector(".skip-link").addEventListener("click", event => {
+  event.preventDefault();
+  document.getElementById("main").focus();
+});

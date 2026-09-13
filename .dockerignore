@@ -1,0 +1,17 @@
+.git
+.claude
+.state
+.pytest_cache
+.env
+.env.*
+backend/config.json
+backend/data
+backend/backups
+backend/snapshot.json
+backend/venv
+**/__pycache__
+**/*.pyc
+**/*.log
+graphify-out
+prototypes
+docs/screenshots
