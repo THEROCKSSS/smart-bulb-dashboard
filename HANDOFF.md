@@ -3,10 +3,10 @@
 ## Current session — September 13, 2026
 
 - Agent: Codex. Repo: THEROCKSSS/smart-bulb-dashboard, GitHub tracker only.
-- Branch `feat/audio-studio-mobile`, based on `5aa307d`; implementation verified and deployed; preparing the feature commit. Owen approved all four stages and then
+- Branch `feat/audio-studio-mobile`, based on `5aa307d`; implementation committed as `9d457a4`, verified and deployed. Owen approved all four stages and then
   requested the richer mobile controls. Do not restart grilling or approval.
-- Spec #83 and tickets #84–#87 are open. No PR yet. Latest remote master contains
-  automated ROADMAP updates; integrate those before publishing the review branch.
+- Spec #83 and tickets #84–#87 are open. No PR yet. Remote master's generated roadmap-status updates integrated without conflicts;
+  the merge changes only docs/assets/roadmap-status.json, not runtime code.
 
 ### Implemented
 
@@ -64,9 +64,7 @@
 ### Resume / remaining
 
 All implementation/deployment checks are complete. Staged secret scan is clean
-and the broad credential-pattern scan found zero matches. Commit the reviewed
-feature branch, integrate remote master's documentation updates, and open a draft
-GitHub PR. Keep native phone-specific verification explicit; it is not claimed
+and the broad credential-pattern scan found zero matches. Open a draft GitHub PR from the reviewed feature branch. Keep native phone-specific verification explicit; it is not claimed
 from a web browser test. Full device-level WebView/PIN/download verification is
 the remaining review check.
 Exact commands and architecture: `docs/audio-studio.md`; evidence and failures:
