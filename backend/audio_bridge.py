@@ -359,6 +359,7 @@ class BridgeServer:
                     "name": str(d.get("name", ""))[:120],
                     "loopback": bool(d.get("loopback")),
                     "channels": int(d.get("channels", 0)),
+                    "hostapi": str(d.get("hostapi", ""))[:120],
                 })
             self._devices = cleaned
             if data.get("current") is not None:

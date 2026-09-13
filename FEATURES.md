@@ -273,7 +273,18 @@ Gaming
 
 ---
 
-**Total: 186 working features**, verified end-to-end against a real Bytech
+## Audio Studio and Expo companion (8)
+
+187. Complete per-bulb mixer settings saved while stopped and applied live, with atomic persistence and explicit save failures.
+188. Bass/mid/treble gains mapped across all spectrum sizes, with live meters.
+189. Adjustable hue/brightness smoothing and brightness bounds.
+190. Complete named-mix recall, overwrite and rename on web and phone.
+191. Remembered CABLE capture identity, reconnect cleanup and restored stereo capacity after source changes.
+192. Expo Room, unified Audio, Tools and Connect screens: searchable bulb/input dropdowns, native color wheel and swatches, complete preset controls, and existing advanced dashboard views inside the app.
+193. API/web and Expo bundle server supervised inside one rootless Podman app container.
+194. Cross-client settings refresh with ordered writes, stale-response guards and reduced-motion support.
+
+**Total: 194 implemented features.** The original 186 were verified against a real Bytech
 A19 Wi-Fi RGB+CCT bulb (Tuya protocol v3.5) and this machine's real audio
 devices (VoiceMeeter + physical microphone) — see the verification log in
 `HANDOFF.md`, and `iterations/001` through `iterations/004` for each new
@@ -293,3 +304,8 @@ smoke test against that live instance with the PIN gate both off and on.
 No Let's Encrypt certificate has been issued against a real domain and no
 systemd unit has been started on a real Linux host — see `deploy/README.md`
 for the full validated/not-validated split.
+
+The eight Audio Studio additions are covered by API, signal, queue and real
+browser journeys; CABLE audio and bulb commands were exercised live. Expo Android
+and iOS bundles compile and the running phone bundle was fetched. A physical
+phone interaction remains unverified; see `iterations/007-audio-studio-mobile/`.

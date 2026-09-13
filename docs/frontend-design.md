@@ -1,5 +1,12 @@
 # Lighting studio frontend
 
+The Audio Studio extension adds a two-column session/mixer workbench, grouped
+connection setup, tactile band faders, explicit save/retry states and named mixes.
+`frontend/mixer.js` shares ordered writes and stale-poll protection with the native
+Expo app. Live meters change transforms in place, requests never overlap, and
+hidden tabs pause polling. Native screens and verification are described in
+`docs/audio-studio.md` and `iterations/007-audio-studio-mobile/README.md`.
+
 The September 2026 redesign keeps FastAPI and the no-build vanilla JavaScript
 frontend. All five navigation groups share the new theme. The lighting surface
 lives in `frontend/control.js`; existing feature panels remain in `frontend/app.js`.

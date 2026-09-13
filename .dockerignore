@@ -15,3 +15,6 @@ backend/venv
 graphify-out
 prototypes
 docs/screenshots
+**/node_modules
+**/.expo
+mobile/dist

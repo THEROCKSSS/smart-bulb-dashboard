@@ -277,10 +277,7 @@ async function router() {
     clearTimeout(controlKeyCommitTimer);
     controlKeyCommitTimer = null;
   }
-  if (state.audioPollHandle) {
-    clearInterval(state.audioPollHandle);
-    state.audioPollHandle = null;
-  }
+  stopAudioPolling();
   if (state.sleepCountdownHandle) {
     clearInterval(state.sleepCountdownHandle);
     state.sleepCountdownHandle = null;
@@ -594,6 +591,10 @@ const AUDIO_MODE_INFO = {
 };
 
 function stopAudioPolling() {
+  state.audioPollGeneration = (state.audioPollGeneration || 0) + 1;
+  state.mixerView?.dispose();
+  state.mixerView = null;
+  if (window.onLightingMixRecalled) window.removeEventListener("lighting-mix-recalled", window.onLightingMixRecalled);
   if (state.audioPollHandle) {
     clearInterval(state.audioPollHandle);
     state.audioPollHandle = null;
@@ -611,12 +612,24 @@ function renderBandMeter(bands) {
     <div class="band-meter">
       ${fractions.map((f, i) => `
         <div class="band-col">
-          <div class="band-fill" style="height:${pct(f)}%;background:${BAND_COLORS[i % BAND_COLORS.length]}"></div>
+          <div class="band-fill" title="${labels[i]} ${pct(f)}%" style="height:100%;transform:scaleY(${pct(f) / 100});background:${BAND_COLORS[i % BAND_COLORS.length]}"></div>
           <div class="band-label">${labels[i]}</div>
         </div>`).join("")}
     </div>
-    <p class="panel-subtitle" style="margin-top:8px;">RMS ${(bands.rms || 0).toFixed(4)} <span class="beat-dot ${bands.is_beat ? "hit" : ""}"></span> beat</p>
+    <p class="panel-subtitle" style="margin-top:8px;"><span class="meter-rms">RMS ${(bands.rms || 0).toFixed(4)}</span> <span class="beat-dot ${bands.is_beat ? "hit" : ""}"></span> beat</p>
   `;
+}
+
+function updateBandMeter(wrap, bands) {
+  const values = bands?.fractions || [0, 0, 0];
+  if (wrap.querySelectorAll('.band-fill').length !== values.length) wrap.innerHTML = renderBandMeter(bands);
+  wrap.querySelectorAll('.band-fill').forEach((bar, i) => {
+    const fraction = Math.max(0, Math.min(1, values[i] || 0));
+    bar.style.transform = `scaleY(${fraction})`;
+    bar.title = `${Math.round(fraction * 100)}% energy`;
+  });
+  wrap.querySelector('.meter-rms').textContent = `RMS ${(bands?.rms || 0).toFixed(4)}`;
+  wrap.querySelector('.beat-dot').classList.toggle('hit', !!bands?.is_beat);
 }
 
 function renderTempoInfo(tempo) {
@@ -865,7 +878,7 @@ function bridgeArgs() {
 function bridgeCommand(dir, args) {
   const a = (args || "").trim();
   // Quoted: this path very often contains spaces.
-  return `cd "${dir}" && tools\start-audio-bridge.cmd${a ? " " + a : ""}`;
+  return `& "${dir}\\tools\\start-audio-bridge.cmd"${a ? " " + a : ""}`;
 }
 
 async function refreshBridgeChip() {
@@ -917,39 +930,37 @@ async function renderAudio(main) {
     }
     refreshBridgeChip();
   }, 2000);
-  let devicesResp;
+  const deviceId = state.deviceId;
+  main.innerHTML = '<div class="empty-state loading">Opening audio studio…</div>';
+  let devicesResp, bridge, sessionStatus, groupStatus, groups, audioPresetsResp, savedRecord;
   try {
-    devicesResp = await get("/api/audio/devices");
-  } catch (e) {
-    main.innerHTML = `
-      <h1 class="panel-title">Audio Reactive</h1>
-      <div class="empty-state">Could not list audio input devices: ${e.message}</div>`;
+    [devicesResp, bridge, sessionStatus, groupStatus, groups, audioPresetsResp, savedRecord] = await Promise.all([
+      get("/api/audio/devices"), get("/api/audio/bridge"),
+      get(`/api/devices/${deviceId}/audio-reactive/status`),
+      get("/api/groups/all/audio-reactive/status").catch(() => ({ active: false })),
+      get("/api/groups"), get("/api/audio/presets"),
+      get(`/api/devices/${deviceId}/audio-reactive/settings`),
+    ]);
+  } catch (error) {
+    main.innerHTML = `<h1 class="panel-title">Audio Reactive</h1><div class="empty-state">${escapeHtml(error.message)}</div>`;
     return;
   }
+  if (state.deviceId !== deviceId || !location.hash.startsWith("#/audio")) return;
   const audioDevices = devicesResp.devices || [];
-  // The container has no audio devices at all, so this list is empty there and
-  // the bridge is the only way to get sound in. Fetched here (not only in the
-  // poller) so the very first paint already shows the true state.
-  let bridge = { listening: false, connected: false, streaming: false };
-  try { bridge = await get("/api/audio/bridge"); } catch (e) {}
   const bridgeUsable = !!bridge.listening;
-  // Default to whichever source can actually work right now.
-  const defaultSource = (audioDevices.length === 0 && bridgeUsable) ? "bridge" : "device";
-  const defaultDwell = devicesResp.default_min_dwell_ms || 90;
+  const saved = savedRecord.settings || {};
+  const defaultSource = sessionStatus.source || (audioDevices.length === 0 && bridgeUsable ? "bridge" : saved.source || "device");
+  const defaultDwell = saved.min_dwell_ms ?? devicesResp.default_min_dwell_ms ?? 90;
   const dwellFloor = devicesResp.min_dwell_floor_ms || 40;
-  let sessionStatus = { active: false };
-  try { sessionStatus = await get(`/api/devices/${state.deviceId}/audio-reactive/status`); } catch (e) {}
-  let groupStatus = { active: false };
-  try { groupStatus = await get(`/api/groups/all/audio-reactive/status`); } catch (e) {}
-  const groups = await get("/api/groups").catch(() => []);
-  let audioPresetsResp = { presets: [] };
-  try { audioPresetsResp = await get("/api/audio/presets"); } catch (e) {}
+  sessionStatus = { ...saved, ...sessionStatus };
+  const mixerQueue = LightingMixer.queueFor(deviceId,
+    changes => post(`/api/devices/${deviceId}/audio-reactive/settings`, changes), saved);
   const beatPresets = devicesResp.beat_sensitivity_presets || ["subtle", "normal", "aggressive"];
   const defaultBeatSensitivity = devicesResp.default_beat_sensitivity || "normal";
-  const tempo = sessionStatus.tempo || {};
+  const tempo = sessionStatus.tempo || { beat_sensitivity: saved.beat_sensitivity };
 
   const preferredIdx = audioDevices.findIndex(d => /voicemeeter|cable/i.test(d.name));
-  const defaultDeviceIndex = sessionStatus.device_index ?? (preferredIdx >= 0 ? audioDevices[preferredIdx].index : (audioDevices[0] ? audioDevices[0].index : null));
+  const defaultDeviceIndex = sessionStatus.device_index ?? saved.device_index ?? (preferredIdx >= 0 ? audioDevices[preferredIdx].index : (audioDevices[0] ? audioDevices[0].index : null));
 
   const deviceOptions = audioDevices.map(d => `<option value="${d.index}" ${d.index === defaultDeviceIndex ? "selected" : ""}>${d.name}</option>`).join("");
   const sourceOptions = [
@@ -961,19 +972,15 @@ async function renderAudio(main) {
   const hostArgs = bridgeArgs();
 
   main.innerHTML = `
-    <h1 class="panel-title">Audio Reactive <span class="tag on">LIVE DATA</span>
+    <header class="audio-heading"><div><span class="eyebrow">SOUND → LIGHT / AUDIO STUDIO</span>
+    <h1 class="panel-title">Make the room move.</h1><p class="panel-subtitle">Your sound. Your atmosphere. A mix that stays yours.</p></div>
       <span id="bridge-chip" class="bridge-chip ${bridgeChipClass(bridge)}" title="${bridgeChipTitle(bridge)}">
         <span class="bridge-dot"></span><span id="bridge-chip-text">${bridgeChipText(bridge)}</span>
       </span>
-    </h1>
-    <p class="panel-subtitle">
-      Bulb reacts to whatever this input device hears. Route your PC's audio through
-      VoiceMeeter (or pick a real microphone) — see the Audio skill/docs for setup.
-      Decision latency is now sub-15ms internally; the "Min. dwell" slider controls how
-      long each color actually stays on the bulb so you can still see it change.
-    </p>
+    </header>
+    <div class="audio-source-strip"><span class="tag on">LIVE DATA</span><span>Input <strong id="studio-input-name">${escapeHtml(bridge.devices?.find(d => d.index === bridge.device_index)?.name || (defaultSource === 'bridge' ? 'Waiting for Windows audio' : 'Local input'))}</strong></span><span class="audio-session-state">${sessionStatus.active ? '● Session running' : '○ Ready when you are'}</span></div>
 
-    <div class="bridge-launcher" id="bridge-launcher">
+    <details class="bridge-launcher" id="bridge-launcher"><summary>Audio connection &amp; setup</summary>
       <div class="bridge-launcher-head">
         <strong>Start the audio bridge</strong>
         <span class="bridge-launcher-note">Runs on Windows — the container has no audio devices of its own.</span>
@@ -994,10 +1001,10 @@ async function renderAudio(main) {
       <p class="bridge-launcher-foot">Paste into a terminal, or double-click
         <code>tools\start-audio-bridge.cmd</code>. Leave it open — closing the window stops the bridge.</p>
       <div id="bridge-device-picker">${renderBridgeDevicePicker(bridge)}</div>
-    </div>
+    </details>
 
-    <div class="card">
-      <h3>Single-Bulb Session</h3>
+    <div class="audio-workbench"><div class="card audio-session-card">
+      <span class="eyebrow">01 / DIRECTION</span><h3>Set the feeling</h3>
       <div class="form-grid">
         <label>Audio source<select id="audio-source">${sourceOptions}</select></label>
         <label id="audio-device-row" style="${defaultSource === "bridge" ? "display:none;" : ""}">Input device<select id="audio-device">${deviceOptions}</select></label>
@@ -1021,15 +1028,18 @@ async function renderAudio(main) {
         <input type="range" id="audio-nbands" min="3" max="16" step="1" value="${sessionStatus.n_bands || 6}">
       </div>
       <div class="slider-row hue-slider" id="mono-hue-row">
-        <label><span>Monochrome / VU hue</span><span id="mono-hue-val">280°</span></label>
-        <input type="range" id="mono-hue" min="0" max="359" value="280">
+        <label><span>Monochrome / VU hue</span><span id="mono-hue-val">${saved.monochrome_hue ?? 280}°</span></label>
+        <input type="range" id="mono-hue" min="0" max="359" value="${saved.monochrome_hue ?? 280}">
       </div>
       <p class="panel-subtitle" id="mode-desc"></p>
       <div class="row">
-        <button id="audio-start" class="primary" ${sessionStatus.active ? "disabled" : ""}>Start</button>
-        <button id="audio-stop" class="danger" ${sessionStatus.active ? "" : "disabled"}>Stop</button>
+        <button id="audio-start" class="primary" ${sessionStatus.active ? "disabled" : ""}>▶ Start session</button>
+        <button id="audio-stop" class="danger" ${sessionStatus.active ? "" : "disabled"}>■ Stop</button>
       </div>
       ${renderSenderInfo(sessionStatus.sender)}
+    </div>
+
+    <section class="card lighting-mixer" id="lighting-mixer"></section>
     </div>
 
     <div class="card">
@@ -1051,7 +1061,7 @@ async function renderAudio(main) {
     </div>
 
     <div class="card">
-      <h3>Genre &amp; Mood Presets</h3>
+      <h3>Find your starting point <span class="tag">NON-LIVE DATA</span></h3>
       <p class="panel-subtitle">
         Bundles mode + sensitivity + dwell + band count + beat sensitivity + a color palette under one name.
         Applying a preset starts (or restarts) the single-bulb session above with those settings.
@@ -1093,6 +1103,13 @@ async function renderAudio(main) {
     </div>
   `;
 
+  state.mixerView?.dispose();
+  state.mixerView = LightingMixer.mount(main.querySelector("#lighting-mixer"), mixerQueue, {
+    api, deviceId, onError: error => { if (!error.apiNotified) toast(error.message, "error"); },
+  });
+  window.onLightingMixRecalled && window.removeEventListener("lighting-mix-recalled", window.onLightingMixRecalled);
+  window.onLightingMixRecalled = event => { if (event.detail.deviceId === deviceId && location.hash === "#/audio/session") renderAudio(main); };
+  window.addEventListener("lighting-mix-recalled", window.onLightingMixRecalled);
   const modeSelect = main.querySelector("#audio-mode");
   const monoRow = main.querySelector("#mono-hue-row");
   const nbandsRow = main.querySelector("#nbands-row");
@@ -1126,7 +1143,8 @@ async function renderAudio(main) {
   // Sending on every input event would be one request per pixel.
   async function pushLive(patch, labelEl) {
     try {
-      const resp = await post(`/api/devices/${state.deviceId}/audio-reactive/settings`, patch);
+      const settings = await mixerQueue.update(patch);
+      const resp = { live: !!sessionStatus.active, settings };
       if (labelEl) {
         // `live: false` means it was saved as the next session's starting
         // value but nothing is running to change. Saying "saved" is honest;
@@ -1233,14 +1251,21 @@ async function renderAudio(main) {
   // Show the device picker only when it applies. With the bridge selected the
   // capture device is chosen on the Windows host, not here.
   const sourceSel = main.querySelector("#audio-source");
+  const inputPicker = main.querySelector("#audio-device");
+  if (inputPicker) inputPicker.onchange = () => {
+    const selected = audioDevices.find(d => d.index === Number(inputPicker.value));
+    pushLive({ device_index: Number(inputPicker.value), source_device_name: selected?.name || null, source_hostapi: selected?.hostapi || null });
+  };
   if (sourceSel) {
     sourceSel.onchange = () => {
       const row = main.querySelector("#audio-device-row");
       if (row) row.style.display = sourceSel.value === "bridge" ? "none" : "";
+      pushLive({ source: sourceSel.value });
     };
   }
 
   main.querySelector("#audio-start").onclick = async () => {
+    try {
     const source = sourceSel ? sourceSel.value : "device";
     if (source === "device" && audioDevices.length === 0) {
       toast("No local audio input devices. Use the audio bridge instead.", "error");
@@ -1251,7 +1276,9 @@ async function renderAudio(main) {
       return;
     }
     const deviceEl = main.querySelector("#audio-device");
-    await post(`/api/devices/${state.deviceId}/audio-reactive/start`, {
+    await mixerQueue.flush();
+    await post(`/api/devices/${deviceId}/audio-reactive/start`, {
+      ...mixerQueue.snapshot(),
       source,
       device_index: (source === "bridge" || !deviceEl) ? 0 : parseInt(deviceEl.value, 10),
       mode: main.querySelector("#audio-mode").value,
@@ -1263,6 +1290,7 @@ async function renderAudio(main) {
     });
     toast("Audio-reactive session started", "success");
     renderAudio(main);
+    } catch (error) { toast(error.message, "error"); }
   };
 
   main.querySelector("#audio-stop").onclick = async () => {
@@ -1313,6 +1341,7 @@ async function renderAudio(main) {
     const set = (sel, value, labelSel, fmt) => {
       const elx = main.querySelector(sel);
       if (!elx || value === undefined || value === null) return;
+      if (document.activeElement === elx) return;
       elx.value = value;
       if (labelSel) {
         const lab = main.querySelector(labelSel);
@@ -1320,6 +1349,9 @@ async function renderAudio(main) {
       }
     };
     set("#audio-mode", preset.mode);
+    set("#audio-source", preset.source);
+    set("#audio-device", preset.device_index);
+    if (preset.source) main.querySelector('#audio-device-row').style.display = preset.source === 'bridge' ? 'none' : '';
     set("#audio-sensitivity", preset.sensitivity, "#sens-val", v => Number(v).toFixed(1) + "x");
     set("#audio-dwell", preset.min_dwell_ms, "#dwell-val", v => v + "ms");
     set("#audio-nbands", preset.n_bands, "#nbands-val");
@@ -1331,11 +1363,11 @@ async function renderAudio(main) {
   const presetGrid = main.querySelector("#audio-preset-grid");
   const allPresets = audioPresetsResp.presets || [];
   allPresets.forEach(preset => {
-    const card = el(`<button type="button" class="effect-card" title="${preset.description || ""}">
-      <div class="name">${preset.name}${preset.custom ? " ★" : ""}</div>
-      <div class="desc">${preset.description || "Custom preset"}</div>
-    </button>`);
-    card.onclick = async () => {
+    const card = el(`<article class="effect-card audio-mood"><button type="button" class="mood-apply" title="${escapeAttr(preset.description || "")}">
+      <span class="name">${escapeHtml(preset.name)}${preset.custom ? " ★" : ""}</span>
+      <span class="desc">${escapeHtml(preset.description || "Custom preset")}</span>
+    </button></article>`);
+    card.querySelector('.mood-apply').onclick = async () => {
       const source = main.querySelector("#audio-source").value;
       // Only LOCAL capture needs a device. Requiring one unconditionally made
       // presets unusable in bridge mode — the container reports zero audio
@@ -1347,6 +1379,7 @@ async function renderAudio(main) {
       }
       const deviceEl = main.querySelector("#audio-device");
       try {
+        await mixerQueue.flush();
         const resp = await post(`/api/devices/${state.deviceId}/audio-reactive/apply-preset`, {
           preset_id: preset.id,
           device_index: deviceEl && deviceEl.value ? parseInt(deviceEl.value, 10) : 0,
@@ -1357,7 +1390,9 @@ async function renderAudio(main) {
         toast(resp.restarted
           ? `Preset "${preset.name}" applied — session started`
           : `Preset "${preset.name}" applied live`, "success");
-        loadPresetIntoControls(preset);
+        const effective = resp.settings || (await get(`/api/devices/${deviceId}/audio-reactive/settings`)).settings;
+        mixerQueue.hydrate(effective);
+        loadPresetIntoControls(effective);
         if (resp.restarted) renderAudio(main);
       } catch (e) {
         toast(`Could not apply preset: ${e.message}`, "error");
@@ -1424,20 +1459,38 @@ async function renderAudio(main) {
     } catch (e) { toast(`Could not save preset: ${e.message}`, "error"); }
   };
 
-  if (sessionStatus.active) {
-    state.audioPollHandle = setInterval(async () => {
+  const unsubscribeControls = mixerQueue.subscribe(({phase, settings}) => { if (phase === 'saved') loadPresetIntoControls(settings); });
+  const disposeMixer = state.mixerView.dispose;
+  state.mixerView.dispose = () => { disposeMixer(); unsubscribeControls(); };
+  {
+    const generation = state.audioPollGeneration;
+    let lastDetails = 0;
+    const poll = async () => {
+      if (generation !== state.audioPollGeneration || !main.querySelector('#band-meter-wrap')) return;
       try {
-        const st = await get(`/api/devices/${state.deviceId}/audio-reactive/status`);
+        if (document.hidden) return;
+        const revision = mixerQueue.revision();
+        const st = await get(`/api/devices/${deviceId}/audio-reactive/status`);
+        if (generation !== state.audioPollGeneration) return;
+        const settings = st.settings || (await get(`/api/devices/${deviceId}/audio-reactive/settings`)).settings;
+        if (generation !== state.audioPollGeneration) return;
+        mixerQueue.hydrate(settings, revision);
         const wrap = document.getElementById("band-meter-wrap");
         if (!wrap) { stopAudioPolling(); return; }
-        wrap.innerHTML = renderBandMeter(st.bands);
+        state.mixerView?.meter(st.bands?.fractions);
+        updateBandMeter(wrap, st.bands);
+        if (performance.now() - lastDetails > 1000) {
         const tempoWrap = document.getElementById("tempo-wrap");
         if (tempoWrap) tempoWrap.innerHTML = renderTempoInfo(st.tempo);
         const latWrap = document.getElementById("latency-wrap");
         if (latWrap) latWrap.innerHTML = renderLatencyPanel(st.latency, st.analysis);
-        if (!st.active) renderAudio(main);
+        lastDetails = performance.now();
+        }
+        if (!!st.active !== !!sessionStatus.active) renderAudio(main);
       } catch (e) { /* transient poll miss, ignore */ }
-    }, 300);
+      finally { if (generation === state.audioPollGeneration) state.audioPollHandle = setTimeout(poll, sessionStatus.active ? 200 : 2000); }
+    };
+    poll();
   }
 }
 
@@ -3617,15 +3670,8 @@ async function renderSessionPresets(main) {
       if (!name) { toast("Give the preset a name first", "error"); return; }
       try {
         await post(`/api/devices/${state.deviceId}/audio-reactive/session-presets`, {
+          ...(await get(`/api/devices/${state.deviceId}/audio-reactive/settings`)).settings,
           name,
-          device_index: live.device_index,
-          mode: live.mode,
-          sensitivity: live.sensitivity,
-          n_bands: live.n_bands,
-          min_dwell_ms: (live.sender && live.sender.min_dwell_ms) || undefined,
-          max_duration_s: live.max_duration_s,
-          warmup_s: live.warmup_s,
-          max_flash_rate_hz: live.max_flash_rate_hz,
         });
         toast(`Saved "${name}"`, "success");
         renderSessionPresets(main);
@@ -3930,7 +3976,12 @@ async function bootDashboard() {
   // falls back to the first real device when state.deviceId doesn't match any
   // configured device (e.g. it was removed since the last visit), so no extra
   // validation is needed here.
-  state.deviceId = lsGet(LS_KEY_DEVICE);
+  const launchURL = new URL(location.href);
+  state.deviceId = launchURL.searchParams.get('device') || lsGet(LS_KEY_DEVICE);
+  if (launchURL.searchParams.has('device')) {
+    launchURL.searchParams.delete('device');
+    history.replaceState(null, '', launchURL.pathname + launchURL.search + launchURL.hash);
+  }
   await loadDevices();
   renderQuickControl();
   startPolling();
