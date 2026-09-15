@@ -3,6 +3,27 @@
 Base URL: `http://localhost:8500` (or your host/port). All bodies are JSON.
 Replace `bulb-1` with your device's `id` from `config.json`.
 
+## Persistent Audio Studio settings
+
+| Method | Route | Behavior |
+|---|---|---|
+| GET | `/api/devices/{id}/audio-reactive/settings` | Complete effective settings, live flag and saved timestamp |
+| POST | `/api/devices/{id}/audio-reactive/settings` | Validated partial edit, saved while stopped or applied live; returns `saved`, `settings`, `live`, `saved_at` |
+| POST | `/api/devices/{id}/audio-reactive/session-presets` | Save complete settings plus a name |
+| PATCH | `/api/audio/session-presets/{preset_id}` | Rename with `name`, overwrite complete `config`, or both |
+| GET | `/api/audio/session-presets?device_id=...` | List complete normalized presets, including legacy records |
+
+Settings include capture source/identity, mode, beat sensitivity, dwell, band
+gains, gate/DC/AGC parameters, smoothing, brightness bounds and session timing.
+`backend/audio_settings.py` defines the contract. Unspecified edit fields remain
+unchanged; explicit null clears nullable values. Invalid combinations return 400
+or model-validation 422. Save failures on the settings endpoint return 503 while
+retaining the previous saved and live mix. Source/timing changes require stopping
+an active session. Preset recall can POST its complete config to settings without
+starting playback; the existing preset apply endpoint explicitly starts a session.
+
+See [Audio Studio](docs/audio-studio.md) for the phone and Podman setup.
+
 ## System
 
 ```bash
