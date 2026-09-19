@@ -35,3 +35,13 @@ services:
     ports: !override
       - "127.0.0.1:8504:8500"
       - "127.0.0.1:8503:8503"
+      - "127.0.0.1:8106:8081"
+      - "100.69.156.71:8106:8081"
+    environment:
+      REACT_NATIVE_PACKAGER_HOSTNAME: "100.69.156.71"
+      EXPO_PACKAGER_PROXY_URL: "http://100.69.156.71:8106"
+      EXPO_PUBLIC_API_URL: "https://owens-pc-vpn.tailff2683.ts.net:8502"
+      EXPO_NO_TELEMETRY: "1"
+    volumes:
+      # Login stays on the host, outside git and the image. Current Expo Go iOS requires it.
+      - "${USERPROFILE}/.expo/state.json:/root/.expo/state.json:ro"

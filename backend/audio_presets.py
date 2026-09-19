@@ -11,25 +11,42 @@ import os
 import threading
 import time
 import uuid
+import tempfile
+
+import audio_settings
 
 DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
 os.makedirs(DATA_DIR, exist_ok=True)
 SESSION_PRESETS_PATH = os.path.join(DATA_DIR, "audio_session_presets.json")
 LAST_SESSION_PATH = os.path.join(DATA_DIR, "audio_last_session.json")
 
-_lock = threading.Lock()
+_lock = threading.RLock()
 
 # The full set of fields a session preset / last-session record carries.
 # Anything else passed in is dropped so the stored shape stays predictable.
-CONFIG_FIELDS = (
-    "device_index", "mode", "sensitivity", "monochrome_hue", "n_bands",
-    "min_dwell_ms", "max_duration_s", "warmup_s", "auto_resume_grace_s",
-    "max_flash_rate_hz", "disable_flash_heavy",
-)
+CONFIG_FIELDS = tuple(audio_settings.DEFAULTS)
+
+
+def _atomic_write(path, value):
+    """A failed write leaves the last complete settings file readable."""
+    folder = os.path.dirname(os.path.abspath(path))
+    os.makedirs(folder, exist_ok=True)
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=folder,
+                                         prefix=".audio-", suffix=".tmp", delete=False) as f:
+            temporary = f.name
+            json.dump(value, f, indent=2, allow_nan=False)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(temporary, path)
+    finally:
+        if temporary and os.path.exists(temporary):
+            os.unlink(temporary)
 
 
 def _sanitize_config(config):
-    return {k: config[k] for k in CONFIG_FIELDS if k in config and config[k] is not None}
+    return audio_settings.normalize({k: config[k] for k in CONFIG_FIELDS if k in config})
 
 
 def _load_presets():
@@ -37,14 +54,16 @@ def _load_presets():
         return []
     try:
         with open(SESSION_PRESETS_PATH, "r") as f:
-            return json.load(f)
+            presets = json.load(f)
+            for preset in presets:
+                preset["config"] = _sanitize_config(preset.get("config", {}))
+            return presets
     except (json.JSONDecodeError, OSError):
         return []
 
 
 def _save_presets(presets):
-    with open(SESSION_PRESETS_PATH, "w") as f:
-        json.dump(presets, f, indent=2)
+    _atomic_write(SESSION_PRESETS_PATH, presets)
 
 
 def save_preset(name, device_id, config):
@@ -89,6 +108,21 @@ def delete_preset(preset_id):
         return found
 
 
+def update_preset(preset_id, name=None, config=None):
+    with _lock:
+        presets = _load_presets()
+        preset = next((p for p in presets if p["id"] == preset_id), None)
+        if preset is None:
+            return None
+        if name is not None:
+            preset["name"] = name
+        if config is not None:
+            preset["config"] = _sanitize_config(config)
+        preset["updated_at"] = time.time()
+        _save_presets(presets)
+        return preset
+
+
 # --- "resume last session" ---------------------------------------------------
 def save_last_session(device_id, config):
     """Persisted every time a session starts successfully, so a one-click
@@ -96,22 +130,33 @@ def save_last_session(device_id, config):
     after a backend restart, without the user having to remember it."""
     with _lock:
         record = {"device_id": device_id, "config": _sanitize_config(config), "saved_at": time.time()}
-        with open(LAST_SESSION_PATH, "w") as f:
-            json.dump(record, f, indent=2)
+        records = _load_session_records()
+        records[device_id] = record
+        _atomic_write(LAST_SESSION_PATH, {"schema_version": 2, "devices": records})
         return record
 
 
-def load_last_session(device_id=None):
+def _load_session_records():
     if not os.path.exists(LAST_SESSION_PATH):
-        return None
+        return {}
     try:
         with open(LAST_SESSION_PATH, "r") as f:
             record = json.load(f)
     except (json.JSONDecodeError, OSError):
-        return None
-    if device_id and record.get("device_id") != device_id:
-        return None
-    return record
+        return {}
+    if not isinstance(record, dict):
+        return {}
+    if record.get("device_id") and isinstance(record.get("config"), dict):
+        return {record["device_id"]: record}  # compatible legacy single-bulb record
+    return record.get("devices", {})
+
+
+def load_last_session(device_id=None):
+    with _lock:
+        records = _load_session_records()
+    if device_id:
+        return records.get(device_id)
+    return max(records.values(), key=lambda r: r.get("saved_at", 0), default=None)
 
 
 def clear_last_session():

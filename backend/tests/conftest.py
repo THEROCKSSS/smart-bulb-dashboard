@@ -63,6 +63,27 @@ import remote_access_status  # noqa: E402
 import main as main_module  # noqa: E402
 
 
+@pytest.fixture(autouse=True)
+def favorite_state_isolation(tmp_path, monkeypatch):
+    """Native and web color journeys must never read or write real favorites."""
+    monkeypatch.setattr(bm, "FAVORITES_PATH", str(tmp_path / "favorites.json"))
+
+
+@pytest.fixture(autouse=True)
+def audio_state_isolation(tmp_path, monkeypatch):
+    """Any audio route can save settings; never use the owner's live data."""
+    import audio_presets
+    import audio_signal
+    import audio_safety
+    import audio_lightshow
+    monkeypatch.setattr(audio_presets, "LAST_SESSION_PATH", str(tmp_path / "last.json"))
+    monkeypatch.setattr(audio_presets, "SESSION_PRESETS_PATH", str(tmp_path / "presets.json"))
+    monkeypatch.setattr(audio_signal, "CALIBRATION_PATH", str(tmp_path / "calibration.json"))
+    monkeypatch.setattr(audio_safety, "SAFETY_SETTINGS_PATH", str(tmp_path / "safety.json"))
+    (tmp_path / "lightshows").mkdir(exist_ok=True)
+    monkeypatch.setattr(audio_lightshow, "LIGHTSHOWS_DIR", str(tmp_path / "lightshows"))
+
+
 FAKE_DEVICES = [
     {
         "id": "bulb-1",
