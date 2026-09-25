@@ -47,3 +47,6 @@ roadmap/prototypes/
 # Scratch worktrees created by the phase-delegation-loop skill — never meant
 # to land as committed content (or as embedded gitlinks) in the main tree.
 .claude/worktrees/
+node_modules/
+.expo/
+mobile/dist/

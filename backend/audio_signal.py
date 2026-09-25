@@ -15,12 +15,19 @@ without a real audio device -- see backend/tests/audio_fixtures.py and
 backend/tests/test_audio_signal.py.
 """
 import json
+import colorsys
 import math
 import os
 import threading
 import time
+from functools import lru_cache
 
 import numpy as np
+
+
+@lru_cache(maxsize=64)
+def _mapped_gains(gains, count):
+    return tuple(float(g) for g in np.interp(np.linspace(0, 2, count), [0, 1, 2], gains))
 
 SAMPLE_RATE = 44100
 
@@ -55,6 +62,35 @@ CALIBRATION_MIN_FLOOR = 0.0002
 
 
 _cal_lock = threading.Lock()
+
+
+class LightingEnvelope:
+    """Time-based light smoothing with immediate enforcement of brightness limits."""
+
+    def __init__(self):
+        self.previous = None
+
+    def process(self, action, frame_dt, smoothing_ms=0, minimum=0, maximum=100):
+        brightness = action[-1]
+        brightness = max(minimum, min(maximum, brightness))
+        if action[0] == "hsv":
+            hue, saturation = action[1:3]
+        else:
+            hue, saturation, _ = colorsys.rgb_to_hsv(*(c / 255 for c in action[1:4]))
+            hue *= 360
+            saturation *= 100
+        if smoothing_ms > 0 and self.previous is not None:
+            alpha = 1 - math.exp(-max(0, frame_dt) * 1000 / smoothing_ms)
+            old_hue, old_saturation, old_brightness = self.previous
+            difference = (hue - old_hue + 180) % 360 - 180
+            hue = (old_hue + alpha * difference) % 360
+            saturation = old_saturation + alpha * (saturation - old_saturation)
+            brightness = old_brightness + alpha * (brightness - old_brightness)
+        brightness = max(minimum, min(maximum, brightness))
+        self.previous = (hue, saturation, brightness)
+        if smoothing_ms <= 0:
+            return (*action[:-1], brightness)
+        return ("hsv", hue, saturation, brightness)
 
 
 def _default_calibration_state():
@@ -287,13 +323,24 @@ class SignalConditioner:
         """Multiplies each band's energy by an independent per-band gain
         (e.g. to compensate a mic that's naturally bass-heavy/treble-shy),
         orthogonal to the whole-signal AGC above, and recomputes fractions
-        to match. No-op if band_gains isn't set or its length doesn't match
-        this frame's band count (e.g. right after an n_bands change) --
-        applying mismatched-length gains would silently misattribute gain to
-        the wrong band, which is worse than doing nothing."""
-        if not self.band_gains or len(self.band_gains) != len(bands.get("energies", [])):
+        to match. Three gains represent bass/mid/treble anchors and are mapped
+        across larger spectra. Other gain counts must match the frame exactly.
+        Unity gains avoid allocation; mappings are cached until gains change."""
+        if not self.band_gains or all(gain == 1 for gain in self.band_gains):
             return bands
-        energies = [e * g for e, g in zip(bands["energies"], self.band_gains)]
-        total = sum(energies) + 1e-9
-        fractions = [e / total for e in energies]
-        return {**bands, "energies": energies, "fractions": fractions}
+        result = dict(bands)
+        for prefix in ("", "extra_"):
+            values = bands.get(prefix + "energies", [])
+            if not values:
+                continue
+            gains = self.band_gains
+            if len(gains) == 3 and len(values) != 3:
+                # Bass, mid and treble are anchors across the ordered bands.
+                gains = _mapped_gains(tuple(gains), len(values))
+            elif len(gains) != len(values):
+                continue
+            energies = [float(e * g) for e, g in zip(values, gains)]
+            total = sum(energies) + 1e-9
+            result[prefix + "energies"] = energies
+            result[prefix + "fractions"] = [e / total for e in energies]
+        return result
