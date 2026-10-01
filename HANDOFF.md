@@ -1,5 +1,169 @@
 # Handoff
 
+## Current session — September 13, 2026
+
+- Agent: Codex. Repo: THEROCKSSS/smart-bulb-dashboard, GitHub tracker only.
+- Branch `feat/audio-studio-mobile`, based on `5aa307d`; implementation committed as `9d457a4`, verified and deployed. Owen approved all four stages and then
+  requested the richer mobile controls. Do not restart grilling or approval.
+- Draft PR #88: https://github.com/THEROCKSSS/smart-bulb-dashboard/pull/88 .
+  Spec #83 and tickets #84–#87 remain open; PR closes #84–#86 on merge. #87
+  retains the physical-phone check. Implementation evidence was posted to each
+  of #84–#87 and read back as comments. Master integration commit: `7b9e6db`. Remote master's generated roadmap-status updates integrated without conflicts;
+  the merge changes only docs/assets/roadmap-status.json, not runtime code.
+
+### Implemented
+
+- Complete validated per-bulb mixer settings, atomic persistence, complete preset
+  save/rename/update/recall, null preservation, live changes, source preservation,
+  gentle normalization, multiband gain mapping and lighting envelope controls.
+- Charcoal/amber web Audio Studio; native Room/Audio/Tools/Connect. Native wheel,
+  visible color swatches, complete favorite-color library, white temperature,
+  remembered searchable bulb dropdown, searchable Windows input selection,
+  ready-made genre mixes and full saved mixes together, advanced timing/limits.
+- Native Tools embeds the existing full dashboard through WebView. These advanced
+  screens reuse web code rather than being separate native implementations.
+  Query-device launch handoff is consumed once; later selections survive reload.
+- Ordered writes and stale-poll revision/command guards; hidden/background polling
+  pauses. API/web + Expo Metro share ONE rootless app container and supervisor.
+- CABLE Output WASAPI capture (currently index 86) is remembered by name/API.
+  Windows logon task `Smart Bulb Audio Bridge` is installed; helper is hidden.
+  Voicemeeter A2 already owns CABLE Input. Enabled desktop/AUX strips 5/6 A2 sends;
+  speaker routes/levels preserved. Saved routing snapshot is in ignored
+  `backend/data/voicemeeter-cable.xml`. Lighting never starts automatically.
+
+### Evidence and runtime
+
+- Deployed image `bc932b41fae0` is healthy. API and Metro run together. Ten
+  deployed source/lockfile hashes match the working tree.
+- Final post-refinement run: **760 tests passed in 114.36 s**, plus all five
+  Node queue tests. This includes the expanded native-web journey and web studio.
+  Typecheck and final Android/iOS/web exports passed (web 706 KB, native 1.8 MB).
+- Real audio-engine run: 1,021 frames, zero dropped, 16.55% late; 52 bulb sends,
+  zero sender errors. Software median 6.332 ms; bulb median 12.321 ms,
+  p95 80.446 ms. Final state online and OFF. Readings in ignored
+  `.state/live-audio-proof.json`; synthetic waveform passed through Voicemeeter
+  Input → CABLE Output → host helper → app. CPU benchmark stayed ~0.19 ms;
+  no blanket CPU speedup claim.
+- Complete settings and `Everyday listening` preset survived container restart.
+  Metro PID 3 was deliberately terminated; supervisor restarted it as PID 70
+  while API PID 2 stayed up and completed the live audio test.
+- Both fleet registries include Smart Bulb: home `.claude/skills/fleet/fleet.mjs`
+  and workspace `projects/connect-page/server.mjs`. Registration is local.
+  Final 4,334,646-byte Metro bundle contains the wheel, unified Audio and input
+  dropdown screens; slug/port8106 are correct. The QR directory and deployed
+  desktop/phone-width web studio rendered without page errors or horizontal overflow.
+- Web: https://owens-pc-vpn.tailff2683.ts.net:8502 ; local API port8504.
+  Expo: exp://100.69.156.71:8106 ; QR: http://100.69.156.71:8092/ → Smart Bulb.
+  Both rootless container published ports are private loopback/tailnet bindings.
+- Expo SDK57 CLI account is rocks970; host `.expo/state.json` is mounted read-only,
+  never committed or copied into the image. Current iPhone Expo Go may require
+  the same account. Native physical-phone WebView/gesture/PIN/download behavior
+  remains unverified by the agent. User feedback indicates app access, but no
+  independent phone recording or platform confirmation was received.
+- Runtime secrets/settings stay in existing ignored backend/data and config.json.
+  PIN remains disabled, unchanged. npm audit: 10 moderate transitive build-tool
+  findings (uuid/xcode), none high/critical; no incompatible forced Expo downgrade.
+
+### Resume / remaining
+
+All implementation/deployment checks are complete. Staged secret scan is clean
+and the broad credential-pattern scan found zero matches. PR #88 is published
+as a draft, with the implementation on its feature branch; no merge performed. Keep native phone-specific verification explicit; it is not claimed
+from a web browser test. Full device-level WebView/PIN/download verification is
+the remaining review check.
+Exact commands and architecture: `docs/audio-studio.md`; evidence and failures:
+`iterations/007-audio-studio-mobile/README.md`.
+
+- Agent: Codex. Prior session record is preserved below.
+- Work: full lighting-studio frontend redesign on `feat/lighting-studio-redesign`,
+  based on `09a30db`. Frontend deployed; local bulb control restored and OFF verified.
+- Runtime: rootless Podman `smart-bulb-dashboard`, image
+  `docker.io/library/apps-smart-bulb-dashboard:latest`, rebuilt and recreated using
+  the existing three compose files with project name `apps`. Other services were
+  not recreated. The service initially had been stopped for five weeks.
+- URLs: http://127.0.0.1:8504 and
+  https://owens-pc-vpn.tailff2683.ts.net:8502 — both health checks returned 200.
+- Frontend: shared charcoal/amber theme, persistent navigation, CSS bulb preview,
+  immediate control rendering, pending/confirmed power state, queued slider writes,
+  phone bottom navigation, native scene/preset buttons, and redesigned PIN screen.
+  Implementation notes and verification commands: `docs/frontend-design.md`.
+- Verification: 744 backend/CLI tests passed; Chromium journeys passed on deployed
+  assets at five viewport widths; all 14 live dashboard views loaded without page
+  errors; served asset hashes matched source. Screenshots use synthetic data.
+- Review fixes: stale focused quick controls, temperature draft persistence,
+  command ordering, skip-link routing, and global recovery routes with no devices.
+- **Completed: turn the bulb off.** Fresh QR authorization recovered a different
+  local key. A direct LAN connection authenticated, reported power on, accepted
+  OFF, and returned DP20=false. Saved the verified key through `config.save_config`
+  and restarted the dashboard. Its real power endpoint then succeeded, and status
+  returned `online: true`, `power: false`, `error: null`; `/healthz` returned 200.
+- **Auth differs from historical notes below:** the current runtime reports
+  `enabled: false`, `authenticated: true`, and displays its existing exposure warning.
+  A local `remote_auth.json.reset-20260912` exists. No PIN enable/disable or credential
+  change was requested or performed. The older handoff's claim that the PIN gate is
+  enabled is not current evidence.
+- Credentials remain in ignored `backend/config.json` / `.env`; no values were
+  printed or copied into tracked files. Home Assistant had no Tuya integration to
+  reuse. `.dockerignore` now excludes credentials, runtime state and the host venv
+  from future image builds.
+
+### Resume
+
+#### Connection recovery follow-up — September 13
+
+- Found the actual successful Claude session: `de64d0bf-b8b1-4839-9a0b-376091375282`,
+  July 27. Its ignored historical working files survive under
+  `~/.claude/jobs/de64d0bf/tmp/`: `tuya_auth.json`, `bulb_creds.json`, and login scripts.
+  Read those privately; they contain credentials. Historical key and device identity
+  exactly match current configuration.
+- Previous method was official Tuya Device Sharing SDK QR authorization, followed
+  by TinyTuya LAN control. No developer-cloud project or MITM capture was needed.
+- Tried the saved refresh token against its original Tuya US endpoint. Actual
+  response: HTTP 200, `success: false`, code `1010`, `token is expired`.
+- Tested protocol 3.5 with a fresh TinyTuya instance while the dashboard container
+  was stopped. Safe instrumentation reported no valid first handshake response,
+  then error 914. This does **not** prove the local key is wrong. Container restarted.
+- Installed `tuya-device-sharing-sdk==0.2.15` and `qrcode==8.2` into the ignored host
+  venv for recovery only; deployed dependencies and bulb config were not changed.
+- Prepared ignored `.state/recover-tuya.py`: `qr` creates a fresh app authorization
+  image; `check` exchanges approval, saves refresh tokens, and retrieves only the
+  configured bulb's key. No secrets print; no bulb state/config changes occur.
+  Run with `backend/venv/Scripts/python.exe -B .state/recover-tuya.py qr|check`.
+  The QR is `.state/tuya-login.png`; create another if expired. After approval,
+  recovered credentials are `.state/recovered-bulb.json`, auth `.state/tuya-auth.json`.
+- **Recovery completed after Owen approved the fresh QR.** `check` retrieved the
+  configured bulb with cloud_online=true and a key different from current config.
+  Exclusive direct LAN status with that key succeeded; OFF was sent and DP20=false
+  read back. Saved via `config.save_config` (audit event), restarted the container,
+  sent OFF through the dashboard API, and confirmed online=true / power=false /
+  error=null. The saved key was stale; the reason it changed is not established.
+- Fresh authentication is retained privately in `.state/tuya-auth.json`; the
+  callback now persists refreshed tokens. Approved QR state/image were deleted by
+  the helper. The redundant recovered-key file was removed after installation;
+  `.state/config-before-key-recovery.json` retains the pre-change rollback config.
+  No password, key, device identity, or token was copied into tracked files.
+- Primary-source research: official SDK refresh and device retrieval implementation
+  at https://github.com/tuya/tuya-device-sharing-sdk ; alternatives researched at
+  https://github.com/make-all/tuya-local and https://github.com/rospogrigio/localtuya .
+  Tuya Local also uses TinyTuya and supports 3.5; swapping wrappers alone does not
+  recover a key. LocalTuya README advertises through 3.4. TinyTuya error 914 covers
+  multiple handshake failures: https://github.com/jasonacox/tinytuya/discussions/687 .
+
+1. Inspect this branch with `git status` and `git log -1`.
+2. If needed, start the existing service: `podman start smart-bulb-dashboard`.
+3. For an intentional rebuild from this repo in PowerShell:
+   `podman build --format docker -t docker.io/library/apps-smart-bulb-dashboard:latest .`
+   then `podman compose -p apps -f docker-compose.yml -f docker-compose.windows.yml -f docker-compose.podman.yml up -d --no-deps --no-build smart-bulb-dashboard`.
+4. Use `python -B tools/verify-frontend.py` for browser regression checks; it requires
+   a Python environment with Playwright/Chromium. Test commands use API fixtures.
+5. Local bulb control is restored. For a future key failure, first try the saved
+   SDK authentication using the ignored recovery helper's `check` command. If Tuya
+   expires that authentication, create a fresh QR and obtain the user's app approval.
+   Validate any newly recovered key before installing it. No reset/re-pair is needed
+   for this recovery flow; do not change the PIN as a connection troubleshooting step.
+
+## Historical handoff (August 10 and earlier)
+
 > **START HERE.** This file is a recovery document, not a product spec.
 > Everything below the "Round 1" heading is history, kept for context.
 > This top section is the only part that describes the project *now*.

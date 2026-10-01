@@ -8,7 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import (FileResponse, JSONResponse, PlainTextResponse, RedirectResponse,
                                Response, StreamingResponse)
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict, Field
 
 import secrets_env
 
@@ -32,6 +32,7 @@ import audio_bridge  # noqa: E402
 import capture_sources  # noqa: E402
 import audio_signal  # noqa: E402
 import audio_presets  # noqa: E402
+import audio_settings  # noqa: E402
 import audio_safety  # noqa: E402
 import audio_lightshow  # noqa: E402
 import remote_auth  # noqa: E402
@@ -335,6 +336,11 @@ class AudioReactiveStartBody(BaseModel):
     # streamed in by tools/sbd-audio-bridge.py, which is the only thing that
     # works when the backend runs in a container with no audio devices.
     source: str = "device"
+    source_device_name: str | None = None
+    source_hostapi: str | None = None
+    smoothing_ms: float = 0.0
+    brightness_min: float = 0.0
+    brightness_max: float = 100.0
     force: bool = False  # override an active-group conflict on this device
 
 
@@ -408,6 +414,33 @@ class LiveSettingsBody(BaseModel):
     min_dwell_ms: float | None = None
     monochrome_hue: float | None = None
     n_bands: int | None = None
+    model_config = ConfigDict(extra="forbid")
+    source: str | None = None
+    device_index: int | None = None
+    source_device_name: str | None = None
+    source_hostapi: str | None = None
+    agc_enabled: bool | None = None
+    noise_gate_enabled: bool | None = None
+    dc_removal_enabled: bool | None = None
+    noise_gate_floor: float | None = None
+    agc_target_rms: float | None = None
+    agc_attack_ms: float | None = None
+    agc_release_ms: float | None = None
+    band_gains: list[float] | None = None
+    smoothing_ms: float | None = None
+    brightness_min: float | None = None
+    brightness_max: float | None = None
+    max_flash_rate_hz: float | None = None
+    disable_flash_heavy: bool | None = None
+    max_brightness_swing: float | None = None
+    max_duration_s: float | None = None
+    warmup_s: float | None = None
+    silence_auto_off: bool | None = None
+    auto_resume_grace_s: float | None = None
+    use_saved_calibration: bool | None = None
+    fallback_device_index: int | None = None
+    hop_size: int | None = None
+    window_size: int | None = None
 
 
 class GroupApplyAudioPresetBody(BaseModel):
@@ -462,19 +495,15 @@ class AudioCalibrationBody(BaseModel):
     name: str | None = None
 
 
-class AudioSessionPresetSaveBody(BaseModel):
-    name: str
-    device_index: int
-    mode: str = "band_fixed"
-    sensitivity: float = 1.0
-    monochrome_hue: float = 280.0
-    n_bands: int = 3
-    min_dwell_ms: int = audio_reactive.DEFAULT_MIN_DWELL_MS
-    max_duration_s: float | None = None
-    warmup_s: float = 0.0
-    auto_resume_grace_s: float = audio_reactive.DEFAULT_AUTO_RESUME_GRACE_S
-    max_flash_rate_hz: float | None = None
-    disable_flash_heavy: bool = False
+class AudioSessionPresetSaveBody(AudioReactiveStartBody):
+    name: str = Field(min_length=1, max_length=100)
+    device_index: int | None = None
+
+
+class AudioSessionPresetUpdateBody(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=100)
+    config: dict | None = None
+    model_config = ConfigDict(extra="forbid")
 
 
 class AudioSessionPresetApplyBody(BaseModel):
@@ -1587,6 +1616,9 @@ def audio_reactive_start(device_id: str, body: AudioReactiveStartBody):
             silence_auto_off=body.silence_auto_off, fallback_device_index=body.fallback_device_index,
             source_kind=body.source,
             hop_size=body.hop_size, window_size=body.window_size,
+            source_device_name=body.source_device_name, source_hostapi=body.source_hostapi,
+            smoothing_ms=body.smoothing_ms, brightness_min=body.brightness_min,
+            brightness_max=body.brightness_max,
         )
     except capture_sources.CaptureError as e:
         # No bridge listener at all -- a configuration problem the user can
@@ -1640,7 +1672,8 @@ def audio_reactive_apply_preset(device_id: str, body: ApplyAudioPresetBody):
     # there are no audio devices, so it ran and never reacted to a sound. The
     # exact silent no-op the bridge exists to eliminate.
     existing = audio_reactive.get_active_session(device_id)
-    source = body.source or (existing.source_kind if existing else "device")
+    current = audio_reactive.get_session_settings(device_id)["settings"]
+    source = body.source or current["source"]
 
     if source == "bridge" and audio_bridge.get_server() is None:
         raise HTTPException(409, (
@@ -1658,13 +1691,14 @@ def audio_reactive_apply_preset(device_id: str, body: ApplyAudioPresetBody):
             min_dwell_ms=preset["min_dwell_ms"], beat_sensitivity=preset["beat_sensitivity"],
         )
         return {"ok": True, "preset_id": preset["id"], "mode": preset["mode"],
-                "source": source, "restarted": False, "applied": result["applied"]}
+                "source": source, "restarted": False, "applied": result["applied"], "settings": result["settings"]}
 
-    audio_reactive.start_session(c, body.device_index, preset["mode"], preset["sensitivity"],
-                                  preset["monochrome_hue"], preset["n_bands"], preset["min_dwell_ms"],
-                                  preset["beat_sensitivity"], source_kind=source)
+    current.update({key: preset[key] for key in ("mode", "sensitivity", "monochrome_hue", "n_bands", "min_dwell_ms", "beat_sensitivity")})
+    current.update(source=source, device_index=body.device_index)
+    current = audio_settings.normalize(current)
+    audio_reactive.start_session(c, **audio_settings.start_kwargs(current))
     return {"ok": True, "preset_id": preset["id"], "mode": preset["mode"],
-            "source": source, "restarted": True}
+            "source": source, "restarted": True, "settings": current}
 
 
 @app.post("/api/devices/{device_id}/audio-reactive/settings")
@@ -1678,14 +1712,22 @@ def audio_reactive_live_settings(device_id: str, body: LiveSettingsBody):
     and reset the tempo lock every time.
     """
     get_controller_or_404(device_id)
-    changes = body.model_dump(exclude_none=True)
+    changes = body.model_dump(exclude_unset=True)
     if not changes:
         raise HTTPException(400, "no settings supplied")
     try:
         result = audio_reactive.update_session_settings(device_id, **changes)
     except audio_reactive.AudioConfigError as e:
         raise HTTPException(400, str(e))
+    except OSError:
+        raise HTTPException(503, "Could not save audio settings. Previous settings were kept; retry the change.")
     return {"ok": True, **result}
+
+
+@app.get("/api/devices/{device_id}/audio-reactive/settings")
+def audio_reactive_saved_settings(device_id: str):
+    get_controller_or_404(device_id)
+    return audio_reactive.get_session_settings(device_id)
 
 
 # ----------------------------------------------------------- audio presets -
@@ -1753,8 +1795,27 @@ def save_audio_session_preset(device_id: str, body: AudioSessionPresetSaveBody):
     """Section 8: save an entire running session's config (mode,
     sensitivity, dwell, n_bands, device, ...) as a named, reusable preset."""
     get_controller_or_404(device_id)
-    config = body.model_dump(exclude={"name"})
+    try:
+        config = audio_settings.normalize(body.model_dump(exclude={"name", "force"}))
+    except ValueError as error:
+        raise HTTPException(400, str(error))
     return audio_presets.save_preset(body.name, device_id, config)
+
+
+@app.patch("/api/audio/session-presets/{preset_id}")
+def update_audio_session_preset(preset_id: str, body: AudioSessionPresetUpdateBody):
+    if body.name is None and body.config is None:
+        raise HTTPException(400, "no preset changes supplied")
+    try:
+        config = audio_settings.normalize(body.config) if body.config is not None else None
+        preset = audio_presets.update_preset(preset_id, body.name, config)
+    except ValueError as error:
+        raise HTTPException(400, str(error))
+    except OSError:
+        raise HTTPException(503, "Could not save the preset; retry the change.")
+    if preset is None:
+        raise HTTPException(404, "session preset not found")
+    return preset
 
 
 @app.get("/api/audio/session-presets")
@@ -1776,18 +1837,11 @@ def apply_audio_session_preset(device_id: str, body: AudioSessionPresetApplyBody
     preset = audio_presets.get_preset(body.preset_id)
     if not preset:
         raise HTTPException(404, "session preset not found")
-    cfg = preset["config"]
-    device_index = body.device_index if body.device_index is not None else cfg.get("device_index")
+    cfg = dict(preset["config"])
+    if body.device_index is not None:
+        cfg["device_index"] = body.device_index
     try:
-        session = audio_reactive.start_session(
-            c, device_index, cfg.get("mode", "band_fixed"), cfg.get("sensitivity", 1.0),
-            cfg.get("monochrome_hue", 280.0), cfg.get("n_bands", 3),
-            cfg.get("min_dwell_ms", audio_reactive.DEFAULT_MIN_DWELL_MS),
-            max_duration_s=cfg.get("max_duration_s"), warmup_s=cfg.get("warmup_s", 0.0),
-            auto_resume_grace_s=cfg.get("auto_resume_grace_s", audio_reactive.DEFAULT_AUTO_RESUME_GRACE_S),
-            max_flash_rate_hz=cfg.get("max_flash_rate_hz"),
-            disable_flash_heavy=cfg.get("disable_flash_heavy", False),
-        )
+        session = audio_reactive.start_session(c, **audio_settings.start_kwargs(cfg))
     except audio_reactive.AudioConfigError as e:
         raise HTTPException(400, str(e))
     return {"ok": True, "preset_id": body.preset_id, **session.confirmation()}

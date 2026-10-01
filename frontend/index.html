@@ -3,49 +3,61 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="theme-color" content="#171917">
+<meta name="description" content="Your lighting, in your hands. Local smart bulb control, scenes, audio and automation.">
 <title>Smart Bulb Dashboard</title>
-<link rel="stylesheet" href="/static/style.css">
+<link rel="stylesheet" href="/static/style.css?v=studio-2">
 </head>
 <body>
+<a href="#main" class="skip-link">Skip to controls</a>
 <div class="app-shell">
-  <div class="topbar">
-    <div class="brand">Smart<span class="accent">Bulb</span></div>
+  <header class="topbar">
+    <a class="brand" href="#/light/control"><span class="brand-symbol" aria-hidden="true">◒</span> SmartBulb<span class="brand-studio">LIGHTING STUDIO</span></a>
+    <span class="topbar-note">A little light. A different atmosphere.</span>
     <span id="status-badge" class="status-badge">
       <span class="dot"></span><span id="status-text">connecting…</span>
     </span>
     <div class="device-picker">
-      <select id="device-select"></select>
+      <label class="sr-only" for="device-select">Selected bulb</label>
+      <select id="device-select"><option>Finding your lights…</option></select>
     </div>
-  </div>
+  </header>
 
-  <!-- Icon rail: collapsed to glyphs, widens on hover (and on keyboard focus,
-       so it isn't pointer-only). Labels stay in the DOM for screen readers. -->
-  <div class="sidebar" id="sidebar">
-    <div class="nav-item" data-route="light"><span class="nav-ic" aria-hidden="true">◐</span><span class="nav-lb">Light</span></div>
-    <div class="nav-item" data-route="audio"><span class="nav-ic" aria-hidden="true">◎</span><span class="nav-lb">Audio</span></div>
-    <div class="nav-item" data-route="automation"><span class="nav-ic" aria-hidden="true">◷</span><span class="nav-lb">Automation</span></div>
-    <div class="nav-item" data-route="rooms"><span class="nav-ic" aria-hidden="true">▦</span><span class="nav-lb">Rooms</span></div>
-    <div class="nav-item" data-route="system"><span class="nav-ic" aria-hidden="true">⚙</span><span class="nav-lb">System</span></div>
-  </div>
+  <!-- Persistent labeled navigation becomes a bottom navigation bar on phones. -->
+  <nav class="sidebar" id="sidebar" aria-label="Main navigation">
+    <span class="nav-heading">YOUR SPACE</span>
+    <a href="#/light/control" class="nav-item" data-route="light"><span class="nav-ic" aria-hidden="true">◐</span><span class="nav-lb">Light</span></a>
+    <a href="#/audio/session" class="nav-item" data-route="audio"><span class="nav-ic" aria-hidden="true">≋</span><span class="nav-lb">Audio</span></a>
+    <a href="#/automation" class="nav-item" data-route="automation"><span class="nav-ic" aria-hidden="true">◷</span><span class="nav-lb">Automation</span></a>
+    <a href="#/rooms" class="nav-item" data-route="rooms"><span class="nav-ic" aria-hidden="true">▦</span><span class="nav-lb">Rooms</span></a>
+    <a href="#/system/history" class="nav-item" data-route="system"><span class="nav-ic" aria-hidden="true">⚙</span><span class="nav-lb">System</span></a>
+    <div class="nav-footer"><span class="local-mark" aria-hidden="true"></span> Made for your space.<small>Local control. Yours to set.</small></div>
+  </nav>
 
   <!-- Always-visible quick control, independent of which page is open. -->
   <aside class="quickctl" id="quickctl"></aside>
 
-  <div class="main" id="main"></div>
+  <main class="main" id="main" tabindex="-1"><div class="empty-state loading">Opening your lighting studio…</div></main>
 </div>
 
-<div class="toast-stack" id="toast-stack"></div>
+<div class="toast-stack" id="toast-stack" role="status" aria-live="polite"></div>
 
 <div class="pin-gate-overlay" id="pin-gate-overlay" style="display:none;">
-  <div class="pin-gate-box">
-    <h2>Enter PIN</h2>
-    <p class="panel-subtitle">This dashboard is configured to require a PIN before use (remote-access mode).</p>
-    <input type="password" id="pin-input" inputmode="numeric" autocomplete="off" placeholder="PIN">
-    <button id="pin-submit" class="primary">Unlock</button>
-    <p class="panel-subtitle" id="pin-error" style="color:var(--danger);"></p>
+  <div class="pin-gate-box" role="dialog" aria-modal="true" aria-labelledby="pin-title">
+    <span class="gate-symbol" aria-hidden="true">◒</span>
+    <p class="eyebrow">SMARTBULB / YOUR PRIVATE STUDIO</p>
+    <h2 id="pin-title">Welcome home.</h2>
+    <p class="panel-subtitle">Enter your dashboard PIN to set the mood.</p>
+    <label class="sr-only" for="pin-input">Dashboard PIN</label>
+    <input type="password" id="pin-input" autocomplete="current-password" placeholder="Your PIN" aria-describedby="pin-error">
+    <button id="pin-submit" class="primary">Unlock your lights <span aria-hidden="true">↗</span></button>
+    <p class="panel-subtitle" id="pin-error" role="alert" style="color:var(--danger);"></p>
+    <span class="gate-note">Connected to your home. Controlled by you.</span>
   </div>
 </div>
 
-<script src="/static/app.js"></script>
+<script src="/static/control.js?v=studio-1" defer></script>
+<script src="/static/mixer.js?v=studio-2" defer></script>
+<script src="/static/app.js?v=studio-2" defer></script>
 </body>
 </html>
