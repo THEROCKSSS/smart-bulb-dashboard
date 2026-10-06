@@ -1,4 +1,10 @@
+FROM node:24-bookworm-slim AS mobile-deps
+WORKDIR /mobile
+COPY mobile/package*.json ./
+RUN npm ci --no-audit --no-fund
+
 FROM python:3.11-slim
+COPY --from=mobile-deps /usr/local/bin/node /usr/local/bin/node
 
 WORKDIR /app
 
@@ -23,6 +29,10 @@ RUN pip install --no-cache-dir -r backend/requirements.txt
 
 COPY backend ./backend
 COPY frontend ./frontend
+COPY mobile ./mobile
+COPY --from=mobile-deps /mobile/node_modules ./mobile/node_modules
+COPY deploy/run-studio.py ./deploy/run-studio.py
+COPY deploy/healthcheck.py ./deploy/healthcheck.py
 
 # The in-app documentation browser (System -> Docs) reads real markdown off
 # disk via backend/docs_library.py, whose DOC_ROOTS are docs/, the project
@@ -38,14 +48,14 @@ COPY iterations ./iterations
 COPY *.md ./
 
 WORKDIR /app/backend
-EXPOSE 8500
+EXPOSE 8500 8081
 
 # W2-186. Also declared in docker-compose.yml (compose's version wins when
 # it's set); this one covers `docker run` without compose. Probes /healthz
 # rather than /api/system/health -- see backend/main.py for why they're
 # separate. Python, not curl/wget: python:3.11-slim ships neither.
 HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
-    CMD python -c "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8500/healthz', timeout=5).status == 200 else 1)"
+    CMD python /app/deploy/healthcheck.py
 
 # --no-proxy-headers is deliberate. uvicorn enables its own
 # ProxyHeadersMiddleware by default, trusting 127.0.0.1, and it rewrites
@@ -55,4 +65,4 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
 # The app does this properly instead, gated on an explicit
 # SBD_TRUSTED_PROXIES list (see backend/reverse_proxy.py). Leaving both
 # layers on would mean the outer, unconfigurable one silently wins.
-CMD ["python", "-m", "uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8500", "--no-proxy-headers"]
+CMD ["python", "/app/deploy/run-studio.py"]

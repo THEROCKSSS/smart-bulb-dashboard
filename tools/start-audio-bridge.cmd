@@ -33,7 +33,7 @@ REM --auto measures every input and picks the one that actually has sound on
 REM it right now. Override by passing --device yourself; --probe prints the
 REM full per-device breakdown.
 set ARGS=%*
-if "%ARGS%"=="" set ARGS=--auto
+REM With no arguments, restore the saved input or use CABLE Output.
 
 echo Smart Bulb Dashboard - audio bridge
 echo   dashboard: http://127.0.0.1:8504/#/audio

@@ -106,20 +106,8 @@ def _start_audio_reactive_preset(controller, params):
         raise ValueError(f"unknown audio session preset '{preset_id}'")
     cfg = preset["config"]
     device_index = params.get("device_index", cfg.get("device_index"))
-    audio_reactive.start_session(
-        controller,
-        device_index,
-        cfg.get("mode", "band_fixed"),
-        cfg.get("sensitivity", 1.0),
-        cfg.get("monochrome_hue", 280.0),
-        cfg.get("n_bands", 3),
-        cfg.get("min_dwell_ms", audio_reactive.DEFAULT_MIN_DWELL_MS),
-        max_duration_s=cfg.get("max_duration_s"),
-        warmup_s=cfg.get("warmup_s", 0.0),
-        auto_resume_grace_s=cfg.get("auto_resume_grace_s", audio_reactive.DEFAULT_AUTO_RESUME_GRACE_S),
-        max_flash_rate_hz=cfg.get("max_flash_rate_hz"),
-        disable_flash_heavy=cfg.get("disable_flash_heavy", False),
-    )
+    import audio_settings
+    audio_reactive.start_session(controller, **audio_settings.start_kwargs({**cfg, "device_index": device_index}))
 
 
 def _tick(get_controller_fn, now=None):

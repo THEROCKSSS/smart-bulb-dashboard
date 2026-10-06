@@ -5,6 +5,17 @@ description: "Set up and drive audio-reactive lighting on the Smart Bulb Dashboa
 
 # Smart Bulb Dashboard — Audio Reactive
 
+## Current Windows / Podman path
+
+For the persistent mixer, CABLE routing or Expo companion, first read
+`docs/audio-studio.md`. Use GET/POST `/audio-reactive/settings` as the complete
+settings contract and preserve every field when saving or resuming. The Windows
+helper remembers source identity; use `tools/start-audio-bridge.ps1` to launch it.
+The phone and API share one Podman container. Verify capture RMS and changing
+bands, then check sender errors; connection alone does not prove sound arrives.
+On Owen's PC Voicemeeter A2 owns CABLE Input, so desktop/AUX strips must send to A2.
+Software and bulb latency are separate measurements; read current telemetry.
+
 ## When to use
 User wants the bulb to react to music/audio — either PC audio (via
 VoiceMeeter or WASAPI loopback) or a real microphone. Assumes the backend is
