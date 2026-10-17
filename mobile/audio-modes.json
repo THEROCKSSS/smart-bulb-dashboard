@@ -1,0 +1,108 @@
+{
+  "band_fixed": {
+    "name": "Band → Color",
+    "desc": "Bass=warm red/orange, mids=green, treble=blue, blended by which is loudest.",
+    "bands": false
+  },
+  "dominant_band": {
+    "name": "Dominant Band",
+    "desc": "Hue smoothly follows whichever of bass/mid/treble currently dominates.",
+    "bands": false
+  },
+  "weighted_blend": {
+    "name": "Spectral Blend",
+    "desc": "Continuous hue sweep driven by the overall tonal balance, not fixed anchors.",
+    "bands": false
+  },
+  "vu_meter": {
+    "name": "VU Meter",
+    "desc": "Fixed hue, brightness only — a direct volume meter.",
+    "bands": false,
+    "mono": true
+  },
+  "auto_rotate_hue": {
+    "name": "Auto-Rotate",
+    "desc": "Hue slowly cycles on its own; brightness/beats still track the audio.",
+    "bands": false
+  },
+  "monochrome_pulse": {
+    "name": "Monochrome Pulse",
+    "desc": "One color of your choice that pulses brighter with the beat.",
+    "bands": false,
+    "mono": true
+  },
+  "strobe_on_drop": {
+    "name": "Strobe on Drop",
+    "desc": "Dim warm baseline, full white flash only on hard bass hits.",
+    "bands": false
+  },
+  "palette_cycle": {
+    "name": "Palette Cycle",
+    "desc": "Steps through the built-in color presets, advancing on each detected beat.",
+    "bands": false
+  },
+  "spectrum_gradient": {
+    "name": "Spectrum Gradient",
+    "desc": "Continuous hue gradient across N bands (set below) — much finer-grained than the 3-anchor Band → Color mode.",
+    "bands": true
+  },
+  "band_flash_overlay": {
+    "name": "Band Flash Overlay",
+    "desc": "Ambient N-band gradient base color, with brief accent flashes whenever any individual band spikes.",
+    "bands": true
+  },
+  "stereo_split": {
+    "name": "Stereo Split",
+    "desc": "Hue leans left/right-anchor based on which stereo channel is louder (needs a 2-channel input device).",
+    "bands": false
+  },
+  "breathing_silence": {
+    "name": "Breathing Silence",
+    "desc": "Slow ambient breathing brightness during quiet passages instead of going flat/dark; wakes up smoothly when audio returns.",
+    "bands": false
+  },
+  "harmonic_pairs": {
+    "name": "Harmonic Pairs",
+    "desc": "Finds the two most energetic non-adjacent bands each frame and blends between two complementary (180°-apart) hues based on which one dominates; more bands (below) sharpen the pairing.",
+    "bands": true
+  },
+  "kick_snare_split": {
+    "name": "Kick/Snare Split",
+    "desc": "Bass drives brightness like a kick drum while a separate mid-band accent shifts the hue like a layered snare/hihat.",
+    "bands": false
+  },
+  "energy_contour": {
+    "name": "Energy Contour",
+    "desc": "Hue locked to your chosen color; only saturation/brightness track a smoothed energy envelope for a slow-moving contour instead of a punchy pulse.",
+    "bands": false,
+    "mono": true
+  },
+  "bass_only_pulse": {
+    "name": "Bass-Only Pulse",
+    "desc": "Brightness-only pulse driven purely by the bass band's share of the mix — hue never moves.",
+    "bands": false,
+    "mono": true
+  },
+  "mirror_mode": {
+    "name": "Mirror Mode",
+    "desc": "Hue mirrors around a fixed center point as the treble/bass balance shifts, while brightness breathes independently — a breathing color effect.",
+    "bands": false
+  },
+  "random_walk_hue": {
+    "name": "Random Walk Hue",
+    "desc": "Hue takes small bounded random steps instead of rotating at a fixed rate — feels organic rather than mechanical.",
+    "bands": false
+  },
+  "silence_flash_recover": {
+    "name": "Silence Flash Recover",
+    "desc": "Dims through any quiet passage, then fires one bright white flash the instant audio resumes after a long pause.",
+    "bands": false,
+    "mono": true
+  },
+  "crescendo_ramp": {
+    "name": "Crescendo Ramp",
+    "desc": "Detects a sustained rise in energy over a couple of seconds and ramps brightness/saturation up ahead of the peak, not just when it's already loud.",
+    "bands": false,
+    "mono": true
+  }
+}

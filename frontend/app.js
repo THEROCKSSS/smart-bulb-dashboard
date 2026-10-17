@@ -112,9 +112,13 @@ async function api(path, opts) {
       throw new Error(body.detail || `HTTP ${res.status}`);
     }
     const ct = res.headers.get("content-type") || "";
-    return ct.includes("application/json") ? res.json() : res.text();
+    const data = ct.includes("application/json") ? await res.json() : await res.text();
+    // Tuya can return a protocol error inside an otherwise successful HTTP 200.
+    if (data?.result?.Error) throw new Error("The bulb rejected the command. Check its connection and device settings.");
+    return data;
   } catch (e) {
     if (e.message !== "authentication required") toast(`Error: ${e.message}`, "error");
+    e.apiNotified = true;
     throw e;
   }
 }
@@ -263,6 +267,7 @@ function currentRoute() {
 
 async function router() {
   const route = currentRoute();
+  controlEditing = false;
   lsSet(LS_KEY_ROUTE, route.key);
   if (controlKeyHandler) {
     document.removeEventListener("keydown", controlKeyHandler);
@@ -272,10 +277,7 @@ async function router() {
     clearTimeout(controlKeyCommitTimer);
     controlKeyCommitTimer = null;
   }
-  if (state.audioPollHandle) {
-    clearInterval(state.audioPollHandle);
-    state.audioPollHandle = null;
-  }
+  stopAudioPolling();
   if (state.sleepCountdownHandle) {
     clearInterval(state.sleepCountdownHandle);
     state.sleepCountdownHandle = null;
@@ -290,10 +292,16 @@ async function router() {
   }
   document.querySelectorAll(".nav-item").forEach(n => {
     n.classList.toggle("active", n.dataset.route === route.page);
+    if (n.dataset.route === route.page) n.setAttribute("aria-current", "page");
+    else n.removeAttribute("aria-current");
   });
   const main = document.getElementById("main");
   main.innerHTML = `<div class="empty-state loading">Loading…</div>`;
   const page = PAGES[route.page];
+  if (!state.deviceId && (route.page === "light" || route.page === "audio" || route.page === "automation" || ["system/history", "system/diagnostics"].includes(route.key))) {
+    main.innerHTML = `<div class="empty-state"><h1>No lights connected yet</h1><p>Add a bulb in System settings to start shaping your space.</p><a href="#/system/settings">Open settings</a></div>`;
+    return;
+  }
   try {
     if (page.merged) {
       await page.merged(main);
@@ -312,8 +320,10 @@ async function router() {
       await tab.render(panel);
     }
   } catch (e) {
+    if (currentRoute().key !== route.key) return;
     const target = main.querySelector("#subtab-panel") || main;
-    target.innerHTML = `<div class="empty-state">Failed to load this panel: ${e.message}</div>`;
+    target.innerHTML = `<div class="empty-state">Failed to load this panel: ${escHtml(e.message)}<p><button id="retry-panel">Try again</button></p></div>`;
+    target.querySelector("#retry-panel").onclick = router;
   }
   // Every panel replaces #main's contents, so the exposure banner has to be
   // re-inserted after each render rather than living in the shell. It stays
@@ -360,7 +370,7 @@ function paintExposureBanner() {
 window.addEventListener("hashchange", router);
 document.getElementById("sidebar").addEventListener("click", (e) => {
   const item = e.target.closest(".nav-item");
-  if (item) location.hash = "#/" + item.dataset.route;
+  if (item) { e.preventDefault(); location.hash = item.getAttribute("href"); }
 });
 document.getElementById("main").addEventListener("click", (e) => {
   const tab = e.target.closest(".subtab");
@@ -373,6 +383,8 @@ async function loadDevices() {
   const sel = document.getElementById("device-select");
   sel.innerHTML = "";
   if (state.devices.length === 0) {
+    state.deviceId = null;
+    state.lastStatus = null;
     sel.innerHTML = `<option>No devices configured</option>`;
     return;
   }
@@ -392,7 +404,15 @@ async function loadDevices() {
 document.getElementById("device-select").addEventListener("change", (e) => {
   state.deviceId = e.target.value;
   lsSet(LS_KEY_DEVICE, state.deviceId);
+  state.lastStatus = null;
+  state.hasPolledOnce = false;
+  state.lastSeenAt = null;
+  state.consecutiveOfflinePolls = 0;
+  commandEpoch++;
+  controlEditing = false;
+  renderQuickControl();
   router();
+  pollStatus();
 });
 
 // --------------------------------------------------------- status badge --
@@ -419,6 +439,7 @@ function formatAgo(ms) {
 function renderStatusText() {
   const text = document.getElementById("status-text");
   if (!text || !state.hasPolledOnce) return; // still on the initial "connecting…" text, first poll in flight
+  if (powerBusy) { text.textContent = "PENDING · confirming power"; return; }
   const agoPart = state.lastSeenAt ? ` · last seen ${formatAgo(Date.now() - state.lastSeenAt)}` : "";
   // `renderControl()` (below) caches whatever /status returns into
   // state.lastStatus unconditionally, including a definitive {online: false}
@@ -437,11 +458,19 @@ function renderStatusText() {
   }
 }
 
-async function pollStatus(quiet) {
-  if (!state.deviceId) return;
+const statusInFlight = new Set();
+async function pollStatus() {
+  const device = state.deviceId;
+  if (!device || statusInFlight.has(device) || powerBusy || document.hidden) return;
+  const epoch = commandEpoch;
+  statusInFlight.add(device);
   const badge = document.getElementById("status-badge");
   try {
-    const st = await fetch(`${API}/api/devices/${state.deviceId}/status`).then(r => r.json());
+    const response = await fetch(`${API}/api/devices/${device}/status`, { signal: AbortSignal.timeout(8000) });
+    if (response.status === 401) { showPinGate(); return; }
+    if (!response.ok) throw new Error("Status unavailable");
+    const st = await response.json();
+    if (device !== state.deviceId || epoch !== commandEpoch) return;
     if (st.online) {
       state.consecutiveOfflinePolls = 0;
       state.lastStatus = st;
@@ -449,26 +478,29 @@ async function pollStatus(quiet) {
       badge.classList.add("live");
     } else {
       state.consecutiveOfflinePolls++;
-      if (state.consecutiveOfflinePolls >= OFFLINE_CONFIRM_THRESHOLD) {
-        badge.classList.remove("live");
-      }
-    }
-  } catch (e) {
-    state.consecutiveOfflinePolls++;
-    if (state.consecutiveOfflinePolls >= OFFLINE_CONFIRM_THRESHOLD) {
+      if (!state.lastStatus || state.consecutiveOfflinePolls >= OFFLINE_CONFIRM_THRESHOLD) state.lastStatus = st;
       badge.classList.remove("live");
     }
+  } catch (e) {
+    if (device !== state.deviceId || epoch !== commandEpoch) return;
+    state.consecutiveOfflinePolls++;
+    if (state.consecutiveOfflinePolls >= OFFLINE_CONFIRM_THRESHOLD) {
+      state.lastStatus = { online: false };
+      badge.classList.remove("live");
+    }
+  } finally {
+    statusInFlight.delete(device);
   }
   state.hasPolledOnce = true;
   renderStatusText();
   renderQuickControl();
+  paintControlStatus();
 }
 
 function startPolling() {
   if (state.statusPollHandle) clearInterval(state.statusPollHandle);
   if (state.lastSeenTickHandle) clearInterval(state.lastSeenTickHandle);
   pollStatus();
-  setTimeout(pollStatus, 1200); // quick re-check shortly after first load
   state.statusPollHandle = setInterval(pollStatus, 4000);
   // Status badge lives in the topbar (outside any panel), so this ticks for the whole
   // app lifetime rather than being torn down in router() like the panel-scoped handles.
@@ -476,165 +508,6 @@ function startPolling() {
 }
 
 // ================================================================ PANELS ==
-
-async function renderControl(main) {
-  const st = state.lastStatus || await get(`/api/devices/${state.deviceId}/status`);
-  state.lastStatus = st;
-  const rgb = st.hue != null ? hsvToRgb(st.hue, st.saturation_pct ?? 100, st.value_pct ?? 100) : [255, 255, 255];
-
-  main.innerHTML = `
-    <h1 class="panel-title">Control</h1>
-    <p class="panel-subtitle">Direct power, brightness and color control — <span class="tag ${st.online ? "on" : "error"}">${st.online ? "LIVE DATA" : "OFFLINE"}</span></p>
-    <p class="panel-subtitle kbd-hint"><kbd>Space</kbd> toggles power · <kbd>&#8593;</kbd> / <kbd>&#8595;</kbd> brightness &plusmn;5%</p>
-
-    <div class="card">
-      <div class="preview-swatch" id="preview-swatch" style="background: ${rgbToHex(...rgb)}"></div>
-      <button id="power-toggle" class="big-toggle ${st.power ? "primary" : ""}">${st.power ? "TURN OFF" : "TURN ON"}</button>
-    </div>
-
-    <div class="card">
-      <h3>Brightness</h3>
-      <div class="slider-row">
-        <label><span>Brightness</span><span id="brightness-val">${st.mode === "colour" ? (st.value_pct ?? 100) : (st.brightness_pct ?? 100)}%</span></label>
-        <input type="range" id="brightness-slider" min="1" max="100" value="${st.mode === "colour" ? (st.value_pct ?? 100) : (st.brightness_pct ?? 100)}">
-      </div>
-    </div>
-
-    <div class="card">
-      <h3>Color (HSV)</h3>
-      <div class="slider-row hue-slider">
-        <label><span>Hue</span><span id="hue-val">${Math.round(st.hue ?? 0)}°</span></label>
-        <input type="range" id="hue-slider" min="0" max="359" value="${Math.round(st.hue ?? 0)}">
-      </div>
-      <div class="slider-row">
-        <label><span>Saturation</span><span id="sat-val">${st.saturation_pct ?? 100}%</span></label>
-        <input type="range" id="sat-slider" min="0" max="100" value="${st.saturation_pct ?? 100}">
-      </div>
-      <div class="row" style="margin-top:8px;">
-        <label style="font-size:12px;color:var(--text-dim);">Or pick exact RGB:</label>
-        <input type="color" id="rgb-picker" value="${rgbToHex(...rgb)}">
-      </div>
-    </div>
-
-    <div class="card">
-      <h3>White Mode</h3>
-      <div class="slider-row">
-        <label><span>Color Temperature (0=warm, 100=cool)</span><span id="temp-val">${st.color_temp_pct ?? 50}%</span></label>
-        <input type="range" id="temp-slider" min="0" max="100" value="${st.color_temp_pct ?? 50}">
-      </div>
-      <button id="apply-white">Switch to White Mode</button>
-    </div>
-
-    <div class="card">
-      <h3>Quick Actions</h3>
-      <div class="row">
-        <button id="btn-random">🎲 Random Color</button>
-        <button id="btn-identify">📍 Identify Bulb (blink)</button>
-        <button id="btn-flash">🚨 Flash Alert</button>
-      </div>
-    </div>
-  `;
-
-  main.querySelector("#power-toggle").onclick = async () => {
-    await post(`/api/devices/${state.deviceId}/power`, { on: !st.power });
-    state.lastStatus = null;
-    router();
-  };
-
-  const brightnessSlider = main.querySelector("#brightness-slider");
-  brightnessSlider.oninput = () => {
-    main.querySelector("#brightness-val").textContent = brightnessSlider.value + "%";
-  };
-  brightnessSlider.onchange = async () => {
-    await post(`/api/devices/${state.deviceId}/brightness`, { value: parseInt(brightnessSlider.value) });
-    toast("Brightness updated", "success");
-  };
-
-  const hueSlider = main.querySelector("#hue-slider");
-  const satSlider = main.querySelector("#sat-slider");
-  const updatePreview = () => {
-    const [r, g, b] = hsvToRgb(parseFloat(hueSlider.value), parseFloat(satSlider.value), 100);
-    main.querySelector("#preview-swatch").style.background = rgbToHex(r, g, b);
-    main.querySelector("#hue-val").textContent = Math.round(hueSlider.value) + "°";
-    main.querySelector("#sat-val").textContent = satSlider.value + "%";
-  };
-  hueSlider.oninput = updatePreview;
-  satSlider.oninput = updatePreview;
-  const commitHsv = async () => {
-    await post(`/api/devices/${state.deviceId}/color/hsv`, {
-      h: parseFloat(hueSlider.value), s: parseFloat(satSlider.value), v: 100,
-    });
-    toast("Color updated", "success");
-  };
-  hueSlider.onchange = commitHsv;
-  satSlider.onchange = commitHsv;
-
-  main.querySelector("#rgb-picker").onchange = async (e) => {
-    const hex = e.target.value;
-    const r = parseInt(hex.slice(1, 3), 16), g = parseInt(hex.slice(3, 5), 16), b = parseInt(hex.slice(5, 7), 16);
-    await post(`/api/devices/${state.deviceId}/color`, { r, g, b });
-    toast("Color updated", "success");
-  };
-
-  const tempSlider = main.querySelector("#temp-slider");
-  tempSlider.oninput = () => { main.querySelector("#temp-val").textContent = tempSlider.value + "%"; };
-  main.querySelector("#apply-white").onclick = async () => {
-    await post(`/api/devices/${state.deviceId}/white`, {
-      brightness: parseInt(brightnessSlider.value), color_temp: parseInt(tempSlider.value),
-    });
-    toast("Switched to white mode", "success");
-  };
-
-  main.querySelector("#btn-random").onclick = async () => {
-    await post(`/api/devices/${state.deviceId}/color/random`);
-    toast("Random color applied", "success");
-  };
-  main.querySelector("#btn-identify").onclick = async () => {
-    toast("Blinking bulb…");
-    await post(`/api/devices/${state.deviceId}/identify`);
-  };
-  main.querySelector("#btn-flash").onclick = async () => {
-    await post(`/api/devices/${state.deviceId}/flash-alert`, { r: 255, g: 0, b: 0, times: 3 });
-    toast("Flash alert sent", "success");
-  };
-
-  // Keyboard shortcuts — only wired while the Control panel is mounted (router()
-  // removes this listener the instant another panel loads, see the `controlKeyHandler`
-  // cleanup there), and skipped while any input/select/textarea has focus so this
-  // never hijacks typing or a slider's own native arrow-key handling elsewhere in the app.
-  const BRIGHTNESS_KEY_STEP = 5; // percent per Up/Down press
-  // Arrow keys fire one keydown per press — and repeat rapidly while held — so
-  // committing on every one sent a POST to the bulb per keypress AND stacked a
-  // "Brightness updated" toast per keypress. The slider UI still updates on
-  // every press (that's just a local `input` event, no network), but the actual
-  // commit is debounced so a burst of presses lands as one request and one toast.
-  const KEY_COMMIT_DEBOUNCE_MS = 400;
-  function handleControlKeydown(e) {
-    const active = document.activeElement;
-    const tag = active && active.tagName;
-    if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || (active && active.isContentEditable)) return;
-    if (e.code === "Space" || e.key === " ") {
-      e.preventDefault();
-      const toggleBtn = main.querySelector("#power-toggle");
-      if (toggleBtn) toggleBtn.click();
-    } else if (e.key === "ArrowUp" || e.key === "ArrowDown") {
-      e.preventDefault();
-      const slider = main.querySelector("#brightness-slider");
-      if (!slider) return;
-      const delta = e.key === "ArrowUp" ? BRIGHTNESS_KEY_STEP : -BRIGHTNESS_KEY_STEP;
-      const next = Math.max(1, Math.min(100, parseInt(slider.value, 10) + delta));
-      slider.value = String(next);
-      slider.dispatchEvent(new Event("input"));
-      clearTimeout(controlKeyCommitTimer);
-      controlKeyCommitTimer = setTimeout(function () {
-        controlKeyCommitTimer = null;
-        slider.dispatchEvent(new Event("change"));
-      }, KEY_COMMIT_DEBOUNCE_MS);
-    }
-  }
-  document.addEventListener("keydown", handleControlKeydown);
-  controlKeyHandler = handleControlKeydown;
-}
 
 async function renderScenes(main) {
   state.scenes = state.scenes.length ? state.scenes : await get("/api/scenes");
@@ -645,10 +518,10 @@ async function renderScenes(main) {
   `;
   const grid = main.querySelector("#scene-grid");
   state.scenes.forEach(s => {
-    const card = el(`<div class="scene-card" title="${s.description}">
-      <div class="name">${s.name}</div>
-      <div class="desc">${s.description}</div>
-    </div>`);
+    const card = el(`<button type="button" class="scene-card" title="${escAttr(s.description)}">
+      <div class="name">${escHtml(s.name)}</div>
+      <div class="desc">${escHtml(s.description)}</div>
+    </button>`);
     card.onclick = async () => {
       await post(`/api/devices/${state.deviceId}/scenes/apply`, { scene_id: s.id });
       toast(`Scene "${s.name}" applied`, "success");
@@ -667,7 +540,7 @@ async function renderEffects(main) {
     <p class="panel-subtitle">Animated lighting effects that run continuously until stopped</p>
     <div class="card row">
       <label style="font-size:12px;color:var(--text-dim);">Speed</label>
-      <input type="range" id="effect-speed" min="0.2" max="3" step="0.1" value="1" style="width:160px;">
+      <input type="range" id="effect-speed" aria-label="Effect speed" min="0.2" max="3" step="0.1" value="1" style="width:160px;">
       <button id="stop-effect" class="danger" ${current ? "" : "disabled"}>Stop Current Effect${current ? " (" + current + ")" : ""}</button>
     </div>
     <div class="grid" id="effect-grid"></div>
@@ -679,10 +552,10 @@ async function renderEffects(main) {
   };
   const grid = main.querySelector("#effect-grid");
   state.effects.forEach(fx => {
-    const card = el(`<div class="effect-card" title="${fx.description}">
+    const card = el(`<button type="button" class="effect-card" title="${fx.description}">
       <div class="name">${fx.name}${current === fx.id ? " ▶" : ""}</div>
       <div class="desc">${fx.description}</div>
-    </div>`);
+    </button>`);
     card.onclick = async () => {
       const speed = parseFloat(main.querySelector("#effect-speed").value);
       await post(`/api/devices/${state.deviceId}/effects/start`, { effect: fx.id, speed });
@@ -718,6 +591,10 @@ const AUDIO_MODE_INFO = {
 };
 
 function stopAudioPolling() {
+  state.audioPollGeneration = (state.audioPollGeneration || 0) + 1;
+  state.mixerView?.dispose();
+  state.mixerView = null;
+  if (window.onLightingMixRecalled) window.removeEventListener("lighting-mix-recalled", window.onLightingMixRecalled);
   if (state.audioPollHandle) {
     clearInterval(state.audioPollHandle);
     state.audioPollHandle = null;
@@ -735,12 +612,24 @@ function renderBandMeter(bands) {
     <div class="band-meter">
       ${fractions.map((f, i) => `
         <div class="band-col">
-          <div class="band-fill" style="height:${pct(f)}%;background:${BAND_COLORS[i % BAND_COLORS.length]}"></div>
+          <div class="band-fill" title="${labels[i]} ${pct(f)}%" style="height:100%;transform:scaleY(${pct(f) / 100});background:${BAND_COLORS[i % BAND_COLORS.length]}"></div>
           <div class="band-label">${labels[i]}</div>
         </div>`).join("")}
     </div>
-    <p class="panel-subtitle" style="margin-top:8px;">RMS ${(bands.rms || 0).toFixed(4)} <span class="beat-dot ${bands.is_beat ? "hit" : ""}"></span> beat</p>
+    <p class="panel-subtitle" style="margin-top:8px;"><span class="meter-rms">RMS ${(bands.rms || 0).toFixed(4)}</span> <span class="beat-dot ${bands.is_beat ? "hit" : ""}"></span> beat</p>
   `;
+}
+
+function updateBandMeter(wrap, bands) {
+  const values = bands?.fractions || [0, 0, 0];
+  if (wrap.querySelectorAll('.band-fill').length !== values.length) wrap.innerHTML = renderBandMeter(bands);
+  wrap.querySelectorAll('.band-fill').forEach((bar, i) => {
+    const fraction = Math.max(0, Math.min(1, values[i] || 0));
+    bar.style.transform = `scaleY(${fraction})`;
+    bar.title = `${Math.round(fraction * 100)}% energy`;
+  });
+  wrap.querySelector('.meter-rms').textContent = `RMS ${(bands?.rms || 0).toFixed(4)}`;
+  wrap.querySelector('.beat-dot').classList.toggle('hit', !!bands?.is_beat);
 }
 
 function renderTempoInfo(tempo) {
@@ -989,7 +878,7 @@ function bridgeArgs() {
 function bridgeCommand(dir, args) {
   const a = (args || "").trim();
   // Quoted: this path very often contains spaces.
-  return `cd "${dir}" && tools\start-audio-bridge.cmd${a ? " " + a : ""}`;
+  return `& "${dir}\\tools\\start-audio-bridge.cmd"${a ? " " + a : ""}`;
 }
 
 async function refreshBridgeChip() {
@@ -1041,39 +930,37 @@ async function renderAudio(main) {
     }
     refreshBridgeChip();
   }, 2000);
-  let devicesResp;
+  const deviceId = state.deviceId;
+  main.innerHTML = '<div class="empty-state loading">Opening audio studio…</div>';
+  let devicesResp, bridge, sessionStatus, groupStatus, groups, audioPresetsResp, savedRecord;
   try {
-    devicesResp = await get("/api/audio/devices");
-  } catch (e) {
-    main.innerHTML = `
-      <h1 class="panel-title">Audio Reactive</h1>
-      <div class="empty-state">Could not list audio input devices: ${e.message}</div>`;
+    [devicesResp, bridge, sessionStatus, groupStatus, groups, audioPresetsResp, savedRecord] = await Promise.all([
+      get("/api/audio/devices"), get("/api/audio/bridge"),
+      get(`/api/devices/${deviceId}/audio-reactive/status`),
+      get("/api/groups/all/audio-reactive/status").catch(() => ({ active: false })),
+      get("/api/groups"), get("/api/audio/presets"),
+      get(`/api/devices/${deviceId}/audio-reactive/settings`),
+    ]);
+  } catch (error) {
+    main.innerHTML = `<h1 class="panel-title">Audio Reactive</h1><div class="empty-state">${escapeHtml(error.message)}</div>`;
     return;
   }
+  if (state.deviceId !== deviceId || !location.hash.startsWith("#/audio")) return;
   const audioDevices = devicesResp.devices || [];
-  // The container has no audio devices at all, so this list is empty there and
-  // the bridge is the only way to get sound in. Fetched here (not only in the
-  // poller) so the very first paint already shows the true state.
-  let bridge = { listening: false, connected: false, streaming: false };
-  try { bridge = await get("/api/audio/bridge"); } catch (e) {}
   const bridgeUsable = !!bridge.listening;
-  // Default to whichever source can actually work right now.
-  const defaultSource = (audioDevices.length === 0 && bridgeUsable) ? "bridge" : "device";
-  const defaultDwell = devicesResp.default_min_dwell_ms || 90;
+  const saved = savedRecord.settings || {};
+  const defaultSource = sessionStatus.source || (audioDevices.length === 0 && bridgeUsable ? "bridge" : saved.source || "device");
+  const defaultDwell = saved.min_dwell_ms ?? devicesResp.default_min_dwell_ms ?? 90;
   const dwellFloor = devicesResp.min_dwell_floor_ms || 40;
-  let sessionStatus = { active: false };
-  try { sessionStatus = await get(`/api/devices/${state.deviceId}/audio-reactive/status`); } catch (e) {}
-  let groupStatus = { active: false };
-  try { groupStatus = await get(`/api/groups/all/audio-reactive/status`); } catch (e) {}
-  const groups = await get("/api/groups").catch(() => []);
-  let audioPresetsResp = { presets: [] };
-  try { audioPresetsResp = await get("/api/audio/presets"); } catch (e) {}
+  sessionStatus = { ...saved, ...sessionStatus };
+  const mixerQueue = LightingMixer.queueFor(deviceId,
+    changes => post(`/api/devices/${deviceId}/audio-reactive/settings`, changes), saved);
   const beatPresets = devicesResp.beat_sensitivity_presets || ["subtle", "normal", "aggressive"];
   const defaultBeatSensitivity = devicesResp.default_beat_sensitivity || "normal";
-  const tempo = sessionStatus.tempo || {};
+  const tempo = sessionStatus.tempo || { beat_sensitivity: saved.beat_sensitivity };
 
   const preferredIdx = audioDevices.findIndex(d => /voicemeeter|cable/i.test(d.name));
-  const defaultDeviceIndex = sessionStatus.device_index ?? (preferredIdx >= 0 ? audioDevices[preferredIdx].index : (audioDevices[0] ? audioDevices[0].index : null));
+  const defaultDeviceIndex = sessionStatus.device_index ?? saved.device_index ?? (preferredIdx >= 0 ? audioDevices[preferredIdx].index : (audioDevices[0] ? audioDevices[0].index : null));
 
   const deviceOptions = audioDevices.map(d => `<option value="${d.index}" ${d.index === defaultDeviceIndex ? "selected" : ""}>${d.name}</option>`).join("");
   const sourceOptions = [
@@ -1085,19 +972,15 @@ async function renderAudio(main) {
   const hostArgs = bridgeArgs();
 
   main.innerHTML = `
-    <h1 class="panel-title">Audio Reactive <span class="tag on">LIVE DATA</span>
+    <header class="audio-heading"><div><span class="eyebrow">SOUND → LIGHT / AUDIO STUDIO</span>
+    <h1 class="panel-title">Make the room move.</h1><p class="panel-subtitle">Your sound. Your atmosphere. A mix that stays yours.</p></div>
       <span id="bridge-chip" class="bridge-chip ${bridgeChipClass(bridge)}" title="${bridgeChipTitle(bridge)}">
         <span class="bridge-dot"></span><span id="bridge-chip-text">${bridgeChipText(bridge)}</span>
       </span>
-    </h1>
-    <p class="panel-subtitle">
-      Bulb reacts to whatever this input device hears. Route your PC's audio through
-      VoiceMeeter (or pick a real microphone) — see the Audio skill/docs for setup.
-      Decision latency is now sub-15ms internally; the "Min. dwell" slider controls how
-      long each color actually stays on the bulb so you can still see it change.
-    </p>
+    </header>
+    <div class="audio-source-strip"><span class="tag on">LIVE DATA</span><span>Input <strong id="studio-input-name">${escapeHtml(bridge.devices?.find(d => d.index === bridge.device_index)?.name || (defaultSource === 'bridge' ? 'Waiting for Windows audio' : 'Local input'))}</strong></span><span class="audio-session-state">${sessionStatus.active ? '● Session running' : '○ Ready when you are'}</span></div>
 
-    <div class="bridge-launcher" id="bridge-launcher">
+    <details class="bridge-launcher" id="bridge-launcher"><summary>Audio connection &amp; setup</summary>
       <div class="bridge-launcher-head">
         <strong>Start the audio bridge</strong>
         <span class="bridge-launcher-note">Runs on Windows — the container has no audio devices of its own.</span>
@@ -1118,10 +1001,10 @@ async function renderAudio(main) {
       <p class="bridge-launcher-foot">Paste into a terminal, or double-click
         <code>tools\start-audio-bridge.cmd</code>. Leave it open — closing the window stops the bridge.</p>
       <div id="bridge-device-picker">${renderBridgeDevicePicker(bridge)}</div>
-    </div>
+    </details>
 
-    <div class="card">
-      <h3>Single-Bulb Session</h3>
+    <div class="audio-workbench"><div class="card audio-session-card">
+      <span class="eyebrow">01 / DIRECTION</span><h3>Set the feeling</h3>
       <div class="form-grid">
         <label>Audio source<select id="audio-source">${sourceOptions}</select></label>
         <label id="audio-device-row" style="${defaultSource === "bridge" ? "display:none;" : ""}">Input device<select id="audio-device">${deviceOptions}</select></label>
@@ -1145,15 +1028,18 @@ async function renderAudio(main) {
         <input type="range" id="audio-nbands" min="3" max="16" step="1" value="${sessionStatus.n_bands || 6}">
       </div>
       <div class="slider-row hue-slider" id="mono-hue-row">
-        <label><span>Monochrome / VU hue</span><span id="mono-hue-val">280°</span></label>
-        <input type="range" id="mono-hue" min="0" max="359" value="280">
+        <label><span>Monochrome / VU hue</span><span id="mono-hue-val">${saved.monochrome_hue ?? 280}°</span></label>
+        <input type="range" id="mono-hue" min="0" max="359" value="${saved.monochrome_hue ?? 280}">
       </div>
       <p class="panel-subtitle" id="mode-desc"></p>
       <div class="row">
-        <button id="audio-start" class="primary" ${sessionStatus.active ? "disabled" : ""}>Start</button>
-        <button id="audio-stop" class="danger" ${sessionStatus.active ? "" : "disabled"}>Stop</button>
+        <button id="audio-start" class="primary" ${sessionStatus.active ? "disabled" : ""}>▶ Start session</button>
+        <button id="audio-stop" class="danger" ${sessionStatus.active ? "" : "disabled"}>■ Stop</button>
       </div>
       ${renderSenderInfo(sessionStatus.sender)}
+    </div>
+
+    <section class="card lighting-mixer" id="lighting-mixer"></section>
     </div>
 
     <div class="card">
@@ -1175,7 +1061,7 @@ async function renderAudio(main) {
     </div>
 
     <div class="card">
-      <h3>Genre &amp; Mood Presets</h3>
+      <h3>Find your starting point <span class="tag">NON-LIVE DATA</span></h3>
       <p class="panel-subtitle">
         Bundles mode + sensitivity + dwell + band count + beat sensitivity + a color palette under one name.
         Applying a preset starts (or restarts) the single-bulb session above with those settings.
@@ -1217,6 +1103,13 @@ async function renderAudio(main) {
     </div>
   `;
 
+  state.mixerView?.dispose();
+  state.mixerView = LightingMixer.mount(main.querySelector("#lighting-mixer"), mixerQueue, {
+    api, deviceId, onError: error => { if (!error.apiNotified) toast(error.message, "error"); },
+  });
+  window.onLightingMixRecalled && window.removeEventListener("lighting-mix-recalled", window.onLightingMixRecalled);
+  window.onLightingMixRecalled = event => { if (event.detail.deviceId === deviceId && location.hash === "#/audio/session") renderAudio(main); };
+  window.addEventListener("lighting-mix-recalled", window.onLightingMixRecalled);
   const modeSelect = main.querySelector("#audio-mode");
   const monoRow = main.querySelector("#mono-hue-row");
   const nbandsRow = main.querySelector("#nbands-row");
@@ -1250,7 +1143,8 @@ async function renderAudio(main) {
   // Sending on every input event would be one request per pixel.
   async function pushLive(patch, labelEl) {
     try {
-      const resp = await post(`/api/devices/${state.deviceId}/audio-reactive/settings`, patch);
+      const settings = await mixerQueue.update(patch);
+      const resp = { live: !!sessionStatus.active, settings };
       if (labelEl) {
         // `live: false` means it was saved as the next session's starting
         // value but nothing is running to change. Saying "saved" is honest;
@@ -1357,14 +1251,21 @@ async function renderAudio(main) {
   // Show the device picker only when it applies. With the bridge selected the
   // capture device is chosen on the Windows host, not here.
   const sourceSel = main.querySelector("#audio-source");
+  const inputPicker = main.querySelector("#audio-device");
+  if (inputPicker) inputPicker.onchange = () => {
+    const selected = audioDevices.find(d => d.index === Number(inputPicker.value));
+    pushLive({ device_index: Number(inputPicker.value), source_device_name: selected?.name || null, source_hostapi: selected?.hostapi || null });
+  };
   if (sourceSel) {
     sourceSel.onchange = () => {
       const row = main.querySelector("#audio-device-row");
       if (row) row.style.display = sourceSel.value === "bridge" ? "none" : "";
+      pushLive({ source: sourceSel.value });
     };
   }
 
   main.querySelector("#audio-start").onclick = async () => {
+    try {
     const source = sourceSel ? sourceSel.value : "device";
     if (source === "device" && audioDevices.length === 0) {
       toast("No local audio input devices. Use the audio bridge instead.", "error");
@@ -1375,7 +1276,9 @@ async function renderAudio(main) {
       return;
     }
     const deviceEl = main.querySelector("#audio-device");
-    await post(`/api/devices/${state.deviceId}/audio-reactive/start`, {
+    await mixerQueue.flush();
+    await post(`/api/devices/${deviceId}/audio-reactive/start`, {
+      ...mixerQueue.snapshot(),
       source,
       device_index: (source === "bridge" || !deviceEl) ? 0 : parseInt(deviceEl.value, 10),
       mode: main.querySelector("#audio-mode").value,
@@ -1387,6 +1290,7 @@ async function renderAudio(main) {
     });
     toast("Audio-reactive session started", "success");
     renderAudio(main);
+    } catch (error) { toast(error.message, "error"); }
   };
 
   main.querySelector("#audio-stop").onclick = async () => {
@@ -1437,6 +1341,7 @@ async function renderAudio(main) {
     const set = (sel, value, labelSel, fmt) => {
       const elx = main.querySelector(sel);
       if (!elx || value === undefined || value === null) return;
+      if (document.activeElement === elx) return;
       elx.value = value;
       if (labelSel) {
         const lab = main.querySelector(labelSel);
@@ -1444,6 +1349,9 @@ async function renderAudio(main) {
       }
     };
     set("#audio-mode", preset.mode);
+    set("#audio-source", preset.source);
+    set("#audio-device", preset.device_index);
+    if (preset.source) main.querySelector('#audio-device-row').style.display = preset.source === 'bridge' ? 'none' : '';
     set("#audio-sensitivity", preset.sensitivity, "#sens-val", v => Number(v).toFixed(1) + "x");
     set("#audio-dwell", preset.min_dwell_ms, "#dwell-val", v => v + "ms");
     set("#audio-nbands", preset.n_bands, "#nbands-val");
@@ -1455,11 +1363,11 @@ async function renderAudio(main) {
   const presetGrid = main.querySelector("#audio-preset-grid");
   const allPresets = audioPresetsResp.presets || [];
   allPresets.forEach(preset => {
-    const card = el(`<div class="effect-card" title="${preset.description || ""}">
-      <div class="name">${preset.name}${preset.custom ? " ★" : ""}</div>
-      <div class="desc">${preset.description || "Custom preset"}</div>
-    </div>`);
-    card.onclick = async () => {
+    const card = el(`<article class="effect-card audio-mood"><button type="button" class="mood-apply" title="${escapeAttr(preset.description || "")}">
+      <span class="name">${escapeHtml(preset.name)}${preset.custom ? " ★" : ""}</span>
+      <span class="desc">${escapeHtml(preset.description || "Custom preset")}</span>
+    </button></article>`);
+    card.querySelector('.mood-apply').onclick = async () => {
       const source = main.querySelector("#audio-source").value;
       // Only LOCAL capture needs a device. Requiring one unconditionally made
       // presets unusable in bridge mode — the container reports zero audio
@@ -1471,6 +1379,7 @@ async function renderAudio(main) {
       }
       const deviceEl = main.querySelector("#audio-device");
       try {
+        await mixerQueue.flush();
         const resp = await post(`/api/devices/${state.deviceId}/audio-reactive/apply-preset`, {
           preset_id: preset.id,
           device_index: deviceEl && deviceEl.value ? parseInt(deviceEl.value, 10) : 0,
@@ -1481,7 +1390,9 @@ async function renderAudio(main) {
         toast(resp.restarted
           ? `Preset "${preset.name}" applied — session started`
           : `Preset "${preset.name}" applied live`, "success");
-        loadPresetIntoControls(preset);
+        const effective = resp.settings || (await get(`/api/devices/${deviceId}/audio-reactive/settings`)).settings;
+        mixerQueue.hydrate(effective);
+        loadPresetIntoControls(effective);
         if (resp.restarted) renderAudio(main);
       } catch (e) {
         toast(`Could not apply preset: ${e.message}`, "error");
@@ -1548,20 +1459,38 @@ async function renderAudio(main) {
     } catch (e) { toast(`Could not save preset: ${e.message}`, "error"); }
   };
 
-  if (sessionStatus.active) {
-    state.audioPollHandle = setInterval(async () => {
+  const unsubscribeControls = mixerQueue.subscribe(({phase, settings}) => { if (phase === 'saved') loadPresetIntoControls(settings); });
+  const disposeMixer = state.mixerView.dispose;
+  state.mixerView.dispose = () => { disposeMixer(); unsubscribeControls(); };
+  {
+    const generation = state.audioPollGeneration;
+    let lastDetails = 0;
+    const poll = async () => {
+      if (generation !== state.audioPollGeneration || !main.querySelector('#band-meter-wrap')) return;
       try {
-        const st = await get(`/api/devices/${state.deviceId}/audio-reactive/status`);
+        if (document.hidden) return;
+        const revision = mixerQueue.revision();
+        const st = await get(`/api/devices/${deviceId}/audio-reactive/status`);
+        if (generation !== state.audioPollGeneration) return;
+        const settings = st.settings || (await get(`/api/devices/${deviceId}/audio-reactive/settings`)).settings;
+        if (generation !== state.audioPollGeneration) return;
+        mixerQueue.hydrate(settings, revision);
         const wrap = document.getElementById("band-meter-wrap");
         if (!wrap) { stopAudioPolling(); return; }
-        wrap.innerHTML = renderBandMeter(st.bands);
+        state.mixerView?.meter(st.bands?.fractions);
+        updateBandMeter(wrap, st.bands);
+        if (performance.now() - lastDetails > 1000) {
         const tempoWrap = document.getElementById("tempo-wrap");
         if (tempoWrap) tempoWrap.innerHTML = renderTempoInfo(st.tempo);
         const latWrap = document.getElementById("latency-wrap");
         if (latWrap) latWrap.innerHTML = renderLatencyPanel(st.latency, st.analysis);
-        if (!st.active) renderAudio(main);
+        lastDetails = performance.now();
+        }
+        if (!!st.active !== !!sessionStatus.active) renderAudio(main);
       } catch (e) { /* transient poll miss, ignore */ }
-    }, 300);
+      finally { if (generation === state.audioPollGeneration) state.audioPollHandle = setTimeout(poll, sessionStatus.active ? 200 : 2000); }
+    };
+    poll();
   }
 }
 
@@ -1604,9 +1533,9 @@ async function renderPresets(main) {
   const favGrid = main.querySelector("#fav-grid");
   favorites.forEach(f => {
     const hex = rgbToHex(...f.rgb);
-    const card = el(`<div class="swatch" style="background:${hex}" title="${f.name}">
+    const card = el(`<button type="button" class="swatch" style="background:${hex}" title="${f.name}">
       <span class="label">${f.name}</span>
-    </div>`);
+    </button>`);
     card.onclick = async () => {
       await post(`/api/devices/${state.deviceId}/color`, { r: f.rgb[0], g: f.rgb[1], b: f.rgb[2] });
       toast(`Applied "${f.name}"`, "success");
@@ -1623,9 +1552,9 @@ async function renderPresets(main) {
   const presetGrid = main.querySelector("#preset-grid");
   state.presets.forEach(p => {
     const hex = rgbToHex(...p.rgb);
-    const card = el(`<div class="swatch" style="background:${hex}" title="${p.name}">
+    const card = el(`<button type="button" class="swatch" style="background:${hex}" title="${p.name}">
       <span class="label">${p.name}</span>
-    </div>`);
+    </button>`);
     card.onclick = async () => {
       await post(`/api/devices/${state.deviceId}/presets/apply`, { preset_id: p.id });
       toast(`Applied "${p.name}"`, "success");
@@ -3482,78 +3411,55 @@ function renderLiveBadge() {
 // navigation — the whole point is that power/brightness are reachable no
 // matter which page you're on.
 let quickCtlBusy = false;
+let quickCtlPendingFocus = null;
 
 function renderQuickControl() {
-  const el = document.getElementById("quickctl");
-  if (!el) return;
+  const panel = document.getElementById("quickctl");
+  if (!panel || quickCtlBusy) return;
+  const focusedId = panel.contains(document.activeElement) ? document.activeElement.id
+    : document.activeElement === document.body ? quickCtlPendingFocus : null;
+  quickCtlPendingFocus = focusedId;
   const st = state.lastStatus;
-  const dev = state.devices.find(d => d.id === state.deviceId);
-  const name = dev ? dev.name : "No device";
-
-  if (!st || st.online === false) {
-    el.innerHTML =
-      `<h4>Quick control</h4>` +
-      `<div class="qc-device">${escHtml(name)}</div>` +
-      `<p class="qc-offline">Offline — controls hidden until the bulb answers again.</p>`;
-    return;
-  }
-
-  // Don't stomp the slider the user is currently dragging.
-  if (quickCtlBusy) return;
-
-  const pct = st.mode === "colour" ? (st.value_pct ?? 100) : (st.brightness_pct ?? 100);
-  const rgb = st.hue != null ? hsvToRgb(st.hue, st.saturation_pct ?? 100, st.value_pct ?? 100) : [255, 255, 255];
-
-  el.innerHTML = `
-    <h4>Quick control</h4>
+  const ready = st?.online === true && state.consecutiveOfflinePolls < OFFLINE_CONFIRM_THRESHOLD;
+  const name = state.devices.find(d => d.id === state.deviceId)?.name || "Your light";
+  const previewColor = ready && st.mode === "colour" ? rgbToHex(...hsvToRgb(st.hue ?? 0, st.saturation_pct ?? 100, 100)) : "#ffe2aa";
+  if (live.unsubBulb) { live.unsubBulb(); live.unsubBulb = null; }
+  panel.innerHTML = `<div class="qc-heading"><span class="eyebrow">AT A GLANCE</span><span class="live-dot"></span></div>
     <div class="qc-device">${escHtml(name)}</div>
-    <div class="qc-swatch" id="qc-swatch" style="background:${rgbToHex(...rgb)}"></div>
-    <div class="qc-row"><span class="live-dot"></span><span id="qc-live-hex" class="qc-live-hex">idle</span></div>
-    <button id="qc-power" class="qc-power ${st.power ? "primary" : ""}">${st.power ? "TURN OFF" : "TURN ON"}</button>
-    <div class="qc-row"><span>Brightness</span><span id="qc-bval">${pct}%</span></div>
-    <input type="range" id="qc-bright" min="1" max="100" value="${pct}">
-  `;
-
-  el.querySelector("#qc-power").onclick = async () => {
-    await post(`/api/devices/${state.deviceId}/power`, { on: !st.power });
-    state.lastStatus = null;
-    pollStatus();
-    // The Control panel mirrors this state, so re-render it if it's on screen.
-    if (currentRoute().key === "light/control") router();
-  };
-
-  // Live colour. The swatch above shows polled status; this overlays what the
-  // audio sender is ACTUALLY pushing to the bulb, which during a session
-  // changes far faster than the poll interval. Unsubscribes on next render so
-  // handlers don't pile up every time the poll re-renders this panel.
-  if (live.unsubBulb) live.unsubBulb();
-  live.unsubBulb = liveOn("bulb", (ev) => {
-    if (ev.device_id !== state.deviceId || !ev.hex) return;
-    const sw = document.getElementById("qc-swatch");
-    if (!sw) return;
-    sw.style.background = ev.hex;
-    const lbl = document.getElementById("qc-live-hex");
-    if (lbl) lbl.textContent = `${ev.hex} · ${ev.latency_ms}ms`;
+    <div class="qc-illustration ${ready && st.power ? "is-on" : ""}" style="--light-color:${previewColor}">${bulbMarkup()}</div>
+    <div class="qc-state">${powerBusy ? "Confirming…" : ready ? (st.power ? "Light is on" : "Light is off") : state.hasPolledOnce ? "Connection unavailable" : "Connecting to your bulb"}</div>
+    <p class="qc-offline">${ready ? "LIVE DATA · Your current light" : "Live status will appear when the bulb responds."}</p>
+    <button id="qc-power" class="qc-power ${ready && st.power ? "primary" : ""}" ${!ready || powerBusy ? "disabled" : ""}>${powerBusy ? "Confirming…" : ready && st.power ? "Turn off" : "Turn on"}</button>
+    ${ready ? `<div class="qc-row"><label for="qc-bright">Brightness</label><span id="qc-bval">${st.mode === "colour" ? st.value_pct : st.brightness_pct}%</span></div>
+    <input aria-label="Quick brightness" type="range" id="qc-bright" min="1" max="100" value="${st.mode === "colour" ? st.value_pct : st.brightness_pct}" ${powerBusy ? "disabled" : ""}>
+    <span id="qc-live-hex" class="qc-live-hex"></span>` : `<button class="text-button" id="qc-retry">Retry connection</button>`}
+    <div class="qc-explore"><span class="eyebrow">MAKE IT YOURS</span>
+      <a id="qc-scene-link" href="#/light/looks"><span>Find your scene<small>A look for every moment</small></span><span aria-hidden="true">↗</span></a>
+      <a id="qc-audio-link" href="#/audio/session"><span>Feel the music<small>Let your light listen</small></span><span aria-hidden="true">↗</span></a>
+      <a id="qc-automation-link" href="#/automation"><span>Set your rhythm<small>Wake up. Wind down.</small></span><span aria-hidden="true">↗</span></a></div>`;
+  panel.querySelector("#qc-power").onclick = () => setPower(!state.lastStatus?.power);
+  const retry = panel.querySelector("#qc-retry");
+  if (retry) retry.onclick = () => pollStatus();
+  const slider = panel.querySelector("#qc-bright");
+  if (slider) {
+    slider.oninput = () => { quickCtlBusy = true; panel.querySelector("#qc-bval").textContent = slider.value + "%"; };
+    slider.onchange = async () => {
+      const device = state.deviceId;
+      commandEpoch++;
+      try { await post(`/api/devices/${device}/brightness`, { value: Number(slider.value) }); }
+      catch (error) { /* api() already reports the error */ }
+      finally { quickCtlBusy = false; commandEpoch++; pollStatus(); }
+    };
+    slider.onblur = () => { quickCtlBusy = false; };
+  }
+  live.unsubBulb = liveOn("bulb", event => {
+    if (event.device_id !== state.deviceId || !event.hex) return;
+    panel.querySelector(".qc-illustration")?.style.setProperty("--light-color", event.hex);
+    const label = panel.querySelector("#qc-live-hex");
+    if (label) label.textContent = `${event.hex} · ${event.latency_ms}ms`;
   });
-
-  // This panel re-renders on every status poll, which replaces its .live-dot
-  // with a fresh grey one. `ready` only fires at connect, so without this the
-  // indicator would go stale within seconds and claim the stream was down
-  // while it was happily delivering events.
   renderLiveBadge();
-
-  const slider = el.querySelector("#qc-bright");
-  slider.oninput = () => {
-    quickCtlBusy = true;
-    el.querySelector("#qc-bval").textContent = slider.value + "%";
-  };
-  slider.onchange = async () => {
-    await post(`/api/devices/${state.deviceId}/brightness`, { value: parseInt(slider.value, 10) });
-    quickCtlBusy = false;
-    toast("Brightness updated", "success");
-    state.lastStatus = null;
-    pollStatus();
-  };
+  if (focusedId) panel.querySelector(`#${focusedId}`)?.focus({ preventScroll: true });
 }
 
 // ------------------------------------------------------- merged panels --
@@ -3764,15 +3670,8 @@ async function renderSessionPresets(main) {
       if (!name) { toast("Give the preset a name first", "error"); return; }
       try {
         await post(`/api/devices/${state.deviceId}/audio-reactive/session-presets`, {
+          ...(await get(`/api/devices/${state.deviceId}/audio-reactive/settings`)).settings,
           name,
-          device_index: live.device_index,
-          mode: live.mode,
-          sensitivity: live.sensitivity,
-          n_bands: live.n_bands,
-          min_dwell_ms: (live.sender && live.sender.min_dwell_ms) || undefined,
-          max_duration_s: live.max_duration_s,
-          warmup_s: live.warmup_s,
-          max_flash_rate_hz: live.max_flash_rate_hz,
         });
         toast(`Saved "${name}"`, "success");
         renderSessionPresets(main);
@@ -4023,10 +3922,12 @@ async function renderDocs(main) {
 
 // ------------------------------------------------------------ pin gate --
 function showPinGate() {
+  document.querySelector(".app-shell").inert = true;
   document.getElementById("pin-gate-overlay").style.display = "flex";
   document.getElementById("pin-input").focus();
 }
 function hidePinGate() {
+  document.querySelector(".app-shell").inert = false;
   document.getElementById("pin-gate-overlay").style.display = "none";
 }
 
@@ -4075,8 +3976,14 @@ async function bootDashboard() {
   // falls back to the first real device when state.deviceId doesn't match any
   // configured device (e.g. it was removed since the last visit), so no extra
   // validation is needed here.
-  state.deviceId = lsGet(LS_KEY_DEVICE);
+  const launchURL = new URL(location.href);
+  state.deviceId = launchURL.searchParams.get('device') || lsGet(LS_KEY_DEVICE);
+  if (launchURL.searchParams.has('device')) {
+    launchURL.searchParams.delete('device');
+    history.replaceState(null, '', launchURL.pathname + launchURL.search + launchURL.hash);
+  }
   await loadDevices();
+  renderQuickControl();
   startPolling();
   if (!location.hash) {
     // `ROUTES` was the pre-consolidation one-panel-per-tab map and no longer
@@ -4087,7 +3994,7 @@ async function bootDashboard() {
     // is why a first visit looked fine and this survived review.
     // routeExists() validates against the current PAGES map instead.
     const savedRoute = lsGet(LS_KEY_ROUTE);
-    location.hash = "#/" + (savedRoute && routeExists(savedRoute) ? savedRoute : DEFAULT_ROUTE);
+    history.replaceState(null, "", "#/" + (savedRoute && routeExists(savedRoute) ? savedRoute : DEFAULT_ROUTE));
   }
   router();
   // Deliberately not awaited: a banner about remote exposure must not hold up
@@ -4103,6 +4010,16 @@ async function bootDashboard() {
       showPinGate();
       return;
     }
-  } catch (e) { /* auth-status check failed open — same as PIN gate disabled */ }
-  await bootDashboard();
+  } catch (e) {
+    document.getElementById("main").innerHTML = `<div class="empty-state"><h1>Cannot reach your studio</h1><p>Check that the dashboard is running, then reload this page.</p></div>`;
+    return;
+  }
+  try { await bootDashboard(); } catch (e) { /* api() presents actionable errors */ }
 })();
+
+// Reconnect promptly when the user returns; background tabs do no status I/O.
+document.addEventListener("visibilitychange", () => { if (!document.hidden) pollStatus(); });
+document.querySelector(".skip-link").addEventListener("click", event => {
+  event.preventDefault();
+  document.getElementById("main").focus();
+});
