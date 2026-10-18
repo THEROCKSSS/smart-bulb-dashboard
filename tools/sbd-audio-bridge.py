@@ -53,6 +53,9 @@ import struct
 import sys
 import threading
 import time
+import os
+import tempfile
+from pathlib import Path
 
 import numpy as np
 
@@ -87,6 +90,39 @@ DEFAULT_PORT = 8503
 
 MME_NAME_LIMIT = 31
 HOSTAPI_PREFERENCE = ("Windows WASAPI", "Windows DirectSound", "Windows WDM-KS", "MME")
+DEVICE_STATE = Path(__file__).resolve().parents[1] / "backend" / "data" / "bridge-device.json"
+
+
+def save_device_identity(index):
+    info = sd.query_devices(index)
+    record = {"name": info["name"], "hostapi": _hostapi_names().get(info["hostapi"], "")}
+    DEVICE_STATE.parent.mkdir(parents=True, exist_ok=True)
+    fd, temporary = tempfile.mkstemp(dir=DEVICE_STATE.parent, suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            json.dump(record, handle); handle.flush(); os.fsync(handle.fileno())
+        os.replace(temporary, DEVICE_STATE)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
+
+
+def preferred_device(devices=None):
+    """Resolve durable identity; never fall back to an unrelated microphone."""
+    if devices is None:
+        apis = _hostapi_names()
+        devices = [{"index": i, "name": d["name"], "hostapi": apis.get(d["hostapi"], "")}
+                   for i, d in enumerate(sd.query_devices()) if d.get("max_input_channels", 0) > 0]
+    if DEVICE_STATE.exists():
+        record = json.loads(DEVICE_STATE.read_text(encoding="utf-8"))
+        matches = [d for d in devices if d["name"] == record["name"] and d["hostapi"] == record["hostapi"]]
+    else:
+        matches = [d for d in devices if d["name"].casefold() == "cable output (vb-audio virtual cable)"]
+        matches.sort(key=lambda d: _rank(d["hostapi"]))
+        matches = matches[:1]
+    if len(matches) != 1:
+        raise OSError("Saved input or CABLE Output is unavailable. Select a device explicitly with --device.")
+    return matches[0]["index"]
 
 _HEADER_STRUCT = struct.Struct("<4sBIBI")
 _FRAME_HEADER_STRUCT = struct.Struct("<4sI")
@@ -367,16 +403,18 @@ class Streamer:
     is discarded -- dropping audio is recoverable, growing latency is not.
     """
 
-    def __init__(self, device, host, port, channels, quiet=False):
+    def __init__(self, device, host, port, channels, quiet=False, remember=False):
         self.device = device
         self.host = host
         self.port = port
         self.channels = channels
+        self.requested_channels = channels
         # Capture at whatever the device actually runs at and convert here.
         # WASAPI shared mode refuses any other rate outright.
         self.capture_rate = native_rate(device)
         self.out_rate = TARGET_SAMPLE_RATE
         self.quiet = quiet
+        self.remember = remember
         self.q = queue.Queue(maxsize=8)
         self.sent = 0
         self.dropped = 0
@@ -432,6 +470,7 @@ class Streamer:
                 "index": d["index"],
                 "name": d["name"],
                 "channels": d.get("channels", 0),
+                "hostapi": d.get("hostapi", ""),
                 "loopback": _is_loopback_like(d["name"]),
             } for d in input_devices()]
             payload = json.dumps({"devices": devices, "current": self.device}).encode("utf-8")
@@ -475,7 +514,15 @@ class Streamer:
         return None
 
     def run_once(self):
+        if self.remember and DEVICE_STATE.exists():
+            self.device = preferred_device()
+            self.capture_rate = native_rate(self.device)
         info = sd.query_devices(self.device) if self.device is not None else {}
+        self.channels = min(self.requested_channels, int(info.get("max_input_channels", self.requested_channels)))
+        # A reconnect starts with current audio, never the previous socket's backlog.
+        while not self.q.empty():
+            try: self.q.get_nowait()
+            except queue.Empty: break
         name = info.get("name", "default") if isinstance(info, dict) else "default"
         self._resampler = Resampler(self.capture_rate, self.out_rate, self.channels)
 
@@ -486,6 +533,8 @@ class Streamer:
         with sd.InputStream(device=self.device, channels=self.channels,
                             samplerate=self.capture_rate, blocksize=TARGET_BLOCK,
                             latency="low", callback=self._on_block):
+            if self.remember:
+                save_device_identity(self.device)
             sock = self._connect()
             conv = ("passthrough" if self.capture_rate == self.out_rate
                     else f"resampled {self.capture_rate} -> {self.out_rate}")
@@ -501,8 +550,7 @@ class Streamer:
                     except queue.Empty:
                         continue
                     payload = block.tobytes()
-                    sock.sendall(_FRAME_HEADER_STRUCT.pack(MAGIC_FRAME, len(payload)))
-                    sock.sendall(payload)
+                    sock.sendall(_FRAME_HEADER_STRUCT.pack(MAGIC_FRAME, len(payload)) + payload)
                     self.sent += 1
 
                     requested = self._poll_control(sock)
@@ -513,6 +561,8 @@ class Streamer:
                         # inside its own callback's thread.
                         print(f"\n  dashboard requested device {requested}; switching")
                         self.device = requested
+                        if self.remember:
+                            save_device_identity(requested)
                         self.capture_rate = native_rate(requested)
                         return
 
@@ -584,7 +634,7 @@ def main(argv=None):
         print(f"Using [{best['index']}] {best['name']}  (peak {peak:.4f})\n")
         args.device = str(best["index"])
 
-    device = resolve_device(args.device)
+    device = resolve_device(args.device) if args.device else preferred_device()
     channels = args.channels
     if device is not None:
         info = sd.query_devices(device)
@@ -595,7 +645,10 @@ def main(argv=None):
     # Capture straight at the pipeline's rate: PortAudio converts from the
     # device's native rate for us, so the container never sees 48kHz audio
     # mislabelled as 44.1k -- which would skew every tempo estimate.
-    streamer = Streamer(device, args.host, args.port, channels, quiet=args.quiet)
+    # An explicit selection replaces the remembered identity before reconnects.
+    if args.device:
+        save_device_identity(device)
+    streamer = Streamer(device, args.host, args.port, channels, quiet=args.quiet, remember=True)
     try:
         streamer.run_forever()
     except KeyboardInterrupt:

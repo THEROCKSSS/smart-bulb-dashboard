@@ -21,7 +21,7 @@ services:
     # Python, not curl/wget -- the base image is python:3.11-slim, which
     # ships neither.
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8500/healthz', timeout=5).status == 200 else 1)"]
+      test: ["CMD", "python", "/app/deploy/healthcheck.py"]
       interval: 30s
       timeout: 10s
       # 40s, not the 0s default: the app imports numpy and sounddevice at
