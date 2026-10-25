@@ -13,6 +13,7 @@ import sounddevice as sd
 
 import audio_signal
 import audio_presets
+import audio_settings
 import audio_safety
 import audio_latency
 import audio_hop
@@ -114,14 +115,7 @@ SILENCE_FLASH_LONG_THRESHOLD_S = 3.0  # how long a pause counts as "a long silen
 CRESCENDO_WINDOW_FRAMES = 200
 CRESCENDO_SENSITIVITY = 3.0  # scales the raw (second_half/first_half - 1) ratio into a 0..1 ramp
 
-MODES = [
-    "band_fixed", "dominant_band", "weighted_blend", "vu_meter",
-    "auto_rotate_hue", "monochrome_pulse", "strobe_on_drop", "palette_cycle",
-    "spectrum_gradient", "band_flash_overlay", "stereo_split", "breathing_silence",
-    "harmonic_pairs", "kick_snare_split",
-    "energy_contour", "bass_only_pulse", "mirror_mode", "random_walk_hue",
-    "silence_flash_recover", "crescendo_ramp",
-]
+MODES = audio_settings.MODES
 
 ROLE_MODES = ["unison", "phase_offset", "band_split", "wave", "mirror"]
 
@@ -1656,7 +1650,9 @@ class AudioSession:
                  max_flash_rate_hz=None, disable_flash_heavy=False, max_brightness_swing=None,
                  silence_auto_off=True, fallback_device_index=None,
                  source_kind="device", source_factory=None,
-                 hop_size=None, window_size=None):
+                 hop_size=None, window_size=None, source_device_name=None,
+                 source_hostapi=None, smoothing_ms=0.0,
+                 brightness_min=0.0, brightness_max=100.0):
         self.controller = controller
         self.requested_device_index = device_index
         # source_kind "bridge" means audio arrives from the host-side capture
@@ -1665,6 +1661,13 @@ class AudioSession:
         # report a spurious "device disappeared" fallback on a machine (the
         # container) that legitimately has no audio devices at all.
         self.source_kind = source_kind
+        self.source_device_name = source_device_name
+        self.source_hostapi = source_hostapi
+        self.use_saved_calibration = use_saved_calibration
+        self.smoothing_ms = smoothing_ms
+        self.brightness_min = brightness_min
+        self.brightness_max = brightness_max
+        self.envelope = audio_signal.LightingEnvelope()
         self.source_factory = source_factory
         if source_kind == "device":
             self.device_index, self.device_fallback_used = resolve_device_index(
@@ -1741,6 +1744,58 @@ class AudioSession:
         self._paused_until = None
         self._restart_count = 0
 
+    def settings(self):
+        """Complete effective mix, shared by status, save, and preset recall."""
+        return {
+            "device_index": self.requested_device_index,
+            "source": self.source_kind if self.source_kind in ("bridge", "device") else "device",
+            "source_device_name": self.source_device_name, "source_hostapi": self.source_hostapi,
+            "mode": self.mode, "sensitivity": self.ctx["sensitivity"],
+            "monochrome_hue": self.ctx["monochrome_hue"], "n_bands": self.n_bands,
+            "min_dwell_ms": self.sender.min_dwell_ms,
+            "beat_sensitivity": self.tempo.beat_sensitivity,
+            "agc_enabled": self.conditioner.agc_enabled,
+            "noise_gate_enabled": self.conditioner.noise_gate_enabled,
+            "dc_removal_enabled": self.conditioner.dc_removal_enabled,
+            "noise_gate_floor": self.conditioner.noise_gate_floor,
+            "agc_target_rms": self.conditioner.target_rms,
+            "agc_attack_ms": self.conditioner.attack_ms,
+            "agc_release_ms": self.conditioner.release_ms,
+            "band_gains": list(self.conditioner.band_gains or [1.0, 1.0, 1.0]),
+            "use_saved_calibration": self.use_saved_calibration,
+            "smoothing_ms": self.smoothing_ms, "brightness_min": self.brightness_min,
+            "brightness_max": self.brightness_max, "max_duration_s": self.max_duration_s,
+            "warmup_s": self.warmup_s, "auto_resume_grace_s": self.auto_resume_grace_s,
+            "max_flash_rate_hz": self.max_flash_rate_hz,
+            "disable_flash_heavy": self.disable_flash_heavy,
+            "max_brightness_swing": self.max_brightness_swing,
+            "silence_auto_off": self.silence_auto_off,
+            "fallback_device_index": self.fallback_device_index,
+            "hop_size": self.hop_size, "window_size": self.window_size,
+        }
+
+    def apply_settings(self, settings):
+        self.mode = settings["mode"]
+        self._stereo = self.mode == "stereo_split"
+        self.ctx["sensitivity"] = settings["sensitivity"]
+        self.ctx["monochrome_hue"] = settings["monochrome_hue"]
+        self.tempo.set_sensitivity(settings["beat_sensitivity"])
+        self.sender.set_min_dwell(settings["min_dwell_ms"])
+        if self.n_bands != settings["n_bands"]:
+            self.n_bands = settings["n_bands"]
+            self.band_edges = log_band_edges(self.n_bands)
+        for key in ("agc_enabled", "noise_gate_enabled", "dc_removal_enabled", "noise_gate_floor"):
+            setattr(self.conditioner, key, settings[key])
+        for key in ("target_rms", "attack_ms", "release_ms"):
+            setattr(self.conditioner, key, settings["agc_" + key])
+        self.conditioner.band_gains = list(settings["band_gains"])
+        for key in ("smoothing_ms", "brightness_min", "brightness_max", "max_brightness_swing"):
+            setattr(self, key, settings[key])
+        safety = audio_safety.get_safety_settings()
+        self.disable_flash_heavy = settings["disable_flash_heavy"] or safety["disable_flash_heavy"]
+        self.max_flash_rate_hz = audio_safety.clamp_max_flash_rate(
+            settings["max_flash_rate_hz"] if settings["max_flash_rate_hz"] is not None else safety["max_flash_rate_hz"])
+
     def start(self):
         self.controller.stop_effect()
         self.controller._log("audio_reactive_start", {
@@ -1800,6 +1855,7 @@ class AudioSession:
         now = time.time()
         return {
             "active": self.is_alive(),
+            "settings": self.settings(),
             "mode": self.mode,
             "device_index": self.device_index,
             "device_fallback_used": self.device_fallback_used,
@@ -2003,7 +2059,9 @@ class AudioSession:
             "energies": [round(e, 6) for e in bands.get("extra_energies", bands["energies"])],
         }
 
-        action = _apply_mode(self.mode, bands, self.ctx)
+        effective_mode = ("weighted_blend" if self.disable_flash_heavy
+                          and audio_safety.is_flash_heavy(self.mode) else self.mode)
+        action = _apply_mode(effective_mode, bands, self.ctx)
 
         if self.warmup_s > 0:
             action = apply_warmup(action, now - self._started_at, self.warmup_s)
@@ -2015,10 +2073,14 @@ class AudioSession:
         if self.ctx.get("_applause_flash_until", 0) > now:
             action = _one_shot_flash_action(action)
 
+        action = self.envelope.process(action, self.frame_dt, self.smoothing_ms,
+                                       self.brightness_min, self.brightness_max)
+
         # Section 13: the non-bypassable photosensitive-epilepsy flash cap —
         # applied last, after every other transformation above, so nothing
         # (mode, warmup, applause flash) can exceed it.
         action = audio_safety.apply_flash_cap(action, self.ctx, self.max_flash_rate_hz, self.max_brightness_swing)
+        action = (*action[:-1], min(self.brightness_max, action[-1]))
 
         # Section 8: auto-pause while a manual command is in its grace
         # window — don't overwrite whatever the user just manually set.
@@ -2338,13 +2400,26 @@ def start_session(controller, device_index, mode="band_fixed", sensitivity=1.0,
                    max_flash_rate_hz=None, disable_flash_heavy=False, max_brightness_swing=None,
                    silence_auto_off=True, fallback_device_index=None,
                    source_kind="device", source_factory=None,
-                   hop_size=None, window_size=None):
+                   hop_size=None, window_size=None, source_device_name=None,
+                   source_hostapi=None, smoothing_ms=0.0,
+                   brightness_min=0.0, brightness_max=100.0):
     """Raises AudioConfigError on an invalid config (caller turns this into
     an HTTP 400) before anything is started. On success, persists this
     config as the "last known good session" for this device (Section 8's
     one-click resume-after-restart) and returns the started AudioSession —
     call `.confirmation()` on it for exactly what was applied."""
     validate_start_config(n_bands, min_dwell_ms, max_duration_s, warmup_s, mode, disable_flash_heavy)
+    supplied = locals().copy()
+    supplied = {key: supplied[key] for key in audio_settings.DEFAULTS if key in supplied}
+    supplied["source"] = source_kind if source_kind in ("device", "bridge") else "device"
+    # Existing start callers may request a higher flash ceiling; preserve the
+    # established clamp while validating the rest of the complete mix.
+    if supplied.get("max_flash_rate_hz") is not None:
+        supplied["max_flash_rate_hz"] = audio_safety.clamp_max_flash_rate(supplied["max_flash_rate_hz"])
+    try:
+        audio_settings.normalize(supplied)
+    except ValueError as error:
+        raise AudioConfigError(str(error)) from error
     # Validate here, before anything starts, so a bad hop/window is a clean
     # 400 rather than an exception thrown from the session constructor.
     try:
@@ -2368,16 +2443,17 @@ def start_session(controller, device_index, mode="band_fixed", sensitivity=1.0,
                                 disable_flash_heavy=disable_flash_heavy, max_brightness_swing=max_brightness_swing,
                                 silence_auto_off=silence_auto_off, fallback_device_index=fallback_device_index,
                                 source_kind=source_kind, source_factory=source_factory,
-                                hop_size=hop_size, window_size=window_size)
+                                hop_size=hop_size, window_size=window_size,
+                                source_device_name=source_device_name, source_hostapi=source_hostapi,
+                                smoothing_ms=smoothing_ms, brightness_min=brightness_min,
+                                brightness_max=brightness_max)
         _sessions[controller.cfg["id"]] = session
         session.start()
-    audio_presets.save_last_session(controller.cfg["id"], {
-        "device_index": device_index, "mode": mode, "sensitivity": sensitivity,
-        "monochrome_hue": monochrome_hue, "n_bands": n_bands, "min_dwell_ms": min_dwell_ms,
-        "max_duration_s": max_duration_s, "warmup_s": warmup_s,
-        "auto_resume_grace_s": auto_resume_grace_s, "max_flash_rate_hz": max_flash_rate_hz,
-        "disable_flash_heavy": disable_flash_heavy,
-    })
+    try:
+        audio_presets.save_last_session(controller.cfg["id"], session.settings())
+    except OSError:
+        stop_session(controller.cfg["id"])
+        raise
     return session
 
 
@@ -2388,21 +2464,7 @@ def resume_last_session(controller):
     record = audio_presets.load_last_session(controller.cfg["id"])
     if not record:
         return None
-    cfg = record["config"]
-    return start_session(
-        controller,
-        cfg.get("device_index"),
-        cfg.get("mode", "band_fixed"),
-        cfg.get("sensitivity", 1.0),
-        cfg.get("monochrome_hue", 280.0),
-        cfg.get("n_bands", 3),
-        cfg.get("min_dwell_ms", DEFAULT_MIN_DWELL_MS),
-        max_duration_s=cfg.get("max_duration_s"),
-        warmup_s=cfg.get("warmup_s", 0.0),
-        auto_resume_grace_s=cfg.get("auto_resume_grace_s", DEFAULT_AUTO_RESUME_GRACE_S),
-        max_flash_rate_hz=cfg.get("max_flash_rate_hz"),
-        disable_flash_heavy=cfg.get("disable_flash_heavy", False),
-    )
+    return start_session(controller, **audio_settings.start_kwargs(record["config"]))
 
 
 def stop_session(device_id):
@@ -2495,88 +2557,45 @@ def set_group_min_dwell(group_id, min_dwell_ms):
 #: `start_session`, whose `source_kind` defaults to "device". Changing the mood
 #: on a bridge session therefore dropped it back to local capture, which inside
 #: the container means no audio devices at all.
-LIVE_SETTINGS = ("mode", "sensitivity", "beat_sensitivity", "min_dwell_ms",
-                 "monochrome_hue", "n_bands")
+LIVE_SETTINGS = audio_settings.LIVE_FIELDS
+_settings_lock = threading.RLock()
+
+
+def get_session_settings(device_id):
+    with _settings_lock:
+        session = get_active_session(device_id)
+        record = audio_presets.load_last_session(device_id)
+        settings = audio_settings.normalize((record or {}).get("config", {}))
+        if session is not None:
+            settings.update(session.settings())
+        return {"settings": settings, "live": session is not None,
+                "saved_at": (record or {}).get("saved_at")}
 
 
 def update_session_settings(device_id, **changes):
-    """Apply any subset of LIVE_SETTINGS to a running session, and remember it.
-
-    Returns {"applied": {...}, "live": bool}. `live` is False when nothing is
-    running — the values are still persisted as what the next session starts
-    with, but the caller must not claim the bulb just changed.
-
-    Unknown keys are rejected rather than ignored: silently dropping a setting
-    someone thinks they just changed is the worst possible outcome here.
-    """
-    unknown = [k for k in changes if k not in LIVE_SETTINGS]
+    """Validate and durably save before applying a complete live mixer snapshot."""
+    allowed = tuple(audio_settings.DEFAULTS)
+    unknown = set(changes) - set(allowed)
     if unknown:
-        raise AudioConfigError(
-            f"not live-editable: {', '.join(sorted(unknown))}. "
-            f"Editable while running: {', '.join(LIVE_SETTINGS)}")
-
-    session = get_active_session(device_id)
-    applied = {}
-
-    for key, value in changes.items():
-        if value is None:
-            continue
-        if key == "mode":
-            if value not in MODES:
-                raise AudioConfigError(f"unknown mode '{value}', expected one of {MODES}")
-            applied["mode"] = value
-        elif key == "sensitivity":
-            applied["sensitivity"] = max(0.1, min(5.0, float(value)))
-        elif key == "beat_sensitivity":
-            if value not in BEAT_SENSITIVITY_PRESETS:
-                raise AudioConfigError(
-                    f"unknown beat_sensitivity '{value}', expected one of "
-                    f"{list(BEAT_SENSITIVITY_PRESETS)}")
-            applied["beat_sensitivity"] = value
-        elif key == "min_dwell_ms":
-            ms = float(value)
-            if ms < MIN_DWELL_FLOOR_MS or ms > MIN_DWELL_MS_CEILING:
-                raise AudioConfigError(
-                    f"min_dwell_ms must be between {MIN_DWELL_FLOOR_MS} and "
-                    f"{MIN_DWELL_MS_CEILING}ms, got {value!r}")
-            applied["min_dwell_ms"] = ms
-        elif key == "monochrome_hue":
-            applied["monochrome_hue"] = float(value) % 360
-        elif key == "n_bands":
-            n = int(value)
-            if n < N_BANDS_MIN or n > N_BANDS_MAX:
-                raise AudioConfigError(
-                    f"n_bands must be between {N_BANDS_MIN} and {N_BANDS_MAX}, got {value!r}")
-            applied["n_bands"] = n
-
-    if session is not None:
-        if "mode" in applied:
-            session.mode = applied["mode"]
-            session._stereo = (applied["mode"] == "stereo_split")
-        if "sensitivity" in applied:
-            session.ctx["sensitivity"] = applied["sensitivity"]
-        if "beat_sensitivity" in applied:
-            session.tempo.set_sensitivity(applied["beat_sensitivity"])
-        if "min_dwell_ms" in applied:
-            session.sender.set_min_dwell(applied["min_dwell_ms"])
-        if "monochrome_hue" in applied:
-            session.ctx["monochrome_hue"] = applied["monochrome_hue"]
-        if "n_bands" in applied:
-            session.n_bands = applied["n_bands"]
-            session.band_edges = log_band_edges(applied["n_bands"])
-
-    # Persist so the value survives a restart. The setting someone arrived at
-    # by ear IS the setting; losing it would make every tuning pass throwaway.
-    try:
-        record = audio_presets.load_last_session(device_id)
-        config = (record or {}).get("config")
-        if config:
-            config.update(applied)
-            audio_presets.save_last_session(device_id, config)
-    except Exception:
-        pass
-
-    return {"applied": applied, "live": session is not None}
+        raise AudioConfigError("not live-editable: " + ", ".join(sorted(unknown)))
+    with _settings_lock:
+        session = get_active_session(device_id)
+        before = get_session_settings(device_id)["settings"]
+        try:
+            merged = audio_settings.normalize({**before, **changes})
+        except ValueError as error:
+            raise AudioConfigError(str(error)) from error
+        restart_changes = [key for key in audio_settings.RESTART_FIELDS if key in changes and merged[key] != before[key]]
+        if session and restart_changes:
+            raise AudioConfigError("Stop the session before changing: " + ", ".join(restart_changes))
+        # Disk failures propagate to the API. Never claim a change was saved,
+        # or mutate the live mix, when its durable write failed.
+        record = audio_presets.save_last_session(device_id, merged)
+        if session is not None:
+            session.apply_settings(merged)
+        return {"applied": {key: merged[key] for key in changes},
+                "settings": merged, "live": session is not None,
+                "saved": True, "saved_at": record["saved_at"]}
 
 
 def set_session_beat_sensitivity(device_id, preset):

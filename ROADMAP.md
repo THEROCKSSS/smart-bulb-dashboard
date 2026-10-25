@@ -2,6 +2,14 @@
 
 Things intentionally **not** built yet in this prototype, and why.
 
+## Audio Studio progress — September 2026
+
+Implemented under #84–#87: complete persistent mixer settings, editable saved
+mixes, CABLE identity/reconnect handling, studio web UI and native Expo companion
+inside the existing Podman container. See `docs/audio-studio.md`. The remaining
+verification step is a physical Expo Go phone scan; app-store publication and
+Windows per-application volume mixing remain outside this scope.
+
 ## Multi-bulb (near-term, needs hardware)
 
 The architecture is already ready for this — `config.json` is a list of
